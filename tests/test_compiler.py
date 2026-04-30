@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
 import pytest
@@ -17,7 +16,7 @@ from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter, _pysnmp_obj_class
 from trishul_smi.reader.chain import ReaderChain
 
-from conftest import MockReader
+from tests.helpers import MockReader
 
 
 # ---------------------------------------------------------------------------
@@ -146,11 +145,20 @@ class TestPysnmpFormatter:
         assert "IF-MIB" in src
 
     def test_preamble_always_imports_notification_type(self):
-        """NotificationType must be present even if the MIB has no IMPORTS."""
+        """NotificationType and TextualConvention must appear even with no IMPORTS."""
         m = MibModule(name="IF-MIB", language="SMIv2")
         src = PysnmpFormatter().format(m)
         assert "NotificationType" in src
         assert "TextualConvention" in src
+
+    def test_preamble_imports_object_identifier_from_asn1(self):
+        """ObjectIdentifier (ASN.1 value type) must be imported so that
+        SYNTAX OBJECT IDENTIFIER objects don't raise NameError at load time.
+        """
+        m = MibModule(name="IF-MIB", language="SMIv2")
+        src = PysnmpFormatter().format(m)
+        assert "'ASN1'" in src
+        assert "ObjectIdentifier" in src
 
     def test_hyphens_replaced_in_identifiers(self):
         obj = MibObject(name="if-mib-obj", oid="1.3", oid_path=[1, 3],
@@ -177,10 +185,8 @@ class TestPysnmpFormatter:
         m = MibModule(name="IF-MIB", language="SMIv2",
                       objects={"rawBytes": obj_octet, "ifTable": obj_seq})
         src = PysnmpFormatter().format(m)
-        # Must not contain bare spaced tokens as Python callables
         assert "OCTET STRING()" not in src
         assert "SEQUENCE OF IfEntry()" not in src
-        # Safe fallback must be present
         assert "OctetString()" in src
 
 
@@ -221,9 +227,6 @@ class TestPysnmpObjClass:
 
 class TestMibCompiler:
     def test_unknown_format_raises_at_construction(self):
-        """Unknown format raises ValueError at __init__, not KeyError deep
-        inside an async stack trace.
-        """
         with pytest.raises(ValueError, match="Unknown output format"):
             MibCompiler(CompilerConfig(formats=["invalid-fmt"], cache_dir=None))
 
@@ -235,32 +238,18 @@ class TestMibCompiler:
 
     @pytest.mark.asyncio
     async def test_compile_writes_json(self, tmp_path: Path):
-        config = CompilerConfig(
-            output_dir=tmp_path / "out",
-            formats=["json"],
-            cache_dir=None,
-        )
-        compiler = MibCompiler(config).add_reader(
-            MockReader({"TEST-MIB": MINIMAL_V2})
-        )
+        config = CompilerConfig(output_dir=tmp_path / "out", formats=["json"], cache_dir=None)
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
         results = await compiler.compile("TEST-MIB")
         compiled = [r for r in results if r.status == "compiled"]
         assert any(r.name == "TEST-MIB" for r in compiled)
-        json_file = tmp_path / "out" / "TEST-MIB.json"
-        assert json_file.exists()
-        data = json.loads(json_file.read_bytes())
+        data = json.loads((tmp_path / "out" / "TEST-MIB.json").read_bytes())
         assert data["module"] == "TEST-MIB"
 
     @pytest.mark.asyncio
     async def test_compile_writes_pysnmp(self, tmp_path: Path):
-        config = CompilerConfig(
-            output_dir=tmp_path / "out",
-            formats=["pysnmp"],
-            cache_dir=None,
-        )
-        compiler = MibCompiler(config).add_reader(
-            MockReader({"TEST-MIB": MINIMAL_V2})
-        )
+        config = CompilerConfig(output_dir=tmp_path / "out", formats=["pysnmp"], cache_dir=None)
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
         results = await compiler.compile("TEST-MIB")
         assert any(r.status == "compiled" and r.name == "TEST-MIB" for r in results)
         py_file = tmp_path / "out" / "TEST-MIB.py"
@@ -269,16 +258,14 @@ class TestMibCompiler:
 
     @pytest.mark.asyncio
     async def test_missing_mib_status_failed(self, tmp_path: Path):
-        config = CompilerConfig(output_dir=tmp_path, cache_dir=None,
-                                formats=["json"])
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
         compiler = MibCompiler(config).add_reader(MockReader({}))
         results = await compiler.compile("MISSING-MIB")
         assert any(r.name == "MISSING-MIB" and r.status == "failed" for r in results)
 
     @pytest.mark.asyncio
     async def test_fluent_add_reader(self, tmp_path: Path):
-        config = CompilerConfig(output_dir=tmp_path, cache_dir=None,
-                                formats=["json"])
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
         compiler = (
             MibCompiler(config)
             .add_reader(MockReader({}))
@@ -291,19 +278,14 @@ class TestMibCompiler:
     async def test_output_dir_created(self, tmp_path: Path):
         out = tmp_path / "deep" / "nested" / "out"
         config = CompilerConfig(output_dir=out, cache_dir=None, formats=["json"])
-        compiler = MibCompiler(config).add_reader(
-            MockReader({"TEST-MIB": MINIMAL_V2})
-        )
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
         await compiler.compile("TEST-MIB")
         assert out.is_dir()
 
     @pytest.mark.asyncio
     async def test_compile_result_has_output_paths(self, tmp_path: Path):
-        config = CompilerConfig(output_dir=tmp_path, cache_dir=None,
-                                formats=["json"])
-        compiler = MibCompiler(config).add_reader(
-            MockReader({"TEST-MIB": MINIMAL_V2})
-        )
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
         results = await compiler.compile("TEST-MIB")
         compiled = next(r for r in results if r.name == "TEST-MIB")
         assert len(compiled.output_paths) == 1
@@ -311,11 +293,8 @@ class TestMibCompiler:
 
     @pytest.mark.asyncio
     async def test_compile_object_mib(self, tmp_path: Path):
-        config = CompilerConfig(output_dir=tmp_path, cache_dir=None,
-                                formats=["json"])
-        compiler = MibCompiler(config).add_reader(
-            MockReader({"OBJECT-MIB": OBJECT_V2})
-        )
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"OBJECT-MIB": OBJECT_V2}))
         results = await compiler.compile("OBJECT-MIB")
         compiled = next((r for r in results if r.name == "OBJECT-MIB"), None)
         assert compiled is not None and compiled.status == "compiled"
@@ -324,21 +303,11 @@ class TestMibCompiler:
         assert data["objects"]["foo"]["syntax"] == "Integer32"
 
     @pytest.mark.asyncio
-    async def test_formatter_error_captured_in_warnings_not_raised(
-        self, tmp_path: Path
-    ):
-        """A formatter that raises must not abort the compile run.
-        The error is captured in result.warnings and logged at WARNING;
-        output_paths for that format is empty, but the module status
-        remains 'compiled'.
-        """
-        config = CompilerConfig(output_dir=tmp_path, cache_dir=None,
-                                formats=["json"])
-        compiler = MibCompiler(config).add_reader(
-            MockReader({"TEST-MIB": MINIMAL_V2})
-        )
+    async def test_formatter_error_captured_in_warnings_not_raised(self, tmp_path: Path):
+        """A formatter that raises must not abort the compile run."""
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
 
-        # Monkey-patch the formatter instance to raise on format()
         def _raise(_):
             raise RuntimeError("simulated crash")
 
@@ -347,10 +316,9 @@ class TestMibCompiler:
         compiler._formatters = {"json": broken_formatter}
 
         results = await compiler.compile("TEST-MIB")
-
         compiled = next((r for r in results if r.name == "TEST-MIB"), None)
         assert compiled is not None
-        assert compiled.status == "compiled"    # run completed
-        assert len(compiled.output_paths) == 0  # file not written
+        assert compiled.status == "compiled"
+        assert len(compiled.output_paths) == 0
         assert any("formatter error" in w for w in compiled.warnings)
         assert any("simulated crash" in w for w in compiled.warnings)

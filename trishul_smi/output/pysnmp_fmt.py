@@ -93,6 +93,10 @@ mibBuilder = MibBuilder()
 ( TextualConvention, ) = mibBuilder.importSymbols(
     'SNMPv2-TC', 'TextualConvention',
 )
+# ObjectIdentifier is the ASN.1 OID value type (SYNTAX OBJECT IDENTIFIER).
+# It lives in the 'ASN1' module — distinct from MibIdentifier (SNMPv2-SMI)
+# which is used for OID *nodes* in the MIB tree, not SYNTAX value types.
+( ObjectIdentifier, ) = mibBuilder.importSymbols('ASN1', 'ObjectIdentifier')
 
 # --- MIB-specific imports ----------------------------------------------
 {% for from_module, symbols in module.imports.items() %}
@@ -168,6 +172,8 @@ _PYSNMP_SYNTAX = {
     "INTEGER":           "Integer32()",
     "Integer32":         "Integer32()",
     "OCTET STRING":      "OctetString()",
+    # ObjectIdentifier here is the ASN.1 value type imported above from 'ASN1'.
+    # MibIdentifier (SNMPv2-SMI) is for OID tree *nodes*, not SYNTAX values.
     "OBJECT IDENTIFIER": "ObjectIdentifier()",
     "IpAddress":         "IpAddress()",
     "Counter32":         "Counter32()",
@@ -192,11 +198,6 @@ def _oid_tuple(oid_path: list[int]) -> str:
 
 
 def _pysnmp_class_for_type(object_type: str) -> str:
-    # Fallback should never be hit — the template only calls this filter for
-    # the object types explicitly enumerated in _PYSNMP_CLASS_FOR_TYPE.
-    # If a future parser change introduces a new type string and this filter
-    # is called with it, MibIdentifier is a conservative wrong answer rather
-    # than a crash. The TODO comment in the generated output will flag it.
     return _PYSNMP_CLASS_FOR_TYPE.get(object_type, "MibIdentifier")
 
 
@@ -207,10 +208,9 @@ def _pysnmp_syntax(syntax: str | None) -> str:
     1. None / empty  → OctetString() with comment
     2. Exact match in _PYSNMP_SYNTAX  → mapped value
     3. Contains spaces or is not a valid Python identifier (e.g. "OCTET STRING",
-       "SEQUENCE OF ifEntry") → OctetString() with a TODO comment containing
-       the raw syntax so authors can map it manually.  Plain ``f"{syntax}()"
-       would emit broken Python for any spaced token.
-    4. Single hyphenated word (e.g. "Counter64") → safe identifier + ()
+       "SEQUENCE OF ifEntry") → OctetString() with a TODO comment.
+       Plain f"{syntax}()" would emit broken Python for any spaced token.
+    4. Single hyphenated word → safe identifier + ()
     """
     if not syntax:
         return "OctetString()  # unknown syntax"
@@ -256,9 +256,6 @@ class PysnmpFormatter:
         self._tmpl = self._env.from_string(_TEMPLATE)
 
     def format(self, module: MibModule) -> str:  # noqa: A003
-        # Precompute (name, obj, pysnmp_class) for all OBJECT-TYPE entries.
-        # Done in Python rather than Jinja2 to keep the template readable and
-        # to avoid threading the module reference through filters.
         objects_with_class = [
             (name, obj, _pysnmp_obj_class(obj, module))
             for name, obj in module.objects.items()
