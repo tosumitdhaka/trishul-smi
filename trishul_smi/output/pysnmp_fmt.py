@@ -46,7 +46,7 @@ def _pysnmp_obj_class(obj: MibObject, module: MibModule) -> str:
 
     Resolution order (first match wins):
     1. syntax starts with ``SEQUENCE OF`` → MibTable (the table object itself)
-    2. syntax is a named type that resolves to SEQUENCE in this module’s types
+    2. syntax is a named type that resolves to SEQUENCE in this module's types
        → MibTableRow (the row object)
     3. Everything else → MibScalar
        (MibTableColumn needs OID-tree resolution — see module docstring)
@@ -74,7 +74,27 @@ from pysnmp.smi.builder import MibBuilder
 
 mibBuilder = MibBuilder()
 
-# --- Imports -----------------------------------------------------------
+# --- Always-available pysnmp builtins ---------------------------------
+# Mirrors what pysmi-compiled MIBs unconditionally import so that
+# NotificationType, TextualConvention, etc. never raise NameError when
+# pysnmp loads this module, even if the source MIB omits their imports.
+( ModuleIdentity, ObjectType, NotificationType,
+  MibScalar, MibTable, MibTableRow, MibTableColumn,
+  MibIdentifier, ObjectIdentity, Integer32, OctetString,
+  IpAddress, Counter32, Counter64, Gauge32, Unsigned32,
+  TimeTicks, Opaque, Bits, ) = mibBuilder.importSymbols(
+    'SNMPv2-SMI',
+    'ModuleIdentity', 'ObjectType', 'NotificationType',
+    'MibScalar', 'MibTable', 'MibTableRow', 'MibTableColumn',
+    'MibIdentifier', 'ObjectIdentity', 'Integer32', 'OctetString',
+    'IpAddress', 'Counter32', 'Counter64', 'Gauge32', 'Unsigned32',
+    'TimeTicks', 'Opaque', 'Bits',
+)
+( TextualConvention, ) = mibBuilder.importSymbols(
+    'SNMPv2-TC', 'TextualConvention',
+)
+
+# --- MIB-specific imports ----------------------------------------------
 {% for from_module, symbols in module.imports.items() %}
 {{ symbols | map_pysnmp_assign(from_module) }}
 {% endfor %}
@@ -88,7 +108,7 @@ mibBuilder = MibBuilder()
 {% if obj.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ obj.status }}')
 {% endif %}
 {% if obj.description %}if mibBuilder.loadTexts: {{ name | pyid }}.setDescription(
-    """{{ obj.description | indent(4) }}"""
+    \"\"\"{{ obj.description | indent(4) }}\"\"\"
 )
 {% endif %}
 {% endfor %}
@@ -102,7 +122,7 @@ mibBuilder = MibBuilder()
 {% if obj.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ obj.status }}')
 {% endif %}
 {% if obj.description %}if mibBuilder.loadTexts: {{ name | pyid }}.setDescription(
-    """{{ obj.description | indent(4) }}"""
+    \"\"\"{{ obj.description | indent(4) }}\"\"\"
 )
 {% endif %}
 {% endfor %}
@@ -181,9 +201,26 @@ def _pysnmp_class_for_type(object_type: str) -> str:
 
 
 def _pysnmp_syntax(syntax: str | None) -> str:
+    """Map a MIB syntax string to a pysnmp constructor call.
+
+    Fallback rules (in order):
+    1. None / empty  → OctetString() with comment
+    2. Exact match in _PYSNMP_SYNTAX  → mapped value
+    3. Contains spaces or is not a valid Python identifier (e.g. "OCTET STRING",
+       "SEQUENCE OF ifEntry") → OctetString() with a TODO comment containing
+       the raw syntax so authors can map it manually.  Plain ``f"{syntax}()"
+       would emit broken Python for any spaced token.
+    4. Single hyphenated word (e.g. "Counter64") → safe identifier + ()
+    """
     if not syntax:
         return "OctetString()  # unknown syntax"
-    return _PYSNMP_SYNTAX.get(syntax, f"{syntax}()")
+    mapped = _PYSNMP_SYNTAX.get(syntax)
+    if mapped:
+        return mapped
+    safe = syntax.replace("-", "_")
+    if " " in safe or not safe.isidentifier():
+        return f"OctetString()  # TODO: map syntax '{syntax}'"
+    return f"{safe}()"
 
 
 def _map_pysnmp_assign(symbols: list[str], from_module: str) -> str:
@@ -218,7 +255,7 @@ class PysnmpFormatter:
         self._env = _make_env()
         self._tmpl = self._env.from_string(_TEMPLATE)
 
-    def format(self, module: MibModule) -> str:
+    def format(self, module: MibModule) -> str:  # noqa: A003
         # Precompute (name, obj, pysnmp_class) for all OBJECT-TYPE entries.
         # Done in Python rather than Jinja2 to keep the template readable and
         # to avoid threading the module reference through filters.

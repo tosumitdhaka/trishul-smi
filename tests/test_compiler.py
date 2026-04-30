@@ -15,8 +15,9 @@ from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter, _pysnmp_obj_class
-from trishul_smi.reader.base import AbstractReader
 from trishul_smi.reader.chain import ReaderChain
+
+from conftest import MockReader
 
 
 # ---------------------------------------------------------------------------
@@ -54,23 +55,6 @@ foo OBJECT-TYPE
     ::= { objectMIB 1 }
 END
 """
-
-
-class MockReader(AbstractReader):
-    def __init__(
-        self,
-        texts: dict[str, str],
-        size_limit_names: set[str] | None = None,
-    ) -> None:
-        self._texts = texts
-        self._size_limit_names = size_limit_names or set()
-
-    async def fetch(self, mib_name: str) -> str:
-        if mib_name in self._size_limit_names:
-            raise MibSizeLimitError(f"{mib_name} exceeds limit")
-        if mib_name not in self._texts:
-            raise MibNotFoundError(mib_name)
-        return self._texts[mib_name]
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +145,13 @@ class TestPysnmpFormatter:
         assert "mibBuilder" in src
         assert "IF-MIB" in src
 
+    def test_preamble_always_imports_notification_type(self):
+        """NotificationType must be present even if the MIB has no IMPORTS."""
+        m = MibModule(name="IF-MIB", language="SMIv2")
+        src = PysnmpFormatter().format(m)
+        assert "NotificationType" in src
+        assert "TextualConvention" in src
+
     def test_hyphens_replaced_in_identifiers(self):
         obj = MibObject(name="if-mib-obj", oid="1.3", oid_path=[1, 3],
                         object_type="OBJECT-TYPE", syntax="Integer32")
@@ -176,6 +167,21 @@ class TestPysnmpFormatter:
         src = PysnmpFormatter().format(m)
         assert "importSymbols" in src
         assert "SNMPv2-SMI" in src
+
+    def test_spaced_syntax_emits_valid_python(self):
+        """'OCTET STRING' and 'SEQUENCE OF X' must not emit broken Python."""
+        obj_octet = MibObject(name="rawBytes", oid="1.3", oid_path=[1, 3],
+                              object_type="OBJECT-TYPE", syntax="OCTET STRING")
+        obj_seq = MibObject(name="ifTable", oid="1.4", oid_path=[1, 4],
+                            object_type="OBJECT-TYPE", syntax="SEQUENCE OF IfEntry")
+        m = MibModule(name="IF-MIB", language="SMIv2",
+                      objects={"rawBytes": obj_octet, "ifTable": obj_seq})
+        src = PysnmpFormatter().format(m)
+        # Must not contain bare spaced tokens as Python callables
+        assert "OCTET STRING()" not in src
+        assert "SEQUENCE OF IfEntry()" not in src
+        # Safe fallback must be present
+        assert "OctetString()" in src
 
 
 class TestPysnmpObjClass:

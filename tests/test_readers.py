@@ -119,7 +119,9 @@ class TestReaderChain:
         d1 = tmp_path / "d1"
         d1.mkdir()
         chain = ReaderChain(FileReader(d1))
-        with pytest.raises(MibNotFoundError, match="not found in any reader"):
+        # Match on the MIB name — always present regardless of which reader
+        # raised MibNotFoundError last (chain re-raises last_exc directly).
+        with pytest.raises(MibNotFoundError, match="MISSING"):
             await chain.fetch("MISSING")
 
     def test_raises_on_empty_readers(self):

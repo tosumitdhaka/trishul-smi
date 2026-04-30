@@ -50,6 +50,26 @@ err = Console(stderr=True)
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_cache_dir(raw: str | None) -> Path | None:
+    """Convert the --cache-dir CLI string to the Path | None expected by CompilerConfig.
+
+    Rules
+    -----
+    ''   (empty string)  → None  (cache disabled)
+    None (flag not set)  → default XDG-style path under ~/.cache
+    anything else        → Path(raw)
+    """
+    if raw == "":
+        return None
+    if raw is None:
+        return Path.home() / ".cache" / "trishul-smi"
+    return Path(raw)
+
+
+# ---------------------------------------------------------------------------
 # version
 # ---------------------------------------------------------------------------
 
@@ -129,14 +149,6 @@ def compile(  # noqa: A001
 ) -> None:
     """Compile one or more MIB definitions and all transitive dependencies."""
 
-    resolved_cache: Path | None
-    if cache_dir is None:
-        resolved_cache = Path.home() / ".cache" / "trishul-smi"
-    elif cache_dir == "":
-        resolved_cache = None
-    else:
-        resolved_cache = Path(cache_dir)
-
     try:
         # dict[str, Any]: values are either list[str] or left absent entirely.
         # Any is correct here — mypy cannot check **kwargs spread into a dataclass.
@@ -147,7 +159,7 @@ def compile(  # noqa: A001
             extra["formats"] = formats
         config = CompilerConfig(
             output_dir=output_dir,
-            cache_dir=resolved_cache,
+            cache_dir=_resolve_cache_dir(cache_dir),
             cache_ttl_days=cache_ttl_days,
             max_mib_size=max_mib_size,
             http_timeout=http_timeout,
