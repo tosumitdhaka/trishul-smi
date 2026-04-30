@@ -25,6 +25,7 @@ import logging
 from pathlib import Path
 
 from trishul_smi.config import CompilerConfig
+from trishul_smi.errors import WriterError
 from trishul_smi.models import CompileResult
 from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter
@@ -111,6 +112,14 @@ class MibCompiler:
         Formatter errors (e.g. a buggy Jinja2 template) are non-fatal:
         they are appended to ``result.warnings`` and logged at WARNING
         level so they surface in the CLI without aborting the entire run.
+
+        Raises:
+            RuntimeError: if no readers have been registered via
+                ``add_reader()``. Call ``add_reader()`` at least once
+                before ``compile()``.
+            WriterError: if the output directory cannot be created (e.g.
+                permission denied on the filesystem). Raised before any
+                formatting begins so no partial output is written.
         """
         if not self._readers:
             raise RuntimeError(
@@ -123,7 +132,12 @@ class MibCompiler:
 
         results: list[CompileResult] = []
         out_dir = self._config.output_dir
-        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise WriterError(
+                f"Cannot create output directory {out_dir}: {exc}"
+            ) from exc
 
         # --- Successfully resolved modules ---
         for module in resolve_result.modules:

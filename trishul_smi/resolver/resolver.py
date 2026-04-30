@@ -20,6 +20,9 @@ Error handling
 - MibSizeLimitError propagates immediately (it is a configuration error).
 - CircularDependencyError propagates immediately (uncaught from
   topological_sort — no try/except wrapper needed).
+- Failed modules\' transitive dependencies are not explored: if module A
+  fails to fetch or parse, A\'s imports are never queued. Callers should
+  not assume all reachable dependencies will appear in ResolveResult.errors.
 """
 from __future__ import annotations
 

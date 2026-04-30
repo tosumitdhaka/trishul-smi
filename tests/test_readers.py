@@ -96,6 +96,77 @@ class TestZipReader:
         with pytest.raises(MibSizeLimitError):
             await reader.fetch("BIG-MIB")
 
+    # --- Nested ZIP tests (K) ---
+
+    @pytest.mark.asyncio
+    async def test_reads_mib_from_nested_zip(self, tmp_path: Path):
+        """A MIB inside a ZIP that is itself inside another ZIP must be found."""
+        inner = tmp_path / "inner.zip"
+        with zipfile.ZipFile(inner, "w") as zf:
+            zf.writestr("IF-MIB.mib", MINIMAL_MIB)
+        outer = tmp_path / "outer.zip"
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.write(inner, "inner.zip")
+        reader = ZipReader(outer)
+        text = await reader.fetch("IF-MIB")
+        assert "TEST-MIB" in text
+
+    @pytest.mark.asyncio
+    async def test_depth_limit_stops_recursion(self, tmp_path: Path):
+        """A ZIP chain deeper than the depth guard must raise MibNotFoundError
+        rather than recursing indefinitely or hitting Python\'s stack limit.
+        The guard returns None at depth > limit, causing MibNotFoundError.
+        We build 8 levels — well beyond any reasonable depth limit.
+        """
+        # Build leaf: deepest.zip contains IF-MIB.mib
+        current = tmp_path / "level_7.zip"
+        with zipfile.ZipFile(current, "w") as zf:
+            zf.writestr("IF-MIB.mib", MINIMAL_MIB)
+        # Wrap it 7 more times: level_6 -> level_5 -> ... -> level_0
+        for i in range(6, -1, -1):
+            outer = tmp_path / f"level_{i}.zip"
+            with zipfile.ZipFile(outer, "w") as zf:
+                zf.write(current, current.name)
+            current = outer
+        reader = ZipReader(current)  # current is now level_0.zip
+        with pytest.raises(MibNotFoundError):
+            await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_no_tmp_file_leftover_after_nested_fetch(self, tmp_path: Path, monkeypatch):
+        """finally: unlink() in _search_zip must clean up temp files even
+        when the fetch succeeds.
+        """
+        import tempfile as _tempfile
+
+        created_temps: list[Path] = []
+        _orig_ntf = _tempfile.NamedTemporaryFile
+
+        def _tracking_ntf(*args, **kwargs):
+            # Redirect all temp files into tmp_path so we can inspect them.
+            kwargs["dir"] = str(tmp_path)
+            f = _orig_ntf(*args, **kwargs)
+            created_temps.append(Path(f.name))
+            return f
+
+        monkeypatch.setattr(_tempfile, "NamedTemporaryFile", _tracking_ntf)
+
+        inner = tmp_path / "inner.zip"
+        with zipfile.ZipFile(inner, "w") as zf:
+            zf.writestr("IF-MIB.mib", MINIMAL_MIB)
+        outer = tmp_path / "outer.zip"
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.write(inner, "inner.zip")
+
+        reader = ZipReader(outer)
+        await reader.fetch("IF-MIB")
+
+        # Every temp file created during the nested fetch must have been unlinked.
+        for p in created_temps:
+            assert not p.exists(), (
+                f"Temp file {p.name} was not cleaned up after nested ZIP fetch"
+            )
+
 
 # ---------------------------------------------------------------------------
 # ReaderChain
@@ -109,7 +180,6 @@ class TestReaderChain:
         d1.mkdir()
         d2.mkdir()
         (d2 / "X-MIB.mib").write_text(MINIMAL_MIB)
-        # varargs — NOT ReaderChain([reader1, reader2])
         chain = ReaderChain(FileReader(d1), FileReader(d2))
         text = await chain.fetch("X-MIB")
         assert text
@@ -119,8 +189,6 @@ class TestReaderChain:
         d1 = tmp_path / "d1"
         d1.mkdir()
         chain = ReaderChain(FileReader(d1))
-        # Match on the MIB name — always present regardless of which reader
-        # raised MibNotFoundError last (chain re-raises last_exc directly).
         with pytest.raises(MibNotFoundError, match="MISSING"):
             await chain.fetch("MISSING")
 

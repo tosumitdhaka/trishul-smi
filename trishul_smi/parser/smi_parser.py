@@ -2,24 +2,24 @@
 
 Usage::
 
-    # Singleton pattern: create once, reuse. The grammar is compiled on
-    # first use and cached inside the instance. Creating a new SmiParser
-    # per call re-compiles the grammar on each call, which is expensive.
-    # Use a module-level or application-level singleton.
+    # Singleton pattern: create once, reuse. The Lark grammar is compiled
+    # once per (dialect, algorithm) combination and cached at the *class*
+    # level — shared across all SmiParser instances in the process.
+    # There is no benefit to keeping a single instance; each instance
+    # automatically reuses the process-level grammar cache.
 
-    _parser = SmiParser()                    # module-level singleton
-    mib = _parser.parse(raw_asn1_text)
+    mib = SmiParser().parse(raw_asn1_text)
 
     # Force a specific dialect:
     parser = SmiParser(dialect="smiv1")
 
     # From async code (parser.parse is synchronous/CPU-bound):
-    mib = await asyncio.to_thread(_parser.parse, raw_text)
+    mib = await asyncio.to_thread(SmiParser().parse, raw_text)
 """
 from __future__ import annotations
 
 import importlib.resources
-from typing import Literal
+from typing import ClassVar, Literal
 
 from lark import Lark, UnexpectedInput
 
@@ -61,27 +61,37 @@ class SmiParser:
         dialect: ``"smiv2"`` (default), ``"smiv1"``, or ``"auto"``
                  (auto-detects from IMPORTS section).
 
-    Performance note:
-        Grammar compilation happens on first ``parse()`` call per
-        ``(dialect, algorithm)`` combination and is cached in
-        ``self._parsers``. Use a single instance per process.
+    Performance:
+        Lark grammar compilation is expensive (~50–200 ms per
+        ``(dialect, algorithm)`` combination). Compiled grammars are
+        stored in ``SmiParser._grammar_cache`` — a *class-level* dict
+        shared across all instances in the same process. The first
+        ``parse()`` call that needs a grammar compiles it; all subsequent
+        calls (including those on different SmiParser instances) reuse
+        the cached Lark object with zero overhead.
     """
+
+    # Class-level grammar cache: shared across all instances in the process.
+    # Key: "<dialect>:<lalr|earley>"  Value: compiled Lark parser.
+    # This makes SmiParser effectively a flyweight — one grammar compilation
+    # per (dialect, algorithm) pair per Python process regardless of how many
+    # MibCompiler or SmiParser instances are created.
+    _grammar_cache: ClassVar[dict[str, Lark]] = {}
 
     def __init__(self, dialect: _DIALECT = "auto") -> None:
         self._dialect = dialect
-        self._parsers: dict[str, Lark] = {}
 
     def _get_parser(self, dialect: Literal["smiv2", "smiv1"], earley: bool = False) -> Lark:
         key = f"{dialect}:{'earley' if earley else 'lalr'}"
-        if key not in self._parsers:
+        if key not in SmiParser._grammar_cache:
             grammar = _load_grammar(f"{dialect}.lark")
-            self._parsers[key] = Lark(
+            SmiParser._grammar_cache[key] = Lark(
                 grammar,
                 parser="earley" if earley else "lalr",
                 propagate_positions=False,
                 maybe_placeholder=False,
             )
-        return self._parsers[key]
+        return SmiParser._grammar_cache[key]
 
     def parse(self, text: str) -> MibModule:
         """Parse raw ASN.1 text. Raises ParseError on invalid input.
