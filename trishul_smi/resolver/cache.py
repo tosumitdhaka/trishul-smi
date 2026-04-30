@@ -120,12 +120,14 @@ class MibCache:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, mib_name: str) -> Path:
-        # Sanitise: MIB names are uppercase with hyphens; safe as filenames.
         return self._dir / f"{mib_name}.json"
 
     def _is_stale(self, path: Path) -> bool:
         if self._ttl_seconds == 0:
             return False
+        # st_mtime is a wall-clock timestamp, so time.time() is correct here —
+        # unlike in-memory TTL checks (httpclient.py) where monotonic is safer
+        # because monotonic is immune to NTP slew and VM clock jumps.
         age = time.time() - path.stat().st_mtime
         return age > self._ttl_seconds
 
@@ -146,9 +148,18 @@ class MibCache:
             return None
 
     def put(self, mib_name: str, module: MibModule) -> None:
-        """Persist a compiled MibModule to disk."""
+        """Persist a compiled MibModule to disk atomically.
+
+        Writes to a sibling ``.tmp`` file first, then renames to the final
+        path. ``Path.replace()`` is atomic on POSIX (rename(2) syscall) and
+        best-effort on Windows. This prevents partially-written files if the
+        process is killed mid-write, or if two concurrent asyncio.gather tasks
+        write different MIBs whose paths collide on a race.
+        """
         path = self._path(mib_name)
-        path.write_bytes(_module_to_bytes(module))
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(_module_to_bytes(module))
+        tmp.replace(path)  # atomic on POSIX
 
     def invalidate(self, mib_name: str) -> None:
         """Remove a single cached entry."""

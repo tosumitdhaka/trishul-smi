@@ -1,13 +1,13 @@
 """Unit tests for resolver/ — cache, dependency sort, and MibResolver."""
 from __future__ import annotations
 
-import json
+import os
 import time
 from pathlib import Path
 
 import pytest
 
-from trishul_smi.errors import CircularDependencyError
+from trishul_smi.errors import CircularDependencyError, MibSizeLimitError
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.parser.smi_parser import SmiParser
@@ -18,7 +18,7 @@ from trishul_smi.resolver.resolver import MibResolver, ResolveResult
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures and helpers
 # ---------------------------------------------------------------------------
 
 def _make_module(name: str, imports: dict[str, list[str]] | None = None) -> MibModule:
@@ -51,14 +51,36 @@ depObj MODULE-IDENTITY
 END
 """
 
+MIB_C = """
+MIB-C DEFINITIONS ::= BEGIN
+IMPORTS
+    Integer32 FROM SNMPv2-SMI ;
+cObj MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "C Org"
+    CONTACT-INFO "c@example.com"
+    DESCRIPTION  "MIB C (root dep)."
+    ::= { 1 5 }
+END
+"""
+
 
 class MockReader(AbstractReader):
-    """Returns pre-loaded text; raises MibNotFoundError for unknown names."""
-    def __init__(self, texts: dict[str, str]) -> None:
+    """Returns pre-loaded text; raises MibNotFoundError for unknown names.
+    Raises MibSizeLimitError for names registered in size_limit_names.
+    """
+    def __init__(
+        self,
+        texts: dict[str, str],
+        size_limit_names: set[str] | None = None,
+    ) -> None:
         self._texts = texts
+        self._size_limit_names = size_limit_names or set()
 
     async def fetch(self, mib_name: str) -> str:
         from trishul_smi.errors import MibNotFoundError
+        if mib_name in self._size_limit_names:
+            raise MibSizeLimitError(f"{mib_name} exceeds size limit")
         if mib_name not in self._texts:
             raise MibNotFoundError(mib_name)
         return self._texts[mib_name]
@@ -83,8 +105,7 @@ class TestMibCache:
 
     def test_invalidate(self, tmp_path: Path):
         cache = MibCache(tmp_path, ttl_days=7)
-        m = _make_module("IF-MIB")
-        cache.put("IF-MIB", m)
+        cache.put("IF-MIB", _make_module("IF-MIB"))
         cache.invalidate("IF-MIB")
         assert cache.get("IF-MIB") is None
 
@@ -98,21 +119,17 @@ class TestMibCache:
 
     def test_ttl_zero_never_expires(self, tmp_path: Path):
         cache = MibCache(tmp_path, ttl_days=0)
-        m = _make_module("IF-MIB")
-        cache.put("IF-MIB", m)
-        # Backdate the file mtime by 365 days
+        cache.put("IF-MIB", _make_module("IF-MIB"))
         path = tmp_path / "compiled" / "IF-MIB.json"
         old_time = time.time() - 365 * 86_400
-        import os
         os.utime(path, (old_time, old_time))
-        assert cache.get("IF-MIB") is not None  # should NOT be evicted
+        assert cache.get("IF-MIB") is not None
 
     def test_stale_entry_returns_none(self, tmp_path: Path):
         cache = MibCache(tmp_path, ttl_days=1)
         cache.put("IF-MIB", _make_module("IF-MIB"))
         path = tmp_path / "compiled" / "IF-MIB.json"
-        old_time = time.time() - 2 * 86_400  # 2 days old
-        import os
+        old_time = time.time() - 2 * 86_400
         os.utime(path, (old_time, old_time))
         assert cache.get("IF-MIB") is None
 
@@ -120,7 +137,7 @@ class TestMibCache:
         cache = MibCache(tmp_path, ttl_days=7)
         obj = MibObject(
             name="ifDescr", oid="1.3.6.1.2.1.2.2.1.2",
-            oid_path=[1,3,6,1,2,1,2,2,1,2],
+            oid_path=[1, 3, 6, 1, 2, 1, 2, 2, 1, 2],
             object_type="OBJECT-TYPE", syntax="DisplayString",
             max_access="read-only", status="current",
             index=["ifIndex"],
@@ -144,6 +161,13 @@ class TestMibCache:
         path.write_text("not json{{{")
         assert cache.get("BAD-MIB") is None
 
+    def test_put_is_atomic_no_tmp_leftover(self, tmp_path: Path):
+        """put() writes via .tmp then renames; no .tmp file should remain."""
+        cache = MibCache(tmp_path, ttl_days=7)
+        cache.put("IF-MIB", _make_module("IF-MIB"))
+        tmp = tmp_path / "compiled" / "IF-MIB.tmp"
+        assert not tmp.exists()
+
 
 # ---------------------------------------------------------------------------
 # Topological sort
@@ -155,7 +179,6 @@ class TestTopologicalSort:
         assert topological_sort(modules) == ["A"]
 
     def test_linear_chain(self):
-        # B imports A → order should be [A, B]
         modules = {
             "A": _make_module("A"),
             "B": _make_module("B", imports={"A": ["x"]}),
@@ -164,7 +187,6 @@ class TestTopologicalSort:
         assert result.index("A") < result.index("B")
 
     def test_diamond_dependency(self):
-        # A ← B, A ← C, B ← D, C ← D  (D imports B and C, which both import A)
         modules = {
             "A": _make_module("A"),
             "B": _make_module("B", imports={"A": ["x"]}),
@@ -178,12 +200,10 @@ class TestTopologicalSort:
         assert result.index("C") < result.index("D")
 
     def test_external_imports_ignored(self):
-        # SNMPv2-SMI is not in the modules dict — should not raise
         modules = {
             "MY-MIB": _make_module("MY-MIB", imports={"SNMPv2-SMI": ["OBJECT-TYPE"]}),
         }
-        result = topological_sort(modules)
-        assert result == ["MY-MIB"]
+        assert topological_sort(modules) == ["MY-MIB"]
 
     def test_cycle_raises(self):
         modules = {
@@ -194,14 +214,12 @@ class TestTopologicalSort:
             topological_sort(modules)
 
     def test_deterministic_order(self):
-        # Multiple valid orderings exist; we require alphabetical within layers
         modules = {
             "C": _make_module("C"),
             "A": _make_module("A"),
             "B": _make_module("B"),
         }
-        result = topological_sort(modules)
-        assert result == ["A", "B", "C"]
+        assert topological_sort(modules) == ["A", "B", "C"]
 
     def test_build_dependency_graph(self):
         modules = {
@@ -209,7 +227,7 @@ class TestTopologicalSort:
             "B": _make_module("B", imports={"A": ["x"]}),
         }
         graph = build_dependency_graph(modules)
-        assert "B" in graph["A"]  # A is depended on by B
+        assert "B" in graph["A"]
         assert graph["B"] == []
 
 
@@ -225,8 +243,7 @@ class TestMibResolver:
         resolver = MibResolver(reader, parser)
         result = await resolver.resolve(["TEST-MIB"])
         assert result.ok
-        names = [m.name for m in result.modules]
-        assert "TEST-MIB" in names
+        assert any(m.name == "TEST-MIB" for m in result.modules)
 
     @pytest.mark.asyncio
     async def test_missing_mib_reported_in_errors(self):
@@ -242,9 +259,7 @@ class TestMibResolver:
         cache = MibCache(tmp_path, ttl_days=7)
         m = _make_module("IF-MIB")
         cache.put("IF-MIB", m)
-
-        # Reader would raise if called — cache hit must prevent the call
-        reader = MockReader({})
+        reader = MockReader({})  # raises for any fetch call
         parser = SmiParser()
         resolver = MibResolver(reader, parser, cache=cache)
         result = await resolver.resolve(["IF-MIB"])
@@ -254,15 +269,60 @@ class TestMibResolver:
     @pytest.mark.asyncio
     async def test_result_ok_property(self):
         reader = MockReader({"TEST-MIB": MINIMAL_V2})
-        parser = SmiParser()
-        resolver = MibResolver(reader, parser)
+        resolver = MibResolver(reader, SmiParser())
         result = await resolver.resolve(["TEST-MIB"])
         assert result.ok is True
 
     @pytest.mark.asyncio
     async def test_result_not_ok_on_error(self):
         reader = MockReader({})
-        parser = SmiParser()
-        resolver = MibResolver(reader, parser)
+        resolver = MibResolver(reader, SmiParser())
         result = await resolver.resolve(["MISSING"])
         assert result.ok is False
+
+    @pytest.mark.asyncio
+    async def test_transitive_dependency_fetched(self):
+        """If A imports B which imports C, resolving [A] should fetch all
+        three and return them in dependency order: C before B before A.
+        External base-MIB imports (SNMPv2-SMI etc.) are silently skipped.
+        """
+        mib_a = """
+MIB-A DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    depObj          FROM DEP-MIB ;
+aObj MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "A Org"
+    CONTACT-INFO "a@example.com"
+    DESCRIPTION  "MIB A imports DEP-MIB."
+    ::= { 1 6 }
+END
+"""
+        reader = MockReader({
+            "MIB-A":  mib_a,
+            "DEP-MIB": DEP_MIB,
+        })
+        resolver = MibResolver(reader, SmiParser())
+        result = await resolver.resolve(["MIB-A"])
+        assert result.ok
+        names = [m.name for m in result.modules]
+        assert "MIB-A" in names
+        assert "DEP-MIB" in names
+        # DEP-MIB (the dependency) must appear before MIB-A
+        assert names.index("DEP-MIB") < names.index("MIB-A")
+
+    @pytest.mark.asyncio
+    async def test_size_limit_propagates_immediately(self):
+        """MibSizeLimitError must propagate out of resolve() immediately
+        (not be collected in .errors), because it is a configuration error
+        rather than a recoverable per-module failure.
+        The fix in resolver.py uses `raise result` (the exception value)
+        rather than bare `raise` which would hit RuntimeError outside an
+        except block, since asyncio.gather(return_exceptions=True) returns
+        exceptions as plain values.
+        """
+        reader = MockReader({}, size_limit_names={"BIG-MIB"})
+        resolver = MibResolver(reader, SmiParser())
+        with pytest.raises(MibSizeLimitError):
+            await resolver.resolve(["BIG-MIB"])

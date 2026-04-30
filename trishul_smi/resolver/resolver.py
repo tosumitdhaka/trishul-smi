@@ -16,18 +16,19 @@ The resolver performs a BFS over the MIB import graph:
 Error handling
 --------------
 - Fetch/parse failures are collected per-module and reported together
-  as a ResolveError at the end rather than aborting mid-run.
-- Modules that fail are excluded from the topological sort.
-- MibSizeLimitError and CircularDependencyError propagate immediately.
+  as .errors on ResolveResult rather than aborting mid-run.
+- MibSizeLimitError propagates immediately (it is a configuration error).
+- CircularDependencyError propagates immediately.
 """
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
 
-from trishul_smi.errors import CircularDependencyError, MibSizeLimitError, ResolveError
+from trishul_smi.errors import CircularDependencyError, MibSizeLimitError
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.parser.smi_parser import SmiParser
+from trishul_smi.reader.base import FetchProtocol
 from trishul_smi.resolver.cache import MibCache
 from trishul_smi.resolver.dependency import topological_sort
 
@@ -51,7 +52,9 @@ class MibResolver:
     MibModule objects, fetching transitive dependencies automatically.
 
     Args:
-        reader: An AbstractReader or ReaderChain used to fetch raw MIB text.
+        reader: Any object satisfying FetchProtocol (AbstractReader subclass
+                or ReaderChain). Typed as FetchProtocol so mypy validates the
+                .fetch() contract without requiring inheritance.
         parser: A SmiParser instance (create once, reuse — grammar is cached).
         cache:  Optional MibCache. When provided, compiled modules are read
                 from / written to disk, skipping fetch+parse on subsequent runs.
@@ -59,7 +62,7 @@ class MibResolver:
 
     def __init__(
         self,
-        reader: object,   # AbstractReader | ReaderChain
+        reader: FetchProtocol,
         parser: SmiParser,
         cache: MibCache | None = None,
     ) -> None:
@@ -74,14 +77,14 @@ class MibResolver:
             ResolveResult with .modules in topological order and .errors
             for anything that failed.
         """
-        fetched: dict[str, MibModule] = {}   # name → parsed module
-        errors:  dict[str, Exception] = {}   # name → exception
+        fetched: dict[str, MibModule] = {}
+        errors:  dict[str, Exception] = {}
         pending: set[str] = set(mib_names)
 
         while pending:
             # --- Cache check (synchronous, cheap) ---
             still_pending: set[str] = set()
-            for name in sorted(pending):  # sorted → deterministic gather order
+            for name in sorted(pending):
                 if self._cache is not None:
                     cached = self._cache.get(name)
                     if cached is not None:
@@ -94,7 +97,7 @@ class MibResolver:
                 break
 
             # --- Concurrent fetch + parse ---
-            names_ordered = sorted(still_pending)  # deterministic task order
+            names_ordered = sorted(still_pending)
             results = await asyncio.gather(
                 *[self._fetch_and_parse(name) for name in names_ordered],
                 return_exceptions=True,
@@ -103,7 +106,13 @@ class MibResolver:
             newly_fetched: set[str] = set()
             for name, result in zip(names_ordered, results):
                 if isinstance(result, MibSizeLimitError):
-                    raise  # propagate immediately — size limit is a config error
+                    # Propagate immediately — size limit is a config error,
+                    # not a per-module failure. Use `raise result` (not bare
+                    # `raise`) because asyncio.gather(return_exceptions=True)
+                    # returns exceptions as *values*, not as the active
+                    # exception — bare `raise` would hit RuntimeError:
+                    # "No active exception to re-raise".
+                    raise result
                 elif isinstance(result, Exception):
                     errors[name] = result
                 else:
@@ -123,7 +132,7 @@ class MibResolver:
         try:
             order = topological_sort(fetched)
         except CircularDependencyError:
-            raise  # propagate immediately
+            raise
 
         return ResolveResult(
             modules=[fetched[name] for name in order],
