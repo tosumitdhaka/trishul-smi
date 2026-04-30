@@ -42,7 +42,7 @@ app = typer.Typer(
     name="trishul-smi",
     help="Compile SNMP MIB definitions to JSON or pysnmp format.",
     no_args_is_help=True,
-    pretty_exceptions_enable=False,  # our own handlers surface errors cleanly
+    pretty_exceptions_enable=False,
 )
 
 console = Console()
@@ -129,20 +129,14 @@ def compile(  # noqa: A001
 ) -> None:
     """Compile one or more MIB definitions and all transitive dependencies."""
 
-    # --- Resolve cache_dir ---
-    # Optional[str] lets the user pass "" to explicitly disable the cache.
     resolved_cache: Path | None
     if cache_dir is None:
-        resolved_cache = Path.home() / ".cache" / "trishul-smi"  # default on
+        resolved_cache = Path.home() / ".cache" / "trishul-smi"
     elif cache_dir == "":
-        resolved_cache = None   # explicitly disabled
+        resolved_cache = None
     else:
         resolved_cache = Path(cache_dir)
 
-    # --- Build config (validates all fields eagerly) ---
-    # Only pass `sources` and `formats` when the user explicitly supplied them;
-    # omitting them lets CompilerConfig use its own documented defaults without
-    # reaching into __dataclass_fields__.
     try:
         extra: dict = {}
         if sources:
@@ -163,7 +157,6 @@ def compile(  # noqa: A001
         err.print(f"[bold red]Configuration error:[/bold red] {exc}")
         raise typer.Exit(2) from exc
 
-    # --- Compile ---
     console.print(
         f"[bold]Compiling[/bold] {', '.join(mib_names)} → "
         f"{output_dir} [dim]({', '.join(config.formats)})[/dim]"
@@ -179,7 +172,6 @@ def compile(  # noqa: A001
         err.print(f"[bold red]Fatal error:[/bold red] {exc}")
         raise typer.Exit(1) from exc
 
-    # --- Display results ---
     _print_results(results, verbose=verbose)
 
     if any(r.status == "failed" for r in results):
@@ -197,12 +189,12 @@ async def _compile_async(
     mib_names: list[str],
 ) -> list[CompileResult]:
     """Wire up readers and run the compiler inside the async event loop."""
-    # Deferred imports: avoids pulling httpx into the import graph at CLI
-    # startup for users who use the library programmatically without HTTP.
-    from trishul_smi.reader.file import FileReader
-    from trishul_smi.reader.http import HttpReader
+    # Actual module paths: reader.localfile and reader.httpclient.
+    # Deferred to avoid pulling httpx into the import graph at CLI startup
+    # for users who use the library programmatically without HTTP.
+    from trishul_smi.reader.localfile import FileReader
+    from trishul_smi.reader.httpclient import HttpReader
 
-    # FileReaders first so local copies take priority over HTTP
     for d in mib_dirs:
         if not d.is_dir():
             err.print(
@@ -211,7 +203,6 @@ async def _compile_async(
             continue
         compiler.add_reader(FileReader(d))
 
-    # HttpReader is always present so external transitive deps are reachable
     async with HttpReader(config.sources) as http:
         compiler.add_reader(http)
         return await compiler.compile(*mib_names)

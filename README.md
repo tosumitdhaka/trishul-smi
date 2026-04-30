@@ -22,7 +22,7 @@ and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 - **Cycle detection** — Kahn’s algorithm with actionable error message listing cycle members
 - **Pluggable readers** — `FileReader`, `HttpReader`, `ZipReader`, composable via `ReaderChain`
 - **Atomic cache writes** — `rename(2)` on POSIX; no corrupted cache files on crash
-- **SMIv1 + SMIv2** — single Lark grammar handles both dialects
+- **SMIv1 + SMIv2** — separate Lark grammars (`smiv1.lark`, `smiv2.lark`) sharing a `common.lark` token set
 
 ---
 
@@ -63,12 +63,12 @@ trishul-smi compile IF-MIB --verbose
 Output:
 ```
 Compiling IF-MIB → ./mibs-output (json)
- Status    Module       Details
- ✅        SNMPv2-SMI
- ✅        SNMPv2-CONF
- ✅        IF-MIB
+Status    Module      Details
+✅        SNMPv2-SMI
+✅        SNMPv2-CONF
+✅        IF-MIB
 
-  3 compiled
+3 compiled
 ```
 
 Exit codes: `0` all compiled — `1` any failure — `2` bad option.
@@ -139,12 +139,15 @@ trishul_smi/
 ├── errors.py        Exception hierarchy (TrishulError → flat subclasses)
 ├── reader/
 │   ├── base.py        AbstractReader, FetchProtocol
-│   ├── file.py        FileReader  (local filesystem)
-│   ├── http.py        HttpReader  (httpx + tenacity retries, async CM)
-│   ├── zip.py         ZipReader   (in-memory ZIP archives)
+│   ├── localfile.py   FileReader  (local filesystem)
+│   ├── httpclient.py  HttpReader  (httpx + tenacity retries, async CM)
+│   ├── zipreader.py   ZipReader   (in-memory ZIP archives)
 │   └── chain.py       ReaderChain (fallback chain, MibNotFoundError-only passthrough)
 ├── parser/
-│   ├── grammar/       smi.lark    (SMIv1 + SMIv2 Lark grammar)
+│   ├── grammar/
+│   │   ├── smiv1.lark   SMIv1 grammar
+│   │   ├── smiv2.lark   SMIv2 grammar
+│   │   └── common.lark  Shared token definitions
 │   ├── transformer.py MibTransformer (Lark → MibModule)
 │   └── smi_parser.py  SmiParser   (grammar singleton, thread-safe parse)
 ├── resolver/

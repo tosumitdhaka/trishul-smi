@@ -28,14 +28,14 @@ First public release.
 
 #### Readers (`trishul_smi/reader/`)
 - `AbstractReader` / `FetchProtocol` — structural protocol for type-safe reader composition
-- `FileReader` — resolves MIBs from local filesystem directories
-- `HttpReader` — async context manager; httpx + tenacity retries; `time.monotonic()` TTL for in-memory cache
-- `ZipReader` — reads MIBs from in-memory ZIP archives
+- `FileReader` (`localfile.py`) — resolves MIBs from local filesystem directories
+- `HttpReader` (`httpclient.py`) — async context manager; httpx + tenacity retries; `time.monotonic()` TTL for in-memory cache
+- `ZipReader` (`zipreader.py`) — reads MIBs from in-memory ZIP archives
 - `ReaderChain` — fallback chain; only `MibNotFoundError` triggers fallback; all other exceptions propagate
+- `trishul_smi.reader` re-exports all four classes for clean top-level imports
 
 #### Parser (`trishul_smi/parser/`)
-- Lark grammar covering SMIv1 and SMIv2 (MODULE-IDENTITY, OBJECT-TYPE, NOTIFICATION-TYPE,
-  TRAP-TYPE, TEXTUAL-CONVENTION, OBJECT-GROUP, MODULE-COMPLIANCE, IMPORTS)
+- Lark grammars: `smiv1.lark` (SMIv1), `smiv2.lark` (SMIv2), `common.lark` (shared tokens)
 - `MibTransformer` — Lark tree → `MibModule`; external imports silently skipped
 - `SmiParser` — grammar singleton (compiled once), thread-safe `parse()` for `asyncio.to_thread`
 
@@ -56,6 +56,18 @@ First public release.
 - `trishul-smi version`
 - `python -m trishul_smi` entry point
 - `--cache-dir ""` to disable cache; `--format` / `--source` / `--mib-dir` all repeatable
+
+#### CI (`/.github/workflows/`)
+- `ci.yml` — lint (ruff) + typecheck (mypy) + test matrix (Python 3.10–3.13) with coverage upload
+- `release.yml` — test → build → PyPI OIDC trusted publish → GitHub Release on `v*.*.*` tags
+
+### Fixed
+
+- Removed dead `with patch(...) / pytest.raises(AttributeError): pass` block in
+  `tests/test_compiler.py` that would have caused CI failure on the formatter-error test.
+- Corrected CLI reader import paths (`reader.localfile`, `reader.httpclient`) which were
+  written as `reader.file` / `reader.http` — non-existent modules that would have raised
+  `ImportError` on first `trishul-smi compile` invocation.
 
 ### Known Limitations
 
