@@ -1,6 +1,6 @@
 # trishul-smi — Project Plan
 
-> **Status:** Draft v0.3 — review findings applied  
+> **Status:** v0.4 — final, locked for implementation  
 > **Author:** GhaatakJi  
 > **Last updated:** 2026-04-30
 
@@ -58,6 +58,7 @@ Rather than patching pysmi incrementally, `trishul-smi` is a **ground-up rewrite
 - [ ] Python API: `MibCompiler` class
 - [ ] Full type annotations (mypy strict)
 - [ ] Test coverage ≥ 80%
+- [ ] Published to PyPI as `0.1.0` (unstable marker)
 
 ### Nice to Have (v1.x)
 - [ ] OID index file generation
@@ -145,25 +146,44 @@ trishul-smi convert IF_MIB.py     # PySNMP .py → JSON
 
 ### DD-4: Jinja2 for PySNMP `.py` codegen from v1.0
 
-**Decision:** Use Jinja2 for `PySnmpCodeGen` from day one. Avoids two code paths (manual string building vs. template). Jinja2 is already a clean, testable abstraction with a trivial pip install. Templates live in `codegen/templates/pysnmp_module.j2`.
+**Decision:** Use Jinja2 for `PySnmpCodeGen` from day one. Avoids two code paths (manual string building vs. template). Templates live in `codegen/templates/pysnmp_module.j2`.
 
 ---
 
 ### DD-5: No MIB borrowing in v1.0
 
-**Decision:** MIB borrowing (fetching pre-compiled fallback MIBs when compilation fails) is deferred to v1.x. In v1.0, if a MIB cannot be fetched or parsed, the compile fails with a clear `MibNotFoundError` or `ParseError`. `CompileResult.status` is `Literal["compiled", "cached", "failed"]` in v1.0.
+**Decision:** Deferred to v1.x. In v1.0 a failed fetch/parse raises `MibNotFoundError` or `ParseError`. `CompileResult.status` is `Literal["compiled", "cached", "failed"]`.
 
 ---
 
 ### DD-6: Parallel async fetching of independent dependencies
 
-**Decision:** Yes, from v1.0. Since `HttpReader` is already async, the resolver uses `asyncio.gather()` to fetch all unresolved imports of a given MIB in parallel before parsing them. This is architecturally cheap and avoids making the resolver sync-shaped in v1.0 (hard to parallelize later).
+**Decision:** Yes, from v1.0. Resolver uses `asyncio.gather()` per BFS level. Architecturally cheap; deferring would make the resolver hard to parallelize later.
 
 ---
 
 ### DD-7: orjson for disk cache serialization (not pickle)
 
-**Decision:** Disk cache serializes `MibModule` dataclasses to JSON via `orjson` (already in the stack). Pickle is banned — it silently breaks on any model change between versions and is a security risk. Cache files are stored as `<mib_name>.json` under `~/.cache/trishul-smi/`.
+**Decision:** Disk cache uses `orjson` JSON serialization. Pickle banned — silently breaks on model changes, security risk.
+
+---
+
+### DD-8: PySnmpCodeGen covers scalars, tables, notifications (minimum subset)
+
+**Decision:** `PySnmpCodeGen` targets the **common subset** sufficient for 95% of MIBs in v1.0:
+- Scalar `OBJECT-TYPE` definitions
+- Table + row `OBJECT-TYPE` (with INDEX / AUGMENTS)
+- `NOTIFICATION-TYPE` definitions
+- `TEXTUAL-CONVENTION` types
+- `MODULE-IDENTITY` metadata
+
+Full format edge cases (AGENT-CAPABILITIES, MODULE-COMPLIANCE, OBJECT-GROUP) deferred to v1.x.
+
+---
+
+### DD-9: Publish to PyPI as `0.1.0` from day one
+
+**Decision:** Publish early with `Development Status :: 3 - Alpha` classifier. Costs nothing; enables `pip install trishul-smi` from day one and creates accountability. Version `0.1.0` published when end-to-end compile of `IF-MIB` works.
 
 ---
 
@@ -215,14 +235,15 @@ trishul_smi/
 ├── models/               ← MibModule, MibObject, MibType, CompileResult
 ├── parser/
 │   ├── grammar/
+│   │   ├── common.lark   ← shared terminals (string literals, OIDs, comments)
 │   │   ├── smiv2.lark    ← complete SMIv2 grammar (RFC 2578)
-│   │   └── smiv1.lark    ← independent SMIv1 grammar (RFC 1155)
+│   │   └── smiv1.lark    ← complete SMIv1 grammar (RFC 1155)
 │   ├── transformer.py    ← Lark tree → MibModule
 │   └── smi_parser.py     ← public parse(text) → MibModule
 ├── reader/
 │   ├── base.py           ← AbstractReader ABC
 │   ├── localfile.py      ← filesystem reader (enforces max_mib_size)
-├──   ├── httpclient.py     ← async HTTP reader (enforces max_mib_size, ETag caching)
+│   ├── httpclient.py     ← async HTTP reader (enforces max_mib_size, ETag + TTL)
 │   ├── zipreader.py      ← ZIP archive reader
 │   └── chain.py          ← ReaderChain
 ├── resolver/
@@ -232,7 +253,7 @@ trishul_smi/
 │   ├── base.py
 │   ├── json_codegen.py   ← MibModule → JSON          [PRIMARY]
 │   ├── pysnmp_codegen.py ← MibModule → PySNMP .py   [SECONDARY, Jinja2]
-│   ├── pysnmp_reader.py  ← PySNMP .py → JSON        [UTILITY]
+│   ├── pysnmp_reader.py  ← PySNMP .py → MibModule   [UTILITY]
 │   └── templates/
 │       └── pysnmp_module.j2
 ├── writer/
@@ -247,18 +268,19 @@ trishul_smi/
 
 ### 6.4 Build Order
 
-1. `models/` — data structures, no deps
-2. `errors.py` — exception hierarchy
-3. `reader/` — fetch raw MIB text
-4. `parser/grammar/smiv2.lark` — hardest piece, SMIv2 first
-5. `parser/transformer.py` + `smi_parser.py`
-6. `resolver/` — Kahn’s algorithm + parallel fetch
-7. `codegen/json_codegen.py` — primary output
-8. `codegen/pysnmp_codegen.py` + `templates/` — Jinja2 template
-9. `codegen/pysnmp_reader.py` — reverse utility
-10. `writer/`
-11. `compiler.py` — wire everything
-12. `cli/` — last, always backed by real logic
+1. `models/` — pure data structures, no deps
+2. `config.py` — `CompilerConfig` dataclass (needed by reader, compiler, cli)
+3. `errors.py` — exception hierarchy
+4. `reader/` — fetch raw MIB text
+5. `parser/grammar/smiv2.lark` — hardest piece, SMIv2 first
+6. `parser/transformer.py` + `smi_parser.py`
+7. `resolver/` — Kahn’s algorithm + parallel fetch
+8. `codegen/json_codegen.py` — primary output
+9. `codegen/pysnmp_codegen.py` + `templates/pysnmp_module.j2`
+10. `codegen/pysnmp_reader.py` — reverse utility
+11. `writer/`
+12. `compiler.py` — wire everything
+13. `cli/` — last, always backed by real logic
 
 ---
 
@@ -292,18 +314,11 @@ trishul_smi/
 
 ### 7.2 PySNMP `.py` Output
 
-Standard PySNMP MIB module format (v6+ compatible), generated from a **Jinja2 template** (`codegen/templates/pysnmp_module.j2`) from v1.0 onwards.
+Generated from Jinja2 template (`codegen/templates/pysnmp_module.j2`). Covers the common subset defined in DD-8: scalars, tables, notifications, textual-conventions, module-identity.
 
 ---
 
-## 8. Open Questions (Remaining)
-
-- [ ] Should `pysnmp_codegen` support the **full** PySNMP module format or just the common subset?
-- [ ] Should we publish to **PyPI** from day one or only after v1.0 is stable?
-
----
-
-## 9. Success Criteria
+## 8. Success Criteria
 
 The project is considered v1.0 ready when:
 
@@ -313,3 +328,4 @@ The project is considered v1.0 ready when:
 - Test suite passes with ≥ 80% coverage
 - `mypy --strict` passes with zero errors
 - `ruff check` passes with zero warnings
+- Package published to PyPI as `trishul-smi 0.1.0`
