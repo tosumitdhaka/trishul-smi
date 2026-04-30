@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 from rich import box
@@ -138,7 +138,9 @@ def compile(  # noqa: A001
         resolved_cache = Path(cache_dir)
 
     try:
-        extra: dict = {}
+        # dict[str, Any]: values are either list[str] or left absent entirely.
+        # Any is correct here — mypy cannot check **kwargs spread into a dataclass.
+        extra: dict[str, Any] = {}
         if sources:
             extra["sources"] = sources
         if formats:
