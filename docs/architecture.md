@@ -1,6 +1,6 @@
 # trishul-smi — Architecture
 
-> **Status:** v0.1 — in sync with plan.md Draft v0.2  
+> **Status:** v0.2 — review findings applied, in sync with plan.md v0.3  
 > **Author:** GhaatakJi  
 > **Last updated:** 2026-04-30
 
@@ -45,30 +45,32 @@ trishul_smi/
 ├── parser/
 │   ├── __init__.py
 │   ├── grammar/
-│   │   ├── smiv2.lark     ← SMIv2 EBNF grammar (RFC 2578)
-│   │   └── smiv1.lark     ← SMIv1 extensions (RFC 1155)
+│   │   ├── smiv2.lark     ← complete SMIv2 grammar (RFC 2578)
+│   │   └── smiv1.lark     ← independent SMIv1 grammar (RFC 1155)
 │   ├── transformer.py     ← Lark Transformer → MibModule
 │   └── smi_parser.py      ← public API: parse(text) → MibModule
 │
 ├── reader/
 │   ├── __init__.py
 │   ├── base.py            ← AbstractReader ABC
-│   ├── localfile.py       ← FileReader
-│   ├── httpclient.py      ← HttpReader (async, httpx)
+│   ├── localfile.py       ← FileReader (enforces max_mib_size)
+│   ├── httpclient.py      ← HttpReader (enforces max_mib_size, ETag caching, TTL)
 │   ├── zipreader.py       ← ZipReader
 │   └── chain.py           ← ReaderChain
 │
 ├── resolver/
 │   ├── __init__.py
-│   ├── resolver.py        ← DependencyResolver
-│   └── cache.py           ← MibCache
+│   ├── resolver.py        ← DependencyResolver (Kahn’s + asyncio.gather)
+│   └── cache.py           ← MibCache (memory + orjson disk cache)
 │
 ├── codegen/
 │   ├── __init__.py
 │   ├── base.py            ← AbstractCodeGen ABC
-│   ├── json_codegen.py    ← MibModule → JSON dict     [PRIMARY]
-│   ├── pysnmp_codegen.py  ← MibModule → PySNMP .py   [SECONDARY]
-│   └── pysnmp_reader.py   ← PySNMP .py → JSON        [UTILITY]
+│   ├── json_codegen.py    ← MibModule → JSON            [PRIMARY]
+│   ├── pysnmp_codegen.py  ← MibModule → PySNMP .py     [SECONDARY, Jinja2]
+│   ├── pysnmp_reader.py   ← PySNMP .py → MibModule     [UTILITY]
+│   └── templates/
+│       └── pysnmp_module.j2
 │
 ├── writer/
 │   ├── __init__.py
@@ -117,6 +119,10 @@ class MibModule:
     notifications: dict[str, MibObject]
     source_text: str | None = None       # original raw ASN.1 (for debugging)
 
+    def all_imports(self) -> list[str]:
+        """Return flat list of all imported MIB module names."""
+        return list(self.imports.keys())
+
 # models/mib_object.py
 @dataclass
 class MibObject:
@@ -143,7 +149,7 @@ class MibType:
 @dataclass
 class CompileResult:
     name: str
-    status: Literal["compiled", "cached", "borrowed", "failed"]
+    status: Literal["compiled", "cached", "failed"]   # "borrowed" deferred to v1.x
     output_paths: list[Path]
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
@@ -170,9 +176,14 @@ class ReaderChain:
 ```
 
 **Key contracts:**
-- `FileReader`: uses `with open(...)`, never leaks file handles
-- `HttpReader`: `httpx.AsyncClient` with explicit `timeout`, uses `tenacity` retry,
-  implements `async with` context manager to close session cleanly
+- `FileReader`: uses `with open(...)`, enforces `max_mib_size` on read
+- `HttpReader`:
+  - `httpx.AsyncClient` with explicit `timeout` from `CompilerConfig`
+  - `tenacity` retry with exponential backoff
+  - `async with` context manager to close session cleanly
+  - **ETag caching**: stores `ETag` header per MIB; sends `If-None-Match` on next fetch — skips re-download if unchanged
+  - **TTL**: remote MIBs cached for 7 days by default; configurable via `CompilerConfig.cache_ttl_days`
+  - Enforces `max_mib_size` via `Content-Length` check before download
 - `ZipReader`: seeds `data: bytes = b""` before loop — no `NameError` on nested ZIPs
 
 ---
@@ -189,16 +200,36 @@ class SmiParser:
         """Parse raw ASN.1 text. Raises ParseError on invalid input."""
 ```
 
-**Grammar strategy:**
-- `smiv2.lark` — covers 90%+ of modern MIBs, uses LALR(1) (fast)
-- `smiv1.lark` — imports `smiv2.lark` and overrides differing rules
-- Fall back to Earley algorithm if LALR fails (handles vendor dialect ambiguity)
-- `MibTransformer(Transformer)` walks the Lark tree and constructs `MibModule`
+**Grammar strategy — two independent files (no inheritance):**
+
+Lark does not support grammar rule overriding via file imports. Both grammars are **standalone complete files**:
+- `smiv2.lark` — complete SMIv2 grammar (RFC 2578/2579/2580), LALR(1)
+- `smiv1.lark` — complete SMIv1 grammar (RFC 1155/1212/1215), LALR(1)
+
+Dialect is auto-detected from the MIB source (`DEFINITIONS ::= BEGIN` preamble patterns). `SmiParser` picks the appropriate grammar file.
+
+Both grammars share a common lexer terminal file (`grammar/common.lark`) for tokens that are identical in both (string literals, OID notation, comments).
+
+**Earley fallback for vendor quirks:**
+```python
+try:
+    tree = Lark(grammar, parser="lalr").parse(text)
+except UnexpectedInput:
+    tree = Lark(grammar, parser="earley").parse(text)  # slower, handles ambiguity
+```
+
+**Parser → async boundary:**
+
+`SmiParser.parse()` is CPU-bound sync code. Called from async context via:
+```python
+mib = await asyncio.to_thread(parser.parse, raw_text)
+```
+This offloads parsing to a thread pool, keeping the event loop unblocked.
 
 **Parser pipeline:**
 ```
 raw text
-  → Lark(grammar, parser="lalr").parse(text)
+  → asyncio.to_thread(Lark.parse)
   → Tree
   → MibTransformer().transform(tree)
   → MibModule
@@ -208,7 +239,7 @@ raw text
 
 ### 3.4 `resolver/`
 
-Reads `MibModule.imports`, fetches + parses all dependencies, returns a topologically ordered list.
+Reads `MibModule.imports`, fetches + parses all dependencies in parallel, returns a topologically ordered list.
 
 ```python
 # resolver/resolver.py
@@ -217,34 +248,63 @@ class DependencyResolver:
 
     async def resolve(self, root: MibModule) -> list[MibModule]:
         """
-        BFS from root. Returns list ordered: dependencies first, root last.
+        Kahn’s algorithm. Returns list ordered: dependencies first, root last.
         Raises CircularDependencyError on cycles.
+        Independent deps at each level are fetched in parallel via asyncio.gather.
         """
 ```
 
-**Algorithm:**
+**Algorithm — Kahn’s (correct topological sort with cycle detection):**
 ```python
-queue = deque([root])
+# Phase 1: fetch all transitive deps (parallel per BFS level)
+all_mibs: dict[str, MibModule] = {}
+queue = deque([root.name])
 seen: set[str] = set()
-ordered: list[MibModule] = []
 
 while queue:
-    mib = queue.popleft()
-    if mib.name in seen:
-        continue
-    seen.add(mib.name)
-    for dep_name in mib.all_imports():
-        if dep_name not in seen:
-            dep_text = await reader.fetch(dep_name)
-            dep_mib = parser.parse(dep_text)
-            queue.append(dep_mib)
-    ordered.append(mib)
+    level = list(queue)             # all names at this BFS level
+    queue.clear()
+    # parallel fetch+parse for all unseen names at this level
+    results = await asyncio.gather(*[
+        fetch_and_parse(name) for name in level if name not in seen
+    ])
+    for mib in results:
+        seen.add(mib.name)
+        all_mibs[mib.name] = mib
+        queue.extend(mib.all_imports())
+
+# Phase 2: Kahn’s topological sort
+in_degree = {name: 0 for name in all_mibs}
+for mib in all_mibs.values():
+    for dep in mib.all_imports():
+        if dep in in_degree:
+            in_degree[mib.name] += 1
+
+ready = deque([n for n, d in in_degree.items() if d == 0])
+ordered: list[MibModule] = []
+while ready:
+    name = ready.popleft()
+    ordered.append(all_mibs[name])
+    for mib in all_mibs.values():
+        if name in mib.all_imports():
+            in_degree[mib.name] -= 1
+            if in_degree[mib.name] == 0:
+                ready.append(mib.name)
+
+if len(ordered) != len(all_mibs):
+    raise CircularDependencyError(...)
+
+return ordered
 ```
 
-**`MibCache`:**
-- In-memory dict by default: `dict[str, MibModule]`
-- Optional disk cache: pickled `MibModule` objects under `~/.cache/trishul-smi/`
-- Cache key: `mib_name` — invalidated when source file mtime changes
+**`MibCache` — two layers:**
+
+| Layer | Storage | Key | Invalidation |
+|---|---|---|---|
+| L1 Memory | `dict[str, MibModule]` | `mib_name` | Per-process lifetime |
+| L2 Disk | `~/.cache/trishul-smi/<mib>.json` | `mib_name` | File mtime (local); TTL + ETag (remote) |
+
+**Disk format:** `orjson`-serialised `MibModule` dataclass to JSON. **No pickle** — pickle silently breaks on model changes between versions.
 
 ---
 
@@ -255,16 +315,31 @@ Transforms a `MibModule` into an output artifact. Multiple codegens can run on t
 ```python
 # codegen/base.py
 class AbstractCodeGen(ABC):
+    suffix: str                          # file extension: ".json" or ".py"
+
     @abstractmethod
     def generate(self, mib: MibModule) -> str:
-        """Generate output string (JSON or .py) from a MibModule."""
+        """Generate output string from a MibModule."""
 ```
 
 | Class | Input | Output | Method |
 |---|---|---|---|
-| `JsonCodeGen` | `MibModule` | JSON string | Walks dataclass, uses `orjson` |
-| `PySnmpCodeGen` | `MibModule` | PySNMP `.py` string | Jinja2 template (v1.x) / manual string building (v1.0) |
-| `PySnmpReader` | PySNMP `.py` file path | `MibModule` | Python `ast` module — no regex |
+| `JsonCodeGen` | `MibModule` | JSON string | Walks dataclass, serialises via `orjson` |
+| `PySnmpCodeGen` | `MibModule` | PySNMP `.py` string | **Jinja2 template** from v1.0 |
+| `PySnmpReader` | PySNMP `.py` path | `MibModule` | Python `ast` module — no regex |
+
+**`PySnmpCodeGen` uses Jinja2 from day one** — single code path, no manual string building:
+```python
+from jinja2 import Environment, PackageLoader
+
+class PySnmpCodeGen(AbstractCodeGen):
+    suffix = ".py"
+    _env = Environment(loader=PackageLoader("trishul_smi", "codegen/templates"))
+    _tmpl = _env.get_template("pysnmp_module.j2")
+
+    def generate(self, mib: MibModule) -> str:
+        return self._tmpl.render(mib=mib)
+```
 
 **`PySnmpReader` — how it works:**
 ```
@@ -325,12 +400,12 @@ class MibCompiler:
 
 **Compile flow per MIB:**
 ```
-1. reader.fetch(name)          → raw ASN.1 text
-2. parser.parse(text)          → MibModule
-3. resolver.resolve(mib)       → [dep1, dep2, ..., mib] (ordered)
+1. reader.fetch(name)                    → raw ASN.1 text
+2. await asyncio.to_thread(parser.parse) → MibModule          [offloads CPU to thread]
+3. resolver.resolve(mib)                 → [dep1, dep2, ..., mib]  (parallel + ordered)
 4. for each mib in ordered:
      for codegen in codegens:
-       content = codegen.generate(mib)
+       content = codegen.generate(mib)   (sync, fast)
        writer.write(mib.name, content, codegen.suffix)
 5. return list[CompileResult]
 ```
@@ -351,7 +426,8 @@ class CompilerConfig:
     http_timeout: float = 30.0
     http_retries: int = 3
     cache_dir: Path | None = Path.home() / ".cache" / "trishul-smi"
-    max_mib_size: int = 10 * 1024 * 1024   # 10 MB
+    cache_ttl_days: int = 7              # TTL for HTTP-fetched MIBs
+    max_mib_size: int = 10 * 1024 * 1024 # enforced by FileReader + HttpReader
 ```
 
 ---
@@ -366,13 +442,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from trishul_smi.models.mib_module import MibModule
 
-class TrishulError(Exception):            """Base"""
-class MibNotFoundError(TrishulError):     """Reader could not locate MIB"""
-class ParseError(TrishulError):           """Grammar/syntax error in ASN.1 source"""
+class TrishulError(Exception):               """Base"""
+class MibNotFoundError(TrishulError):        """Reader could not locate MIB"""
+class ParseError(TrishulError):              """Grammar/syntax error in ASN.1 source"""
 class CircularDependencyError(TrishulError): """Import cycle detected"""
-class CodeGenError(TrishulError):         """Output generation failed"""
-class WriterError(TrishulError):          """Could not write output artifact"""
-class MibCacheError(TrishulError):        """Cache read/write failure"""
+class CodeGenError(TrishulError):            """Output generation failed"""
+class WriterError(TrishulError):             """Could not write output artifact"""
+class MibCacheError(TrishulError):           """Cache read/write failure"""
+class MibSizeLimitError(TrishulError):       """MIB exceeds max_mib_size limit"""
 ```
 
 ---
@@ -413,9 +490,11 @@ cli/main.py
   ├─ builds writer = FileWriter(output_dir)
   └─ awaits MibCompiler.compile("IF-MIB")
               │
-              ├─ reader.fetch("IF-MIB")  ──▶  raw ASN.1 text
-              ├─ parser.parse(text)      ──▶  MibModule(name="IF-MIB", imports={...})
-              ├─ resolver.resolve(mib)   ──▶  [SNMPv2-SMI, SNMPv2-TC, IF-MIB]
+              ├─ reader.fetch("IF-MIB")                        → raw ASN.1
+              ├─ asyncio.to_thread(parser.parse, text)         → MibModule
+              ├─ resolver.resolve(mib)                         → ordered list
+              │     ├─ asyncio.gather(fetch SNMPv2-SMI, SNMPv2-TC)  [parallel]
+              │     └─ Kahn’s sort → [SNMPv2-SMI, SNMPv2-TC, IF-MIB]
               │
               └─ for each mib in [SNMPv2-SMI, SNMPv2-TC, IF-MIB]:
                    JsonCodeGen.generate(mib)    → "{ ... }"
@@ -439,20 +518,22 @@ display.py renders:
 
 | Layer | Tool | Approach |
 |---|---|---|
-| Models | `pytest` | Simple instantiation + field validation |
+| Models | `pytest` | Instantiation + field validation |
 | Parser | `pytest` | Feed fixture `.mib` files, assert `MibModule` shape |
-| Readers | `pytest` + `pytest-httpx` | Mock HTTP, tmp dirs for file/zip |
-| Resolver | `pytest` | Mock reader + parser, verify BFS order + cycle detection |
+| Readers | `pytest` + `pytest-httpx` | Mock HTTP, tmp dirs for file/zip, size limit tests |
+| Resolver | `pytest-asyncio` | Mock reader+parser, verify Kahn’s order + cycle detection |
 | CodeGen | `pytest` | Known `MibModule` → assert JSON/py output structure |
 | Writer | `pytest` | tmp dirs, assert files written correctly |
 | Compiler | `pytest-asyncio` | Integration: full pipeline with fixture MIBs |
 | CLI | `typer.testing.CliRunner` | Smoke test commands end-to-end |
 
 **Fixtures** (`tests/fixtures/`):
-- `minimal.mib` — smallest valid SMIv2 module (for parser unit tests)
-- `IF-MIB.mib` — real-world SMIv2 MIB (for integration tests)
-- `IF_MIB.py` — PySNMP compiled version (for `pysnmp_reader` tests)
-- `circular_a.mib` + `circular_b.mib` — for cycle detection tests
+- `minimal.mib` — smallest valid SMIv2 module (parser unit tests)
+- `minimal_v1.mib` — smallest valid SMIv1 module
+- `IF-MIB.mib` — real-world SMIv2 MIB (integration tests)
+- `IF_MIB.py` — PySNMP compiled version (pysnmp_reader tests)
+- `circular_a.mib` + `circular_b.mib` — cycle detection tests
+- `oversized.mib` — file exceeding `max_mib_size` (size limit tests)
 
 ---
 
@@ -476,16 +557,18 @@ No module → cli
 No module → compiler  (except cli)
 ```
 
-`models` and `errors` are the only true shared-leaf packages. Nothing in `reader`, `parser`, `resolver`, `codegen`, or `writer` imports from each other — all cross-stage communication goes through `models` datatypes.
+`models` and `errors` are the only true shared-leaf packages. Nothing in `reader`, `parser`, `resolver`, `codegen`, or `writer` imports from each other.
 
 ---
 
 ## 7. Key Design Principles
 
 1. **No `**kwargs` in public APIs** — all options are explicit typed parameters
-2. **No circular imports** — `TYPE_CHECKING` guard for forward references
+2. **No circular imports** — `TYPE_CHECKING` guard for forward references in `errors.py`
 3. **No bare `open()`** — always `with open(...) as f:`
 4. **No unguarded loops** — always initialise accumulator variables before loops
-5. **Async I/O, sync logic** — readers and compiler are async; parser, codegen, writer are sync
-6. **One responsibility per module** — reader fetches, parser parses, resolver resolves
-7. **Fail fast, fail clearly** — typed exceptions with descriptive messages, no silent swallowing
+5. **Async I/O, sync logic** — readers/resolver are async; parser uses `asyncio.to_thread`; codegen/writer are sync
+6. **No pickle** — disk cache uses `orjson` JSON serialization only
+7. **One responsibility per module** — reader fetches, parser parses, resolver resolves
+8. **Fail fast, fail clearly** — typed exceptions with descriptive messages, no silent swallowing
+9. **Size limits enforced at source** — `FileReader` and `HttpReader` both enforce `max_mib_size`
