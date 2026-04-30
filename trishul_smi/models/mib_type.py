@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -9,5 +10,5 @@ class MibType:
 
     name: str
     base_type: str  # "OCTET STRING", "Integer32", "DisplayString", ...
-    constraints: dict | None = None  # range / size / enum constraints
+    constraints: dict[str, Any] | None = None  # range / size / enum constraints
     description: str | None = None

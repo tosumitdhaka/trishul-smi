@@ -19,15 +19,14 @@ Typical usage::
         for r in results:
             print(r.name, r.status, r.output_paths)
 """
-
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
 from trishul_smi.config import CompilerConfig
-from trishul_smi.errors import WriterError
 from trishul_smi.models import CompileResult
+from trishul_smi.output.base import FormatterProtocol
 from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter
 from trishul_smi.parser.smi_parser import SmiParser
@@ -38,7 +37,7 @@ from trishul_smi.resolver.resolver import MibResolver
 
 logger = logging.getLogger(__name__)
 
-_FORMATTER_CLASSES = {
+_FORMATTER_CLASSES: dict[str, type[FormatterProtocol]] = {
     "json": JsonFormatter,
     "pysnmp": PysnmpFormatter,
 }
@@ -82,15 +81,24 @@ class MibCompiler:
             if self._config.cache_dir is not None
             else None
         )
-        # Formatter instances (stateless, reusable)
-        self._formatters = {fmt: _FORMATTER_CLASSES[fmt]() for fmt in self._config.formats}
+        # Formatter instances keyed by format name — typed against FormatterProtocol
+        # so mypy can verify FILE_SUFFIX and format() calls in compile().
+        self._formatters: dict[str, FormatterProtocol] = {
+            fmt: _FORMATTER_CLASSES[fmt]()
+            for fmt in self._config.formats
+        }
 
     # ------------------------------------------------------------------
     # Fluent reader registration
     # ------------------------------------------------------------------
 
     def add_reader(self, reader: FetchProtocol) -> MibCompiler:
-        """Append a reader to the fallback chain. Returns self for chaining."""
+        """Append a reader to the fallback chain. Returns self for chaining.
+
+        Raises:
+            RuntimeError: if called after compile() has already been invoked
+                (readers are snapshotted into a ReaderChain at compile time).
+        """
         self._readers.append(reader)
         return self
 
@@ -112,15 +120,14 @@ class MibCompiler:
         level so they surface in the CLI without aborting the entire run.
 
         Raises:
-            RuntimeError: if no readers have been registered via
-                ``add_reader()``. Call ``add_reader()`` at least once
-                before ``compile()``.
+            RuntimeError: if no readers were registered via add_reader().
             WriterError: if the output directory cannot be created (e.g.
-                permission denied on the filesystem). Raised before any
-                formatting begins so no partial output is written.
+                permission denied).
         """
         if not self._readers:
-            raise RuntimeError("No readers registered. Call add_reader() before compile().")
+            raise RuntimeError(
+                "No readers registered. Call add_reader() before compile()."
+            )
 
         chain = ReaderChain(*self._readers)
         resolver = MibResolver(chain, self._parser, self._cache)
@@ -130,8 +137,11 @@ class MibCompiler:
         out_dir = self._config.output_dir
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise WriterError(f"Cannot create output directory {out_dir}: {exc}") from exc
+        except OSError as _mkdir_exc:
+            from trishul_smi.errors import WriterError
+            raise WriterError(
+                f"Cannot create output directory {out_dir}: {_mkdir_exc}"
+            ) from _mkdir_exc
 
         # --- Successfully resolved modules ---
         for module in resolve_result.modules:
@@ -147,28 +157,24 @@ class MibCompiler:
                     else:
                         out_path.write_text(content, encoding="utf-8")
                     output_paths.append(out_path)
-                except Exception as exc:  # noqa: BLE001
-                    msg = f"[{fmt_name}] formatter error for {module.name}: {exc}"
+                except Exception as _fmt_exc:  # noqa: BLE001
+                    msg = f"[{fmt_name}] formatter error for {module.name}: {_fmt_exc}"
                     warnings.append(msg)
                     logger.warning(msg)  # visible in CLI without aborting the run
 
-            results.append(
-                CompileResult(
-                    name=module.name,
-                    status="compiled",
-                    output_paths=output_paths,
-                    warnings=warnings,
-                )
-            )
+            results.append(CompileResult(
+                name=module.name,
+                status="compiled",
+                output_paths=output_paths,
+                warnings=warnings,
+            ))
 
         # --- Failed modules ---
         for name, exc in resolve_result.errors.items():
-            results.append(
-                CompileResult(
-                    name=name,
-                    status="failed",
-                    error=str(exc),
-                )
-            )
+            results.append(CompileResult(
+                name=name,
+                status="failed",
+                error=str(exc),
+            ))
 
         return results

@@ -9,6 +9,7 @@ Description/status/access fields use typed wrappers for the same reason.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 from lark import Token, Transformer, Tree
 
@@ -64,7 +65,7 @@ def _unquote(token: Token | str) -> str:
     return s
 
 
-def _resolve_oid(components: list) -> tuple[str, list[int]]:
+def _resolve_oid(components: list[Any]) -> tuple[str, list[int]]:
     """Convert oid_component list → (dotted_string, int_path).
 
     Named arcs without a number (e.g. 'mib-2') are kept in the dotted
@@ -94,13 +95,13 @@ def _resolve_oid(components: list) -> tuple[str, list[int]]:
 # ---------------------------------------------------------------------------
 
 
-class MibTransformer(Transformer):
+class MibTransformer(Transformer[MibModule]):
     """Walks the Lark parse tree and builds a MibModule."""
 
-    def start(self, children: list) -> MibModule:
-        return children[0]
+    def start(self, children: list[Any]) -> MibModule:
+        return cast(MibModule, children[0])
 
-    def module_definition(self, children: list) -> MibModule:
+    def module_definition(self, children: list[Any]) -> MibModule:
         module_name: str = ""
         imports: dict[str, list[str]] = {}
         objects: dict[str, MibObject] = {}
@@ -131,37 +132,37 @@ class MibTransformer(Transformer):
             notifications=notifications,
         )
 
-    def module_name(self, children: list) -> str:
+    def module_name(self, children: list[Any]) -> str:
         return str(children[0])
 
     # ------------------------------------------------------------------
     # Imports
     # ------------------------------------------------------------------
 
-    def imports(self, children: list) -> dict:
+    def imports(self, children: list[Any]) -> dict[str, Any]:
         result: dict[str, list[str]] = {}
         for clause in children:
             if isinstance(clause, dict):
                 result.update(clause)
         return {"__imports__": result}
 
-    def import_clause(self, children: list) -> dict[str, list[str]]:
+    def import_clause(self, children: list[Any]) -> dict[str, list[str]]:
         return {str(children[1]): children[0]}
 
-    def symbol_list(self, children: list) -> list[str]:
+    def symbol_list(self, children: list[Any]) -> list[str]:
         return [str(c) for c in children]
 
-    def symbol(self, children: list) -> str:
+    def symbol(self, children: list[Any]) -> str:
         return str(children[0])
 
-    def module_ref(self, children: list) -> str:
+    def module_ref(self, children: list[Any]) -> str:
         return str(children[0])
 
     # ------------------------------------------------------------------
     # MODULE-IDENTITY
     # ------------------------------------------------------------------
 
-    def module_identity_assignment(self, children: list) -> MibObject:
+    def module_identity_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
         return MibObject(name=name, oid=oid_str, oid_path=oid_path, object_type="MODULE-IDENTITY")
@@ -170,7 +171,7 @@ class MibTransformer(Transformer):
     # OBJECT-IDENTITY
     # ------------------------------------------------------------------
 
-    def object_identity_assignment(self, children: list) -> MibObject:
+    def object_identity_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
         return MibObject(
@@ -186,7 +187,7 @@ class MibTransformer(Transformer):
     # OBJECT-TYPE
     # ------------------------------------------------------------------
 
-    def object_type_assignment(self, children: list) -> MibObject:
+    def object_type_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
         index_info = next((c for c in children if isinstance(c, _IndexInfo)), None)
@@ -208,7 +209,7 @@ class MibTransformer(Transformer):
     # NOTIFICATION-TYPE
     # ------------------------------------------------------------------
 
-    def notification_type_assignment(self, children: list) -> MibObject:
+    def notification_type_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
         return MibObject(
@@ -224,7 +225,7 @@ class MibTransformer(Transformer):
     # TEXTUAL-CONVENTION
     # ------------------------------------------------------------------
 
-    def textual_convention_assignment(self, children: list) -> MibType:
+    def textual_convention_assignment(self, children: list[Any]) -> MibType:
         name = str(children[0])
         return MibType(
             name=name,
@@ -236,11 +237,11 @@ class MibTransformer(Transformer):
     # Type / Value assignments
     # ------------------------------------------------------------------
 
-    def type_assignment(self, children: list) -> MibType:
+    def type_assignment(self, children: list[Any]) -> MibType:
         name = str(children[0])
         return MibType(name=name, base_type=self._syntax(children) or "")
 
-    def value_assignment(self, children: list) -> MibObject | None:
+    def value_assignment(self, children: list[Any]) -> MibObject | None:
         name = str(children[0])
         oid_list = self._oid(children)
         if oid_list:
@@ -254,243 +255,238 @@ class MibTransformer(Transformer):
     # GROUP / COMPLIANCE / CAPABILITIES
     # ------------------------------------------------------------------
 
-    def object_group_assignment(self, children: list) -> MibObject:
+    def object_group_assignment(self, children: list[Any]) -> MibObject:
         return self._simple_oid_object(children, "OBJECT-GROUP")
 
-    def notification_group_assignment(self, children: list) -> MibObject:
+    def notification_group_assignment(self, children: list[Any]) -> MibObject:
         return self._simple_oid_object(children, "NOTIFICATION-GROUP")
 
-    def module_compliance_assignment(self, children: list) -> MibObject:
+    def module_compliance_assignment(self, children: list[Any]) -> MibObject:
         return self._simple_oid_object(children, "MODULE-COMPLIANCE")
 
-    def agent_capabilities_assignment(self, children: list) -> MibObject:
+    def agent_capabilities_assignment(self, children: list[Any]) -> MibObject:
         return self._simple_oid_object(children, "AGENT-CAPABILITIES")
 
-    def trap_type_assignment(self, children: list) -> MibObject:
+    def trap_type_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
         number = next(
             (str(c) for c in children if isinstance(c, Token) and c.type == "NUMBER"), "0"
         )
         return MibObject(name=name, oid=number, oid_path=[int(number)], object_type="TRAP-TYPE")
 
-    def assignment(self, children: list):
+    def assignment(self, children: list[Any]) -> Any:
         return children[0] if children else None
 
     # ------------------------------------------------------------------
     # Clause wrappers — typed info objects
     # ------------------------------------------------------------------
 
-    def description_clause(self, children: list) -> _DescriptionInfo:
+    def description_clause(self, children: list[Any]) -> _DescriptionInfo:
         return _DescriptionInfo(_unquote(children[0]))
 
-    def max_access_clause(self, children: list) -> _AccessInfo:
+    def max_access_clause(self, children: list[Any]) -> _AccessInfo:
         info = next((c for c in children if isinstance(c, _AccessInfo)), None)
         return info if info is not None else _AccessInfo(str(children[0]))
 
-    def index_clause(self, children: list):
+    def index_clause(self, children: list[Any]) -> Any:
         return children[0] if children else None
 
-    def index_part(self, children: list) -> _IndexInfo:
-        # children[0] is _IndexInfo produced by index_list, which already
-        # holds ALL column names. Bug fix: old code did c.columns[0] which
-        # silently dropped columns 2..N in composite indexes.
+    def index_part(self, children: list[Any]) -> _IndexInfo:
         info = next((c for c in children if isinstance(c, _IndexInfo)), None)
         return info if info is not None else _IndexInfo([])
 
-    def index_list(self, children: list) -> _IndexInfo:
-        # children are strings from index_item rules
+    def index_list(self, children: list[Any]) -> _IndexInfo:
         return _IndexInfo([c for c in children if isinstance(c, str)])
 
-    def index_item(self, children: list) -> str:
-        # grammar: "IMPLIED"? LOWER_ID — take last child (always the identifier)
+    def index_item(self, children: list[Any]) -> str:
         return str(children[-1])
 
-    def augments_part(self, children: list) -> _AugmentsInfo:
+    def augments_part(self, children: list[Any]) -> _AugmentsInfo:
         return _AugmentsInfo(str(children[0]))
 
-    def revision(self, _):
+    def revision(self, _: list[Any]) -> None:
         return None
 
-    def compliance_module(self, _):
+    def compliance_module(self, _: list[Any]) -> None:
         return None
 
-    def mandatory_groups(self, _):
+    def mandatory_groups(self, _: list[Any]) -> None:
         return None
 
-    def compliance_item(self, _):
+    def compliance_item(self, _: list[Any]) -> None:
         return None
 
-    def compliance_group(self, _):
+    def compliance_group(self, _: list[Any]) -> None:
         return None
 
-    def compliance_object(self, _):
+    def compliance_object(self, _: list[Any]) -> None:
         return None
 
-    def capabilities_module(self, _):
+    def capabilities_module(self, _: list[Any]) -> None:
         return None
 
-    def variation(self, _):
+    def variation(self, _: list[Any]) -> None:
         return None
 
-    def trap_variables_clause(self, _):
+    def trap_variables_clause(self, _: list[Any]) -> None:
         return None
 
-    def units_clause(self, _):
+    def units_clause(self, _: list[Any]) -> None:
         return None
 
-    def reference_clause(self, _):
+    def reference_clause(self, _: list[Any]) -> None:
         return None
 
-    def display_hint_clause(self, _):
+    def display_hint_clause(self, _: list[Any]) -> None:
         return None
 
-    def defval_clause(self, _):
+    def defval_clause(self, _: list[Any]) -> None:
         return None
 
-    def objects_clause(self, _):
+    def objects_clause(self, _: list[Any]) -> None:
         return None
 
-    def scalar_value(self, _):
+    def scalar_value(self, _: list[Any]) -> None:
         return None
 
-    def write_syntax_clause(self, _):
+    def write_syntax_clause(self, _: list[Any]) -> None:
         return None
 
-    def min_access_clause(self, _):
+    def min_access_clause(self, _: list[Any]) -> None:
         return None
 
-    def access_clause(self, _):
+    def access_clause(self, _: list[Any]) -> None:
         return None
 
-    def creation_requires_clause(self, _):
+    def creation_requires_clause(self, _: list[Any]) -> None:
         return None
 
-    def object_list(self, children: list) -> list[str]:
+    def object_list(self, children: list[Any]) -> list[str]:
         return [str(c) for c in children]
 
     # ------------------------------------------------------------------
     # OID passthrough
     # ------------------------------------------------------------------
 
-    def oid_value(self, children: list) -> list:
+    def oid_value(self, children: list[Any]) -> list[Any]:
         return children
 
-    def named_arc(self, children: list) -> Tree:
+    def named_arc(self, children: list[Any]) -> Tree[Any]:
         return Tree("named_arc", children)
 
-    def name_arc(self, children: list) -> Tree:
+    def name_arc(self, children: list[Any]) -> Tree[Any]:
         return Tree("name_arc", children)
 
-    def number_arc(self, children: list) -> Tree:
+    def number_arc(self, children: list[Any]) -> Tree[Any]:
         return Tree("number_arc", children)
 
     # ------------------------------------------------------------------
     # Syntax type rules — each returns _SyntaxInfo
     # ------------------------------------------------------------------
 
-    def syntax_type(self, children: list) -> _SyntaxInfo:
+    def syntax_type(self, children: list[Any]) -> _SyntaxInfo:
         val = children[0] if children else ""
         return val if isinstance(val, _SyntaxInfo) else _SyntaxInfo(str(val))
 
-    def integer_type(self, _):
+    def integer_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("INTEGER")
 
-    def octet_string_type(self, _):
+    def octet_string_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("OCTET STRING")
 
-    def oid_type(self, _):
+    def oid_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("OBJECT IDENTIFIER")
 
-    def null_type(self, _):
+    def null_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("NULL")
 
-    def ip_address_type(self, _):
+    def ip_address_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("IpAddress")
 
-    def counter32_type(self, _):
+    def counter32_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Counter32")
 
-    def counter64_type(self, _):
+    def counter64_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Counter64")
 
-    def gauge32_type(self, _):
+    def gauge32_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Gauge32")
 
-    def unsigned32_type(self, _):
+    def unsigned32_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Unsigned32")
 
-    def timeticks_type(self, _):
+    def timeticks_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("TimeTicks")
 
-    def opaque_type(self, _):
+    def opaque_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Opaque")
 
-    def integer32_type(self, _):
+    def integer32_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Integer32")
 
-    def network_address_type(self, _):
+    def network_address_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("NetworkAddress")
 
-    def counter_type(self, _):
+    def counter_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Counter")
 
-    def gauge_type(self, _):
+    def gauge_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Gauge")
 
-    def bits_type(self, _):
+    def bits_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("BITS")
 
-    def sequence_type(self, _):
+    def sequence_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("SEQUENCE")
 
-    def choice_type(self, _):
+    def choice_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("CHOICE")
 
-    def named_type(self, children: list) -> _SyntaxInfo:
+    def named_type(self, children: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo(str(children[0]))
 
-    def sequence_of_type(self, children: list) -> _SyntaxInfo:
+    def sequence_of_type(self, children: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo(f"SEQUENCE OF {children[0]}")
 
-    def status_value(self, children: list) -> _StatusInfo:
+    def status_value(self, children: list[Any]) -> _StatusInfo:
         return _StatusInfo(str(children[0]))
 
-    def smiv1_status_value(self, children: list) -> _StatusInfo:
+    def smiv1_status_value(self, children: list[Any]) -> _StatusInfo:
         return _StatusInfo(str(children[0]))
 
-    def access_value(self, children: list) -> _AccessInfo:
+    def access_value(self, children: list[Any]) -> _AccessInfo:
         return _AccessInfo(str(children[0]))
 
-    def syntax_clause(self, children: list) -> _SyntaxInfo | None:
+    def syntax_clause(self, children: list[Any]) -> _SyntaxInfo | None:
         return next((c for c in children if isinstance(c, _SyntaxInfo)), None)
 
     # ------------------------------------------------------------------
     # Private typed extractors
     # ------------------------------------------------------------------
 
-    def _oid(self, children: list) -> list:
+    def _oid(self, children: list[Any]) -> list[Any]:
         for child in children:
             if isinstance(child, list) and child and isinstance(child[0], Tree):
-                return child
+                return child  # type: ignore[return-value]
         return []
 
-    def _syntax(self, children: list) -> str | None:
+    def _syntax(self, children: list[Any]) -> str | None:
         info = next((c for c in children if isinstance(c, _SyntaxInfo)), None)
         return info.value if info else None
 
-    def _description(self, children: list) -> str | None:
+    def _description(self, children: list[Any]) -> str | None:
         info = next((c for c in children if isinstance(c, _DescriptionInfo)), None)
         return info.value if info else None
 
-    def _status(self, children: list) -> str | None:
+    def _status(self, children: list[Any]) -> str | None:
         info = next((c for c in children if isinstance(c, _StatusInfo)), None)
         return info.value if info else None
 
-    def _access(self, children: list) -> str | None:
+    def _access(self, children: list[Any]) -> str | None:
         info = next((c for c in children if isinstance(c, _AccessInfo)), None)
         return info.value if info else None
 
-    def _simple_oid_object(self, children: list, object_type: str) -> MibObject:
+    def _simple_oid_object(self, children: list[Any], object_type: str) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
         return MibObject(name=name, oid=oid_str, oid_path=oid_path, object_type=object_type)

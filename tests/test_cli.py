@@ -1,7 +1,10 @@
 """Tests for the trishul-smi CLI (trishul_smi.cli.main).
 
 Strategy:
-- Use typer.testing.CliRunner for all invocations.
+- Use click.testing.CliRunner (not typer.testing.CliRunner) — Click's runner
+  exposes mix_stderr=False natively since Click 8.0, which Typer >=0.12 dropped
+  from its own wrapper. mix_stderr=False is required so result.stderr is
+  available as a separate string (used in TestMibDir assertions).
 - Patch _compile_async to avoid real I/O.
 - Verify exit codes, stdout content, and table structure.
 """
@@ -12,7 +15,7 @@ import importlib.metadata
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from typer.testing import CliRunner
+from click.testing import CliRunner
 
 from trishul_smi.cli.main import app
 from trishul_smi.models import CompileResult
@@ -217,7 +220,7 @@ class TestCacheDirOption:
 
 class TestMibDir:
     def test_nonexistent_mib_dir_warns_not_crashes(self, tmp_path: Path):
-        """A --mib-dir path that doesn\'t exist emits a warning but does not
+        """A --mib-dir path that doesn't exist emits a warning but does not
         crash or exit non-zero; the compile run continues with HTTP fallback.
         """
         fake_dir = tmp_path / "does-not-exist"

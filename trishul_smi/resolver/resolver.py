@@ -11,7 +11,7 @@ The resolver performs a BFS over the MIB import graph:
        the event loop stays unblocked during CPU-bound Lark parsing.
     5. Collect newly-discovered imports; add unseen names to the next wave.
     6. Repeat until the import closure is complete.
-    7. Topological-sort (Kahn\'s) the full set and return in order.
+    7. Topological-sort (Kahn's) the full set and return in order.
 
 Error handling
 --------------
@@ -20,11 +20,10 @@ Error handling
 - MibSizeLimitError propagates immediately (it is a configuration error).
 - CircularDependencyError propagates immediately (uncaught from
   topological_sort — no try/except wrapper needed).
-- Failed modules\' transitive dependencies are not explored: if module A
-  fails to fetch or parse, A\'s imports are never queued. Callers should
+- Failed modules' transitive dependencies are not explored: if module A
+  fails to fetch or parse, A's imports are never queued. Callers should
   not assume all reachable dependencies will appear in ResolveResult.errors.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -121,12 +120,17 @@ class MibResolver:
                     # exception — bare `raise` would hit RuntimeError:
                     # "No active exception to re-raise".
                     raise result
-                elif isinstance(result, Exception):
+                elif isinstance(result, BaseException):
+                    # BaseException (not just Exception) so mypy can narrow
+                    # the else branch to MibModule cleanly. Covers KeyboardInterrupt
+                    # and SystemExit that gather may also return as values.
                     errors[name] = result
                 else:
-                    fetched[name] = result
+                    # mypy now knows: not BaseException → must be MibModule
+                    module: MibModule = result
+                    fetched[name] = module
                     if self._cache is not None:
-                        self._cache.put(name, result)
+                        self._cache.put(name, module)
                     newly_fetched.add(name)
 
             # --- Discover new transitive dependencies ---

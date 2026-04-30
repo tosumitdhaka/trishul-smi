@@ -1,0 +1,120 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+SDIST/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+ENV/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ── Testing & Coverage ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+coverage/
+htmlcov/
+.tox/
+.nox/
+
+# ── Type checkers ────────────────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyright/
+
+# ── Linters & formatters ─────────────────────────────────────────────────────
+.ruff_cache/
+
+# ── Build / CI artefacts ─────────────────────────────────────────────────────
+*.whl
+*.tar.gz
+*.zip
+
+# ── Editors & IDEs ───────────────────────────────────────────────────────────
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# JetBrains (PyCharm, IDEA)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+\#*\#
+.\#*
+*.elc
+auto-save-list
+tramp
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ── OS noise ─────────────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+.directory
+
+# ── Project-specific ─────────────────────────────────────────────────────────
+# Default MIB output directory
+mibs-output/
+
+# Compiled MIB cache
+~/.cache/trishul-smi/
+
+# Temporary files created by ZipReader nested-ZIP handling
+/tmp/*.zip
+
+# Local dev overrides
+local_settings.py
+.env.local
+.env.*.local
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Profiling
+*.prof
+*.lprof

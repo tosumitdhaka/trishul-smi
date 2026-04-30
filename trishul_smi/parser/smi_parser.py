@@ -20,7 +20,7 @@ Usage::
 from __future__ import annotations
 
 import importlib.resources
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 
 from lark import Lark, UnexpectedInput
 
@@ -104,14 +104,14 @@ class SmiParser:
         4. On Earley failure, raise ParseError with location info.
         """
         dialect: Literal["smiv2", "smiv1"] = (
-            _detect_dialect(text) if self._dialect == "auto" else self._dialect  # type: ignore[assignment]
+            _detect_dialect(text) if self._dialect == "auto" else self._dialect
         )
 
         transformer = MibTransformer()
 
         try:
             tree = self._get_parser(dialect, earley=False).parse(text)
-            return transformer.transform(tree)
+            return cast(MibModule, transformer.transform(tree))
         except UnexpectedInput:
             pass
         except Exception as exc:
@@ -119,7 +119,7 @@ class SmiParser:
 
         try:
             tree = self._get_parser(dialect, earley=True).parse(text)
-            return transformer.transform(tree)
+            return cast(MibModule, transformer.transform(tree))
         except UnexpectedInput as exc:
             context = getattr(exc, "get_context", lambda t: "")(text)
             raise ParseError(
