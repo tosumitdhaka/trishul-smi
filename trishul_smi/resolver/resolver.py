@@ -18,14 +18,15 @@ Error handling
 - Fetch/parse failures are collected per-module and reported together
   as .errors on ResolveResult rather than aborting mid-run.
 - MibSizeLimitError propagates immediately (it is a configuration error).
-- CircularDependencyError propagates immediately.
+- CircularDependencyError propagates immediately (uncaught from
+  topological_sort — no try/except wrapper needed).
 """
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
 
-from trishul_smi.errors import CircularDependencyError, MibSizeLimitError
+from trishul_smi.errors import MibSizeLimitError
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import FetchProtocol
@@ -128,11 +129,10 @@ class MibResolver:
                     if dep not in fetched and dep not in errors:
                         pending.add(dep)
 
-        # --- Topological sort ---
-        try:
-            order = topological_sort(fetched)
-        except CircularDependencyError:
-            raise
+        # Raises CircularDependencyError on cycle — propagates uncaught.
+        # No try/except wrapper needed: catching and immediately re-raising
+        # is a no-op that only adds noise.
+        order = topological_sort(fetched)
 
         return ResolveResult(
             modules=[fetched[name] for name in order],
