@@ -191,9 +191,8 @@ async def _compile_async(
     mib_names: list[str],
 ) -> list[CompileResult]:
     """Wire up readers and run the compiler inside the async event loop."""
-    # Actual module paths: reader.localfile and reader.httpclient.
-    # Deferred to avoid pulling httpx into the import graph at CLI startup
-    # for users who use the library programmatically without HTTP.
+    # Deferred imports: avoids pulling httpx into the import graph at CLI
+    # startup for users who use the library programmatically without HTTP.
     from trishul_smi.reader.localfile import FileReader
     from trishul_smi.reader.httpclient import HttpReader
 
@@ -205,7 +204,8 @@ async def _compile_async(
             continue
         compiler.add_reader(FileReader(d))
 
-    async with HttpReader(config.sources) as http:
+    # HttpReader takes *url_templates (varargs), not a list — unpack with *.
+    async with HttpReader(*config.sources) as http:
         compiler.add_reader(http)
         return await compiler.compile(*mib_names)
 

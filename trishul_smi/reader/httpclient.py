@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -170,9 +171,23 @@ class HttpReader(AbstractReader):
             return fh.read()
 
     def _write_cache(self, url: str, text: str) -> None:
+        """Atomically write *text* to the cache file for *url*.
+
+        Uses a temp-file + rename(2) pattern (same as MibCache.put) so a
+        crash or KeyboardInterrupt mid-write never leaves a partial file that
+        would be silently returned as valid content on the next fetch.
+        """
         path = self._cache_path(url)
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+            suffix=".tmp",
+        ) as tmp:
+            tmp.write(text)
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(path)  # atomic on POSIX; best-effort on Windows
