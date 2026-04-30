@@ -29,7 +29,17 @@ class HttpReader(AbstractReader):
     - TTL: forces re-fetch after cache_ttl_days days regardless of ETag
     - Content-Length pre-check against max_size before downloading body
 
-    304 edge case:
+    Fallback behaviour
+    ------------------
+    When multiple ``url_templates`` are provided, fetch() tries each in order.
+    MibNotFoundError (404 or no match) continues to the next template.
+    MibSizeLimitError propagates immediately — it is a configuration error,
+    not a per-source failure.
+    RuntimeError (context-manager guard) propagates immediately — it is a
+    programming error that must never be silently swallowed.
+
+    304 edge case
+    -------------
     If the server returns 304 but the local cache file is missing (cache_dir
     is None, the file was deleted, or the process restarted without cache),
     we fall back to an unconditional GET without If-None-Match rather than
@@ -81,13 +91,21 @@ class HttpReader(AbstractReader):
         return fetched is None or (time.monotonic() - fetched) > self._cache_ttl_seconds
 
     async def fetch(self, mib_name: str) -> str:
+        """Try each URL template in order; return the first success.
+
+        Exception policy:
+        - ``RuntimeError``: re-raise immediately (programming error — no CM).
+        - ``MibSizeLimitError``: re-raise immediately (config error).
+        - ``MibNotFoundError``: continue to next template (per-source 404).
+        - All other exceptions: continue to next template (transient errors).
+        """
         last_exc: Exception = MibNotFoundError(mib_name)
         for template in self._templates:
             url = template.replace(_PLACEHOLDER, mib_name)
             try:
                 return await self._fetch_url_with_retry(url)
-            except (MibNotFoundError, MibSizeLimitError):
-                raise
+            except (RuntimeError, MibSizeLimitError):
+                raise  # programming / config errors — never swallow
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 continue
@@ -96,15 +114,7 @@ class HttpReader(AbstractReader):
         )
 
     async def _fetch_url_with_retry(self, url: str) -> str:
-        """Retry _fetch_url using self._retries (NOT a hardcoded constant).
-
-        NOTE: ``NetworkError`` (errors.py) is reserved for the retry-exhaustion
-        path — its docstring says "Raised by HttpReader when retries are
-        exhausted" — but is not yet wired. When tenacity\'s reraise=True fires,
-        ``httpx.TransportError`` propagates as-is. Wire NetworkError here
-        (``raise NetworkError(...) from exc``) when callers need to
-        distinguish transport failures from other exceptions by type.
-        """
+        """Retry _fetch_url using self._retries (NOT a hardcoded constant)."""
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type(httpx.TransportError),
             stop=stop_after_attempt(self._retries),
@@ -135,15 +145,10 @@ class HttpReader(AbstractReader):
         response = await client.get(url, headers=headers)
 
         if response.status_code == 304:
-            # Server says content hasn't changed. Try the disk cache first.
             cached = self._read_cache(url)
             if cached is not None:
                 return cached
-            # Cache miss despite 304: cache_dir is None, or the file was
-            # deleted on disk while the in-memory ETag survived. Re-fetch
-            # unconditionally rather than calling raise_for_status() on a 304
-            # (which would raise HTTPStatusError — 304 is not a 2xx).
-            # Also clear the stale ETag so future calls don't repeat this.
+            # Cache miss despite 304: clear stale ETag, fall back to unconditional GET.
             self._etags.pop(url, None)
             response = await client.get(url)  # unconditional GET, no If-None-Match
 
@@ -179,12 +184,7 @@ class HttpReader(AbstractReader):
             return fh.read()
 
     def _write_cache(self, url: str, text: str) -> None:
-        """Atomically write *text* to the cache file for *url*.
-
-        Uses a temp-file + rename(2) pattern (same as MibCache.put) so a
-        crash or KeyboardInterrupt mid-write never leaves a partial file that
-        would be silently returned as valid content on the next fetch.
-        """
+        """Atomically write *text* to the cache file for *url*."""
         path = self._cache_path(url)
         if path is None:
             return

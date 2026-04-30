@@ -1,9 +1,10 @@
 """Tests for the trishul-smi CLI (trishul_smi.cli.main).
 
 Strategy:
-- Use click.testing.CliRunner (not typer.testing.CliRunner) — Click's runner
-  exposes mix_stderr=False on invoke() since Click 8.0. We pass it per-call
-  rather than in the constructor for compatibility across all Click 8.x versions.
+- Use click.testing.CliRunner with typer.main.get_command(app) — Click's
+  CliRunner requires a Click Command object; a raw Typer app is not one.
+  get_command() compiles the Typer app into the underlying Click command once
+  at module level so the conversion cost is paid once per test session.
 - Patch _compile_async to avoid real I/O.
 - Verify exit codes, stdout content, and table structure.
 """
@@ -14,12 +15,16 @@ import importlib.metadata
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import typer
 from click.testing import CliRunner
 
 from trishul_smi.cli.main import app
 from trishul_smi.models import CompileResult
 
-# mix_stderr is NOT passed here — it belongs on invoke() for Click 8.x compat.
+# Compile the Typer app to a Click command ONCE. CliRunner.invoke() needs a
+# Click Command, not a Typer app — passing app directly raises AttributeError.
+_cmd = typer.main.get_command(app)
+
 runner = CliRunner()
 
 
@@ -52,18 +57,9 @@ def _patch_run(results: list[CompileResult]):
     )
 
 
-def _invoke(*args, mix_stderr: bool = True, **kwargs):
-    """Thin wrapper: passes mix_stderr on invoke() not on CliRunner() constructor.
-
-    Click 8.0 added mix_stderr but some 8.x point releases only accept it as
-    an invoke() keyword arg. Centralising the call here means tests never
-    touch CliRunner() directly and the one kwarg lives in one place.
-    """
-    try:
-        return runner.invoke(app, *args, mix_stderr=mix_stderr, **kwargs)
-    except TypeError:
-        # Extremely old Click that doesn't know mix_stderr at all — fall back.
-        return runner.invoke(app, *args, **kwargs)
+def _invoke(args, **kwargs):
+    """Invoke the compiled Click command via the test runner."""
+    return runner.invoke(_cmd, args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +74,6 @@ class TestVersionCommand:
         assert "trishul-smi" in result.output
 
     def test_dev_fallback_when_not_installed(self):
-        """version command catches PackageNotFoundError and prints a dev label."""
         with patch(
             "trishul_smi.cli.main.importlib.metadata.version",
             side_effect=importlib.metadata.PackageNotFoundError("trishul-smi"),
@@ -101,7 +96,7 @@ class TestCompileArgs:
 
     def test_compile_no_mib_names_shows_usage(self):
         result = _invoke(["compile"])
-        assert result.exit_code == 2  # typer UsageError for missing required argument
+        assert result.exit_code == 2
 
     def test_compile_single_mib_exit_zero(self):
         with _patch_run([_make_result("IF-MIB")]):
@@ -194,7 +189,6 @@ class TestCompileOutput:
 
 class TestCacheDirOption:
     def test_empty_string_disables_cache(self):
-        """--cache-dir "" must set cache_dir=None in CompilerConfig."""
         captured: list = []
 
         def _capture_config(config, *_, **__):
@@ -236,19 +230,12 @@ class TestMibDir:
     def test_nonexistent_mib_dir_warns_not_crashes(self, tmp_path: Path):
         """A --mib-dir path that doesn't exist emits a warning but does not
         crash or exit non-zero; the compile run continues with HTTP fallback.
-
-        Note: mix_stderr=False splits stderr into result.output only when the
-        installed Click version supports it on invoke(). We check result.output
-        (combined) so the assertion works on every Click 8.x version.
         """
         fake_dir = tmp_path / "does-not-exist"
         with _patch_run([_make_result("IF-MIB")]):
-            result = _invoke(["compile", "IF-MIB", "-d", str(fake_dir)], mix_stderr=False)
+            result = _invoke(["compile", "IF-MIB", "-d", str(fake_dir)])
         assert result.exit_code == 0
-        # stderr is mixed into output when mix_stderr is unsupported; check both.
-        stderr_text = result.stderr if hasattr(result, "stderr") and result.stderr else ""
-        combined = result.output + stderr_text
-        assert "not a directory" in combined or "Warning" in combined
+        assert "not a directory" in result.output or "Warning" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -258,15 +245,6 @@ class TestMibDir:
 
 class TestPackageIntegrity:
     def test_grammar_file_importable(self):
-        """Fail fast if the wheel was built without the grammar directory.
-
-        ``pip install -e .`` always has smiv2.lark on the filesystem, so this
-        test is a no-op during local development. A broken PyPI wheel — one
-        where the MANIFEST.in / tool.hatch force-include for trishul_smi/parser/
-        grammar/ was accidentally removed — fails here during CI before the
-        broken release reaches any user. importlib.resources is used (not a raw
-        Path) so the check works identically inside a zip-imported wheel.
-        """
         from importlib.resources import files
 
         grammar = files("trishul_smi.parser.grammar").joinpath("smiv2.lark")

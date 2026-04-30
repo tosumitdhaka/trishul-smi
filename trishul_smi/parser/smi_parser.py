@@ -33,22 +33,13 @@ _DIALECT = Literal["smiv2", "smiv1", "auto"]
 
 
 def _load_grammar(name: str) -> str:
-    """Load a .lark grammar file from the grammar/ package directory.
-
-    Requires trishul_smi/parser/grammar/ to be a package (has __init__.py)
-    and listed under [tool.hatch.build.targets.wheel.force-include] in
-    pyproject.toml so it is included in wheel builds.
-    """
+    """Load a .lark grammar file from the grammar/ package directory."""
     pkg = importlib.resources.files("trishul_smi.parser.grammar")
     return (pkg / name).read_text(encoding="utf-8")
 
 
 def _detect_dialect(text: str) -> Literal["smiv2", "smiv1"]:
-    """Heuristic: scan text for SMIv2-specific IMPORTS module names.
-
-    Uses SMIv2_MARKERS from _constants.py — the same set used by
-    MibTransformer.module_definition to set MibModule.language.
-    """
+    """Heuristic: scan text for SMIv2-specific IMPORTS module names."""
     for marker in SMIv2_MARKERS:
         if marker in text:
             return "smiv2"
@@ -66,17 +57,9 @@ class SmiParser:
         Lark grammar compilation is expensive (~50–200 ms per
         ``(dialect, algorithm)`` combination). Compiled grammars are
         stored in ``SmiParser._grammar_cache`` — a *class-level* dict
-        shared across all instances in the same process. The first
-        ``parse()`` call that needs a grammar compiles it; all subsequent
-        calls (including those on different SmiParser instances) reuse
-        the cached Lark object with zero overhead.
+        shared across all instances in the same process.
     """
 
-    # Class-level grammar cache: shared across all instances in the process.
-    # Key: "<dialect>:<lalr|earley>"  Value: compiled Lark parser.
-    # This makes SmiParser effectively a flyweight — one grammar compilation
-    # per (dialect, algorithm) pair per Python process regardless of how many
-    # MibCompiler or SmiParser instances are created.
     _grammar_cache: ClassVar[dict[str, Lark]] = {}
 
     def __init__(self, dialect: _DIALECT = "auto") -> None:
@@ -90,19 +73,12 @@ class SmiParser:
                 grammar,
                 parser="earley" if earley else "lalr",
                 propagate_positions=False,
-                maybe_placeholder=False,
+                # maybe_placeholder removed in Lark >= 1.2 — do not add back.
             )
         return SmiParser._grammar_cache[key]
 
     def parse(self, text: str) -> MibModule:
-        """Parse raw ASN.1 text. Raises ParseError on invalid input.
-
-        Strategy:
-        1. Detect dialect (if ``auto``).
-        2. Try LALR(1) — fast path.
-        3. On parse failure, retry with Earley — handles vendor dialect quirks.
-        4. On Earley failure, raise ParseError with location info.
-        """
+        """Parse raw ASN.1 text. Raises ParseError on invalid input."""
         dialect: Literal["smiv2", "smiv1"] = (
             _detect_dialect(text) if self._dialect == "auto" else self._dialect
         )
