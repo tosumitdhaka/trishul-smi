@@ -10,6 +10,7 @@ from tenacity import (
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
+    RetryCallState,
 )
 
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
@@ -22,10 +23,10 @@ class HttpReader(AbstractReader):
     """Fetches MIBs from HTTP(S) sources.
 
     Features:
-    - httpx.AsyncClient with explicit timeout
-    - Exponential backoff via tenacity
+    - httpx.AsyncClient with explicit timeout (from constructor, not hardcoded)
+    - Exponential backoff via tenacity (retry count from constructor)
     - ETag caching: skips re-download when server returns 304
-    - TTL: forces re-fetch after cache_ttl_days days regardless of ETag
+    - TTL: forces re-fetch after cache_ttl_days regardless of ETag
     - Content-Length pre-check against max_size before downloading body
     """
 
@@ -44,9 +45,7 @@ class HttpReader(AbstractReader):
         self._max_size = max_size
         self._cache_dir = cache_dir
         self._cache_ttl_seconds = cache_ttl_days * 86_400
-        # ETag store: {url: etag_string}
         self._etags: dict[str, str] = {}
-        # Fetch timestamp store: {url: unix_timestamp}
         self._fetched_at: dict[str, float] = {}
         self._client: httpx.AsyncClient | None = None
 
@@ -68,7 +67,6 @@ class HttpReader(AbstractReader):
         return self._client
 
     def _is_stale(self, url: str) -> bool:
-        """True if the cached entry for url has exceeded TTL."""
         if self._cache_ttl_seconds <= 0:
             return False
         fetched = self._fetched_at.get(url)
@@ -81,8 +79,7 @@ class HttpReader(AbstractReader):
         for template in self._templates:
             url = template.replace(_PLACEHOLDER, mib_name)
             try:
-                text = await self._fetch_url(url)
-                return text
+                return await self._fetch_url_with_retry(url)
             except (MibNotFoundError, MibSizeLimitError):
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -92,21 +89,32 @@ class HttpReader(AbstractReader):
             f"MIB '{mib_name}' not found at any HTTP source. Last error: {last_exc}"
         )
 
-    @retry(
-        retry=retry_if_exception_type(httpx.TransportError),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
+    async def _fetch_url_with_retry(self, url: str) -> str:
+        """Wrap _fetch_url with a dynamically-configured tenacity retry.
+
+        The retry count comes from self._retries (set in __init__ from
+        CompilerConfig.http_retries) rather than a hardcoded decorator —
+        keeps config and behaviour in sync.
+        """
+        from tenacity import AsyncRetrying
+
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type(httpx.TransportError),
+            stop=stop_after_attempt(self._retries),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            reraise=True,
+        ):
+            with attempt:
+                return await self._fetch_url(url)
+        raise MibNotFoundError(url)  # unreachable; satisfies type checker
+
     async def _fetch_url(self, url: str) -> str:
         client = self._client_or_raise()
         headers: dict[str, str] = {}
 
-        # Send ETag if cached and not stale
         if not self._is_stale(url) and url in self._etags:
             headers["If-None-Match"] = self._etags[url]
 
-        # HEAD pre-check for Content-Length
         head = await client.head(url)
         if head.status_code == 404:
             raise MibNotFoundError(f"HTTP 404: {url}")
@@ -119,11 +127,9 @@ class HttpReader(AbstractReader):
         response = await client.get(url, headers=headers)
 
         if response.status_code == 304:
-            # Not modified — return from disk cache
             cached = self._read_cache(url)
             if cached is not None:
                 return cached
-            # Cache miss despite 304 (shouldn’t happen) — fall through to GET
 
         if response.status_code == 404:
             raise MibNotFoundError(f"HTTP 404: {url}")
@@ -136,21 +142,12 @@ class HttpReader(AbstractReader):
             )
 
         text = response.text
-
-        # Update ETag + timestamp
         etag = response.headers.get("etag")
         if etag:
             self._etags[url] = etag
         self._fetched_at[url] = time.monotonic()
-
-        # Persist to disk cache
         self._write_cache(url, text)
         return text
-
-    # ------------------------------------------------------------------
-    # Simple disk cache helpers (raw text, not MibModule)
-    # MibModule-level caching is handled by resolver/cache.py
-    # ------------------------------------------------------------------
 
     def _cache_path(self, url: str) -> Path | None:
         if self._cache_dir is None:

@@ -33,7 +33,7 @@ class TestMibModule:
         a = MibModule(name="A", language="SMIv2")
         b = MibModule(name="B", language="SMIv2")
         a.objects["x"] = None  # type: ignore[assignment]
-        assert "x" not in b.objects  # no shared mutable default
+        assert "x" not in b.objects
 
 
 class TestMibObject:
@@ -86,11 +86,9 @@ class TestCompileResult:
         assert r.error == "ParseError at line 5"
         assert r.output_paths == []
 
-    def test_no_borrowed_status(self):
-        """DD-5: 'borrowed' is not a valid status in v1.0."""
-        with pytest.raises(Exception):
-            # mypy would catch this at type-check time;
-            # this test documents the intent at runtime via Literal enforcement
-            _ = CompileResult(name="X", status="borrowed")  # type: ignore[arg-type]
-            # Literal doesn't raise at runtime — this is a mypy/static check.
-            # The test is intentionally a no-op at runtime; kept as living docs.
+    def test_cached_status(self):
+        r = CompileResult(name="IF-MIB", status="cached")
+        assert r.status == "cached"
+
+    # DD-5: "borrowed" is not in the Literal — mypy catches this at type-check time.
+    # No runtime enforcement exists for Literal; the mypy check is the guard.

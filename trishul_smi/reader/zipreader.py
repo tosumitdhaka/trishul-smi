@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import tempfile
 import zipfile
 from pathlib import Path
 
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
 from trishul_smi.reader.base import AbstractReader
-
-_EXTENSIONS = ["", ".mib", ".txt", ".my"]
 
 
 class ZipReader(AbstractReader):
@@ -34,9 +33,8 @@ class ZipReader(AbstractReader):
         self, zip_path: Path, mib_name: str, _depth: int = 0
     ) -> str | None:
         """Recursively search zip_path for mib_name. Returns text or None."""
-        if _depth > 4:  # guard against pathological nesting
+        if _depth > 4:
             return None
-
         if not zip_path.is_file():
             return None
 
@@ -44,11 +42,10 @@ class ZipReader(AbstractReader):
             with zipfile.ZipFile(zip_path) as zf:
                 names = zf.namelist()
 
-                # Search for matching MIB file
                 for entry in names:
                     stem = Path(entry).stem
                     suffix = Path(entry).suffix.lower()
-                    if stem == mib_name and (suffix in ("", ".mib", ".txt", ".my") or suffix == ""):
+                    if stem == mib_name and suffix in ("", ".mib", ".txt", ".my"):
                         data: bytes = b""  # initialised before read — no NameError
                         with zf.open(entry) as fh:
                             data = fh.read()
@@ -58,17 +55,14 @@ class ZipReader(AbstractReader):
                             )
                         return data.decode("utf-8", errors="replace")
 
-                # Search nested ZIPs
                 for entry in names:
                     if entry.lower().endswith(".zip"):
                         data = b""  # reset before each nested read
                         with zf.open(entry) as fh:
                             data = fh.read()
-                        # Write to a temp-like in-memory path isn't ideal,
-                        # but zipfile requires a seekable file. We extract to
-                        # a NamedTemporaryFile equivalent using Path.
-                        import tempfile
-                        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".zip", delete=False
+                        ) as tmp:
                             tmp.write(data)
                             tmp_path = Path(tmp.name)
                         try:
