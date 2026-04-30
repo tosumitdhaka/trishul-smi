@@ -16,6 +16,7 @@ Usage::
     # From async code (parser.parse is synchronous/CPU-bound):
     mib = await asyncio.to_thread(SmiParser().parse, raw_text)
 """
+
 from __future__ import annotations
 
 import importlib.resources
@@ -103,8 +104,7 @@ class SmiParser:
         4. On Earley failure, raise ParseError with location info.
         """
         dialect: Literal["smiv2", "smiv1"] = (
-            _detect_dialect(text) if self._dialect == "auto"
-            else self._dialect  # type: ignore[assignment]
+            _detect_dialect(text) if self._dialect == "auto" else self._dialect  # type: ignore[assignment]
         )
 
         transformer = MibTransformer()

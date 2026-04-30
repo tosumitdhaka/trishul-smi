@@ -5,6 +5,7 @@ Strategy:
 - Patch _compile_async to avoid real I/O.
 - Verify exit codes, stdout content, and table structure.
 """
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -22,6 +23,7 @@ runner = CliRunner(mix_stderr=False)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_result(
     name: str = "IF-MIB",
@@ -51,6 +53,7 @@ def _patch_run(results: list[CompileResult]):
 # version command
 # ---------------------------------------------------------------------------
 
+
 class TestVersionCommand:
     def test_prints_package_name(self):
         result = runner.invoke(app, ["version"])
@@ -71,6 +74,7 @@ class TestVersionCommand:
 # ---------------------------------------------------------------------------
 # compile — argument / option parsing
 # ---------------------------------------------------------------------------
+
 
 class TestCompileArgs:
     def test_no_args_shows_help(self):
@@ -111,6 +115,7 @@ class TestCompileArgs:
 # ---------------------------------------------------------------------------
 # compile — output formatting
 # ---------------------------------------------------------------------------
+
 
 class TestCompileOutput:
     def test_compiled_module_shown_in_table(self):
@@ -169,6 +174,7 @@ class TestCompileOutput:
 # compile — cache-dir option
 # ---------------------------------------------------------------------------
 
+
 class TestCacheDirOption:
     def test_empty_string_disables_cache(self):
         """--cache-dir "" must set cache_dir=None in CompilerConfig."""
@@ -178,8 +184,10 @@ class TestCacheDirOption:
             captured.append(config)
             return MagicMock()
 
-        with patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config), \
-             _patch_run([_make_result()]):
+        with (
+            patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config),
+            _patch_run([_make_result()]),
+        ):
             runner.invoke(app, ["compile", "IF-MIB", "--cache-dir", ""])
 
         if captured:
@@ -192,11 +200,11 @@ class TestCacheDirOption:
             captured.append(config)
             return MagicMock()
 
-        with patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config), \
-             _patch_run([_make_result()]):
-            runner.invoke(
-                app, ["compile", "IF-MIB", "--cache-dir", str(tmp_path)]
-            )
+        with (
+            patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config),
+            _patch_run([_make_result()]),
+        ):
+            runner.invoke(app, ["compile", "IF-MIB", "--cache-dir", str(tmp_path)])
 
         if captured:
             assert captured[0].cache_dir == tmp_path
@@ -206,6 +214,7 @@ class TestCacheDirOption:
 # compile — --mib-dir
 # ---------------------------------------------------------------------------
 
+
 class TestMibDir:
     def test_nonexistent_mib_dir_warns_not_crashes(self, tmp_path: Path):
         """A --mib-dir path that doesn\'t exist emits a warning but does not
@@ -213,9 +222,7 @@ class TestMibDir:
         """
         fake_dir = tmp_path / "does-not-exist"
         with _patch_run([_make_result("IF-MIB")]):
-            result = runner.invoke(
-                app, ["compile", "IF-MIB", "-d", str(fake_dir)]
-            )
+            result = runner.invoke(app, ["compile", "IF-MIB", "-d", str(fake_dir)])
         assert result.exit_code == 0
         assert "not a directory" in result.stderr or "Warning" in result.stderr
 
@@ -223,6 +230,7 @@ class TestMibDir:
 # ---------------------------------------------------------------------------
 # Package integrity
 # ---------------------------------------------------------------------------
+
 
 class TestPackageIntegrity:
     def test_grammar_file_importable(self):
@@ -236,5 +244,6 @@ class TestPackageIntegrity:
         Path) so the check works identically inside a zip-imported wheel.
         """
         from importlib.resources import files
+
         grammar = files("trishul_smi.parser.grammar").joinpath("smiv2.lark")
         assert grammar.is_file(), "smiv2.lark missing from installed package"

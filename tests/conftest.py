@@ -6,6 +6,7 @@ because conftest.py is not reliably importable when tests/ is a package
 the fixture pattern; tests that instantiate it directly should import from
 tests.helpers.
 """
+
 from __future__ import annotations
 
 import pytest

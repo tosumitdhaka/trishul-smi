@@ -1,4 +1,5 @@
 """Unit tests for resolver/ — cache, dependency sort, and MibResolver."""
+
 from __future__ import annotations
 
 import os
@@ -19,6 +20,7 @@ from trishul_smi.resolver.resolver import MibResolver
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_module(name: str, imports: dict[str, list[str]] | None = None) -> MibModule:
     return MibModule(name=name, language="SMIv2", imports=imports or {})
@@ -68,6 +70,7 @@ class MockReader(AbstractReader):
     """Returns pre-loaded text; raises MibNotFoundError for unknown names.
     Raises MibSizeLimitError for names registered in size_limit_names.
     """
+
     def __init__(
         self,
         texts: dict[str, str],
@@ -78,6 +81,7 @@ class MockReader(AbstractReader):
 
     async def fetch(self, mib_name: str) -> str:
         from trishul_smi.errors import MibNotFoundError
+
         if mib_name in self._size_limit_names:
             raise MibSizeLimitError(f"{mib_name} exceeds size limit")
         if mib_name not in self._texts:
@@ -88,6 +92,7 @@ class MockReader(AbstractReader):
 # ---------------------------------------------------------------------------
 # MibCache
 # ---------------------------------------------------------------------------
+
 
 class TestMibCache:
     def test_put_and_get(self, tmp_path: Path):
@@ -135,14 +140,18 @@ class TestMibCache:
     def test_roundtrip_preserves_objects(self, tmp_path: Path):
         cache = MibCache(tmp_path, ttl_days=7)
         obj = MibObject(
-            name="ifDescr", oid="1.3.6.1.2.1.2.2.1.2",
+            name="ifDescr",
+            oid="1.3.6.1.2.1.2.2.1.2",
             oid_path=[1, 3, 6, 1, 2, 1, 2, 2, 1, 2],
-            object_type="OBJECT-TYPE", syntax="DisplayString",
-            max_access="read-only", status="current",
+            object_type="OBJECT-TYPE",
+            syntax="DisplayString",
+            max_access="read-only",
+            status="current",
             index=["ifIndex"],
         )
         m = MibModule(
-            name="IF-MIB", language="SMIv2",
+            name="IF-MIB",
+            language="SMIv2",
             imports={"SNMPv2-SMI": ["OBJECT-TYPE"]},
             objects={"ifDescr": obj},
         )
@@ -171,6 +180,7 @@ class TestMibCache:
 # ---------------------------------------------------------------------------
 # Topological sort
 # ---------------------------------------------------------------------------
+
 
 class TestTopologicalSort:
     def test_single_module_no_deps(self):
@@ -233,6 +243,7 @@ class TestTopologicalSort:
 # ---------------------------------------------------------------------------
 # MibResolver
 # ---------------------------------------------------------------------------
+
 
 class TestMibResolver:
     @pytest.mark.asyncio
@@ -298,10 +309,12 @@ aObj MODULE-IDENTITY
     ::= { 1 6 }
 END
 """
-        reader = MockReader({
-            "MIB-A":  mib_a,
-            "DEP-MIB": DEP_MIB,
-        })
+        reader = MockReader(
+            {
+                "MIB-A": mib_a,
+                "DEP-MIB": DEP_MIB,
+            }
+        )
         resolver = MibResolver(reader, SmiParser())
         result = await resolver.resolve(["MIB-A"])
         assert result.ok

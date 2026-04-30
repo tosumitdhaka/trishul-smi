@@ -29,6 +29,7 @@ Known limitations (each annotated with TODO in generated output):
 
 Output file: {output_dir}/{ModuleName}.py
 """
+
 from __future__ import annotations
 
 from jinja2 import BaseLoader, Environment
@@ -39,6 +40,7 @@ from trishul_smi.models.mib_object import MibObject
 # ---------------------------------------------------------------------------
 # Object-class detection
 # ---------------------------------------------------------------------------
+
 
 def _pysnmp_obj_class(obj: MibObject, module: MibModule) -> str:
     """Return the correct pysnmp constructor class name for *obj*.
@@ -160,28 +162,28 @@ mibBuilder.exportSymbols(
 # ---------------------------------------------------------------------------
 
 _PYSNMP_CLASS_FOR_TYPE = {
-    "MODULE-IDENTITY":   "ModuleIdentity",
-    "OBJECT-IDENTITY":   "ObjectIdentity",
+    "MODULE-IDENTITY": "ModuleIdentity",
+    "OBJECT-IDENTITY": "ObjectIdentity",
     "OBJECT IDENTIFIER": "MibIdentifier",
     "NOTIFICATION-TYPE": "NotificationType",
-    "TRAP-TYPE":         "NotificationType",
+    "TRAP-TYPE": "NotificationType",
 }
 
 _PYSNMP_SYNTAX = {
-    "INTEGER":           "Integer32()",
-    "Integer32":         "Integer32()",
-    "OCTET STRING":      "OctetString()",
+    "INTEGER": "Integer32()",
+    "Integer32": "Integer32()",
+    "OCTET STRING": "OctetString()",
     # ObjectIdentifier here is the ASN.1 value type imported above from 'ASN1'.
     # MibIdentifier (SNMPv2-SMI) is for OID tree *nodes*, not SYNTAX values.
     "OBJECT IDENTIFIER": "ObjectIdentifier()",
-    "IpAddress":         "IpAddress()",
-    "Counter32":         "Counter32()",
-    "Counter64":         "Counter64()",
-    "Gauge32":           "Gauge32()",
-    "Unsigned32":        "Unsigned32()",
-    "TimeTicks":         "TimeTicks()",
-    "Opaque":            "Opaque()",
-    "BITS":              "Bits()",
+    "IpAddress": "IpAddress()",
+    "Counter32": "Counter32()",
+    "Counter64": "Counter64()",
+    "Gauge32": "Gauge32()",
+    "Unsigned32": "Unsigned32()",
+    "TimeTicks": "TimeTicks()",
+    "Opaque": "Opaque()",
+    "BITS": "Bits()",
 }
 
 
@@ -234,6 +236,7 @@ def _map_pysnmp_assign(symbols: list[str], from_module: str) -> str:
 # ---------------------------------------------------------------------------
 # Formatter class
 # ---------------------------------------------------------------------------
+
 
 def _make_env() -> Environment:
     env = Environment(loader=BaseLoader(), keep_trailing_newline=True)

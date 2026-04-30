@@ -4,6 +4,7 @@ FetchProtocol is a structural (Protocol) type used wherever a reader is
 accepted as a parameter — resolver.py, compiler.py — so that mypy can
 verify the .fetch() contract without requiring inheritance from AbstractReader.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -18,6 +19,7 @@ class FetchProtocol(Protocol):
     Using a Protocol (not ABC) lets resolver.py and compiler.py accept
     mock readers in tests without any inheritance boilerplate.
     """
+
     async def fetch(self, mib_name: str) -> str:
         """Fetch raw ASN.1 text for *mib_name*.
 

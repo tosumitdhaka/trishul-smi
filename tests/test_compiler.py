@@ -1,4 +1,5 @@
 """Integration tests for MibCompiler, ReaderChain, and output formatters."""
+
 from __future__ import annotations
 
 import json
@@ -57,6 +58,7 @@ END
 # ReaderChain
 # ---------------------------------------------------------------------------
 
+
 class TestReaderChain:
     @pytest.mark.asyncio
     async def test_returns_first_reader_hit(self):
@@ -102,29 +104,32 @@ class TestReaderChain:
 # JsonFormatter
 # ---------------------------------------------------------------------------
 
+
 class TestJsonFormatter:
     def test_output_is_valid_json(self):
-        m = MibModule(name="IF-MIB", language="SMIv2",
-                      imports={"SNMPv2-SMI": ["OBJECT-TYPE"]})
+        m = MibModule(name="IF-MIB", language="SMIv2", imports={"SNMPv2-SMI": ["OBJECT-TYPE"]})
         data = json.loads(JsonFormatter().format(m))
         assert data["module"] == "IF-MIB"
         assert data["language"] == "SMIv2"
         assert "generated_by" in data
 
     def test_objects_serialised(self):
-        obj = MibObject(name="ifIndex", oid="1.3.6.1",
-                        oid_path=[1, 3, 6, 1], object_type="OBJECT-TYPE",
-                        syntax="Integer32", max_access="read-only",
-                        status="current")
+        obj = MibObject(
+            name="ifIndex",
+            oid="1.3.6.1",
+            oid_path=[1, 3, 6, 1],
+            object_type="OBJECT-TYPE",
+            syntax="Integer32",
+            max_access="read-only",
+            status="current",
+        )
         m = MibModule(name="IF-MIB", language="SMIv2", objects={"ifIndex": obj})
         data = json.loads(JsonFormatter().format(m))
         assert "ifIndex" in data["objects"]
         assert data["objects"]["ifIndex"]["syntax"] == "Integer32"
 
     def test_empty_module_serialises(self):
-        data = json.loads(JsonFormatter().format(
-            MibModule(name="EMPTY-MIB", language="SMIv1")
-        ))
+        data = json.loads(JsonFormatter().format(MibModule(name="EMPTY-MIB", language="SMIv1")))
         assert data["objects"] == {}
         assert data["types"] == {}
         assert data["notifications"] == {}
@@ -133,6 +138,7 @@ class TestJsonFormatter:
 # ---------------------------------------------------------------------------
 # PysnmpFormatter + object-class detection
 # ---------------------------------------------------------------------------
+
 
 class TestPysnmpFormatter:
     def test_output_is_python_source(self):
@@ -158,29 +164,45 @@ class TestPysnmpFormatter:
         assert "ObjectIdentifier" in src
 
     def test_hyphens_replaced_in_identifiers(self):
-        obj = MibObject(name="if-mib-obj", oid="1.3", oid_path=[1, 3],
-                        object_type="OBJECT-TYPE", syntax="Integer32")
-        m = MibModule(name="IF-MIB", language="SMIv2",
-                      objects={"if-mib-obj": obj})
+        obj = MibObject(
+            name="if-mib-obj",
+            oid="1.3",
+            oid_path=[1, 3],
+            object_type="OBJECT-TYPE",
+            syntax="Integer32",
+        )
+        m = MibModule(name="IF-MIB", language="SMIv2", objects={"if-mib-obj": obj})
         src = PysnmpFormatter().format(m)
         assert "if_mib_obj" in src
         assert "if-mib-obj =" not in src
 
     def test_imports_rendered(self):
-        m = MibModule(name="IF-MIB", language="SMIv2",
-                      imports={"SNMPv2-SMI": ["ModuleIdentity", "Integer32"]})
+        m = MibModule(
+            name="IF-MIB", language="SMIv2", imports={"SNMPv2-SMI": ["ModuleIdentity", "Integer32"]}
+        )
         src = PysnmpFormatter().format(m)
         assert "importSymbols" in src
         assert "SNMPv2-SMI" in src
 
     def test_spaced_syntax_emits_valid_python(self):
         """'OCTET STRING' and 'SEQUENCE OF X' must not emit broken Python."""
-        obj_octet = MibObject(name="rawBytes", oid="1.3", oid_path=[1, 3],
-                              object_type="OBJECT-TYPE", syntax="OCTET STRING")
-        obj_seq = MibObject(name="ifTable", oid="1.4", oid_path=[1, 4],
-                            object_type="OBJECT-TYPE", syntax="SEQUENCE OF IfEntry")
-        m = MibModule(name="IF-MIB", language="SMIv2",
-                      objects={"rawBytes": obj_octet, "ifTable": obj_seq})
+        obj_octet = MibObject(
+            name="rawBytes",
+            oid="1.3",
+            oid_path=[1, 3],
+            object_type="OBJECT-TYPE",
+            syntax="OCTET STRING",
+        )
+        obj_seq = MibObject(
+            name="ifTable",
+            oid="1.4",
+            oid_path=[1, 4],
+            object_type="OBJECT-TYPE",
+            syntax="SEQUENCE OF IfEntry",
+        )
+        m = MibModule(
+            name="IF-MIB", language="SMIv2", objects={"rawBytes": obj_octet, "ifTable": obj_seq}
+        )
         src = PysnmpFormatter().format(m)
         assert "OCTET STRING()" not in src
         assert "SEQUENCE OF IfEntry()" not in src
@@ -192,25 +214,26 @@ class TestPysnmpObjClass:
 
     def _module(self, **types):
         from trishul_smi.models.mib_type import MibType
+
         return MibModule(
-            name="TEST-MIB", language="SMIv2",
+            name="TEST-MIB",
+            language="SMIv2",
             types={k: MibType(name=k, base_type=v) for k, v in types.items()},
         )
 
     def test_sequence_of_is_mib_table(self):
-        obj = MibObject(name="ifTable", oid="1", object_type="OBJECT-TYPE",
-                        syntax="SEQUENCE OF IfEntry")
+        obj = MibObject(
+            name="ifTable", oid="1", object_type="OBJECT-TYPE", syntax="SEQUENCE OF IfEntry"
+        )
         assert _pysnmp_obj_class(obj, MibModule(name="X", language="SMIv2")) == "MibTable"
 
     def test_named_type_resolving_to_sequence_is_mib_table_row(self):
-        obj = MibObject(name="ifEntry", oid="1", object_type="OBJECT-TYPE",
-                        syntax="IfEntry")
+        obj = MibObject(name="ifEntry", oid="1", object_type="OBJECT-TYPE", syntax="IfEntry")
         m = self._module(IfEntry="SEQUENCE { ifIndex Integer32 }")
         assert _pysnmp_obj_class(obj, m) == "MibTableRow"
 
     def test_scalar_syntax_is_mib_scalar(self):
-        obj = MibObject(name="ifIndex", oid="1", object_type="OBJECT-TYPE",
-                        syntax="Integer32")
+        obj = MibObject(name="ifIndex", oid="1", object_type="OBJECT-TYPE", syntax="Integer32")
         assert _pysnmp_obj_class(obj, MibModule(name="X", language="SMIv2")) == "MibScalar"
 
     def test_none_syntax_is_mib_scalar(self):
@@ -222,6 +245,7 @@ class TestPysnmpObjClass:
 # MibCompiler (integration)
 # ---------------------------------------------------------------------------
 
+
 class TestMibCompiler:
     def test_unknown_format_raises_at_construction(self):
         with pytest.raises(ValueError, match="Unknown output format"):
@@ -231,6 +255,7 @@ class TestMibCompiler:
         compiler = MibCompiler(CompilerConfig(cache_dir=None, formats=["json"]))
         with pytest.raises(RuntimeError, match="No readers"):
             import asyncio
+
             asyncio.run(compiler.compile("TEST-MIB"))
 
     @pytest.mark.asyncio

@@ -13,10 +13,12 @@ class CompilerConfig:
     """
 
     # MIB source URL templates — @mib@ is replaced with the MIB name
-    sources: list[str] = field(default_factory=lambda: [
-        "https://mibs.pysnmp.com/asn1/@mib@",
-        "https://www.circitor.fr/Mibs/Mib/@mib@.mib",
-    ])
+    sources: list[str] = field(
+        default_factory=lambda: [
+            "https://mibs.pysnmp.com/asn1/@mib@",
+            "https://www.circitor.fr/Mibs/Mib/@mib@.mib",
+        ]
+    )
 
     # Output
     output_dir: Path = field(default_factory=lambda: Path("./mibs-output"))
@@ -31,9 +33,7 @@ class CompilerConfig:
     http_retries: int = 3
 
     # Disk cache
-    cache_dir: Path | None = field(
-        default_factory=lambda: Path.home() / ".cache" / "trishul-smi"
-    )
+    cache_dir: Path | None = field(default_factory=lambda: Path.home() / ".cache" / "trishul-smi")
     cache_ttl_days: int = 7  # 0 = never expire
 
     # Size guard — enforced by FileReader and HttpReader
@@ -41,17 +41,11 @@ class CompilerConfig:
 
     def __post_init__(self) -> None:
         if self.max_mib_size <= 0:
-            raise ValueError(
-                f"max_mib_size must be > 0, got {self.max_mib_size}"
-            )
+            raise ValueError(f"max_mib_size must be > 0, got {self.max_mib_size}")
         if self.http_timeout <= 0:
-            raise ValueError(
-                f"http_timeout must be > 0, got {self.http_timeout}"
-            )
+            raise ValueError(f"http_timeout must be > 0, got {self.http_timeout}")
         if self.http_retries < 0:
-            raise ValueError(
-                f"http_retries must be >= 0, got {self.http_retries}"
-            )
+            raise ValueError(f"http_retries must be >= 0, got {self.http_retries}")
         if self.cache_ttl_days < 0:
             raise ValueError(
                 f"cache_ttl_days must be >= 0 (0 = never expire), got {self.cache_ttl_days}"
@@ -67,6 +61,5 @@ class CompilerConfig:
         unknown = set(self.formats) - _known_formats
         if unknown:
             raise ValueError(
-                f"Unknown format(s): {sorted(unknown)}. "
-                f"Valid formats: {sorted(_known_formats)}"
+                f"Unknown format(s): {sorted(unknown)}. Valid formats: {sorted(_known_formats)}"
             )

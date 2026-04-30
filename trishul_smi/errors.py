@@ -5,6 +5,7 @@ Design rules:
 - No imports from other trishul_smi modules at module level.
 - Forward references use TYPE_CHECKING guard to avoid circular imports.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

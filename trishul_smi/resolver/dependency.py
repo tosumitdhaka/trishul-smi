@@ -6,6 +6,7 @@ Uses Kahn\'s algorithm (BFS-based) which:
 - Produces a deterministic order (alphabetical within each BFS layer)
   which makes test output stable and diffs readable.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -43,9 +44,7 @@ def topological_sort(modules: dict[str, MibModule]) -> list[str]:
                 dependents[dep].append(name)
 
     # Seed queue with nodes that have no unresolved deps (alphabetical order)
-    queue: deque[str] = deque(sorted(
-        name for name, deg in in_degree.items() if deg == 0
-    ))
+    queue: deque[str] = deque(sorted(name for name, deg in in_degree.items() if deg == 0))
     result: list[str] = []
 
     while queue:

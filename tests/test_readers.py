@@ -1,6 +1,7 @@
 """Unit tests for reader/ — FileReader, ZipReader, ReaderChain.
 HttpReader integration tests use pytest-httpx and are in test_httpreader.py.
 """
+
 from __future__ import annotations
 
 import zipfile
@@ -21,6 +22,7 @@ END
 # ---------------------------------------------------------------------------
 # FileReader
 # ---------------------------------------------------------------------------
+
 
 class TestFileReader:
     @pytest.mark.asyncio
@@ -66,6 +68,7 @@ class TestFileReader:
 # ---------------------------------------------------------------------------
 # ZipReader
 # ---------------------------------------------------------------------------
+
 
 class TestZipReader:
     def _make_zip(self, path: Path, filename: str, content: str) -> Path:
@@ -163,14 +166,13 @@ class TestZipReader:
 
         # Every temp file created during the nested fetch must have been unlinked.
         for p in created_temps:
-            assert not p.exists(), (
-                f"Temp file {p.name} was not cleaned up after nested ZIP fetch"
-            )
+            assert not p.exists(), f"Temp file {p.name} was not cleaned up after nested ZIP fetch"
 
 
 # ---------------------------------------------------------------------------
 # ReaderChain
 # ---------------------------------------------------------------------------
+
 
 class TestReaderChain:
     @pytest.mark.asyncio

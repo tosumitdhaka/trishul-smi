@@ -15,5 +15,5 @@ class MibObject:
     max_access: str | None = None
     status: str | None = None
     description: str | None = None
-    index: list[str] | None = None   # columnar objects: INDEX { ... }
-    augments: str | None = None      # columnar objects: AUGMENTS { <row> }
+    index: list[str] | None = None  # columnar objects: INDEX { ... }
+    augments: str | None = None  # columnar objects: AUGMENTS { <row> }

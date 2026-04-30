@@ -4,6 +4,7 @@ Kept in a separate module (not conftest.py) so that test files can import
 directly with ``from tests.helpers import MockReader`` regardless of whether
 tests/ is treated as a package (has __init__.py) or a rootdir collection.
 """
+
 from __future__ import annotations
 
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError

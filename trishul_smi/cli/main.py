@@ -22,6 +22,7 @@ Exit codes
     1   One or more MIBs failed to fetch, parse, or format.
     2   Configuration error (bad CLI option value).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,6 +54,7 @@ err = Console(stderr=True)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _resolve_cache_dir(raw: str | None) -> Path | None:
     """Convert the --cache-dir CLI string to the Path | None expected by CompilerConfig.
 
@@ -73,6 +75,7 @@ def _resolve_cache_dir(raw: str | None) -> Path | None:
 # version
 # ---------------------------------------------------------------------------
 
+
 @app.command()
 def version() -> None:
     """Print the installed trishul-smi version."""
@@ -87,6 +90,7 @@ def version() -> None:
 # compile
 # ---------------------------------------------------------------------------
 
+
 @app.command()
 def compile(  # noqa: A001
     mib_names: Annotated[
@@ -100,23 +104,26 @@ def compile(  # noqa: A001
     formats: Annotated[
         list[str] | None,
         typer.Option(
-            "--format", "-f",
+            "--format",
+            "-f",
             help="Output format: json or pysnmp. Repeat to write both.",
         ),
     ] = None,
     mib_dirs: Annotated[
         list[Path] | None,
         typer.Option(
-            "--mib-dir", "-d",
+            "--mib-dir",
+            "-d",
             help="Local directory to search for MIB text files. Repeat for multiple.",
         ),
     ] = None,
     sources: Annotated[
         list[str] | None,
         typer.Option(
-            "--source", "-s",
+            "--source",
+            "-s",
             help="HTTP source URL template (@mib@ replaced with MIB name). "
-                 "Repeat for multiple. Defaults to pysnmp.com + circitor.fr.",
+            "Repeat for multiple. Defaults to pysnmp.com + circitor.fr.",
         ),
     ] = None,
     cache_dir: Annotated[
@@ -176,9 +183,7 @@ def compile(  # noqa: A001
         f"{output_dir} [dim]({', '.join(config.formats)})[/dim]"
     )
     try:
-        results = asyncio.run(
-            _compile_async(compiler, config, mib_dirs or [], mib_names)
-        )
+        results = asyncio.run(_compile_async(compiler, config, mib_dirs or [], mib_names))
     except KeyboardInterrupt:
         err.print("\n[yellow]Interrupted.[/yellow]")
         # typer.Exit is intentional control flow, not derived from
@@ -198,6 +203,7 @@ def compile(  # noqa: A001
 # Async runner
 # ---------------------------------------------------------------------------
 
+
 async def _compile_async(
     compiler: MibCompiler,
     config: CompilerConfig,
@@ -212,9 +218,7 @@ async def _compile_async(
 
     for d in mib_dirs:
         if not d.is_dir():
-            err.print(
-                f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping."
-            )
+            err.print(f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping.")
             continue
         compiler.add_reader(FileReader(d))
 
@@ -228,10 +232,11 @@ async def _compile_async(
 # Output formatting
 # ---------------------------------------------------------------------------
 
+
 def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     compiled = [r for r in results if r.status == "compiled"]
-    failed   = [r for r in results if r.status == "failed"]
-    warned   = [r for r in compiled if r.warnings]
+    failed = [r for r in results if r.status == "failed"]
+    warned = [r for r in compiled if r.warnings]
 
     tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold")
     tbl.add_column("Status", width=10)

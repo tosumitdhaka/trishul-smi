@@ -19,6 +19,7 @@ Typical usage::
         for r in results:
             print(r.name, r.status, r.output_paths)
 """
+
 from __future__ import annotations
 
 import logging
@@ -38,7 +39,7 @@ from trishul_smi.resolver.resolver import MibResolver
 logger = logging.getLogger(__name__)
 
 _FORMATTER_CLASSES = {
-    "json":   JsonFormatter,
+    "json": JsonFormatter,
     "pysnmp": PysnmpFormatter,
 }
 
@@ -82,10 +83,7 @@ class MibCompiler:
             else None
         )
         # Formatter instances (stateless, reusable)
-        self._formatters = {
-            fmt: _FORMATTER_CLASSES[fmt]()
-            for fmt in self._config.formats
-        }
+        self._formatters = {fmt: _FORMATTER_CLASSES[fmt]() for fmt in self._config.formats}
 
     # ------------------------------------------------------------------
     # Fluent reader registration
@@ -122,9 +120,7 @@ class MibCompiler:
                 formatting begins so no partial output is written.
         """
         if not self._readers:
-            raise RuntimeError(
-                "No readers registered. Call add_reader() before compile()."
-            )
+            raise RuntimeError("No readers registered. Call add_reader() before compile().")
 
         chain = ReaderChain(*self._readers)
         resolver = MibResolver(chain, self._parser, self._cache)
@@ -135,9 +131,7 @@ class MibCompiler:
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise WriterError(
-                f"Cannot create output directory {out_dir}: {exc}"
-            ) from exc
+            raise WriterError(f"Cannot create output directory {out_dir}: {exc}") from exc
 
         # --- Successfully resolved modules ---
         for module in resolve_result.modules:
@@ -158,19 +152,23 @@ class MibCompiler:
                     warnings.append(msg)
                     logger.warning(msg)  # visible in CLI without aborting the run
 
-            results.append(CompileResult(
-                name=module.name,
-                status="compiled",
-                output_paths=output_paths,
-                warnings=warnings,
-            ))
+            results.append(
+                CompileResult(
+                    name=module.name,
+                    status="compiled",
+                    output_paths=output_paths,
+                    warnings=warnings,
+                )
+            )
 
         # --- Failed modules ---
         for name, exc in resolve_result.errors.items():
-            results.append(CompileResult(
-                name=name,
-                status="failed",
-                error=str(exc),
-            ))
+            results.append(
+                CompileResult(
+                    name=name,
+                    status="failed",
+                    error=str(exc),
+                )
+            )
 
         return results

@@ -11,6 +11,7 @@ Invalidation:
     File mtime vs CompilerConfig.cache_ttl_days. When cache_ttl_days=0
     entries never expire (useful for offline/air-gapped workflows).
 """
+
 from __future__ import annotations
 
 import time
@@ -28,9 +29,11 @@ from trishul_smi.models.mib_type import MibType
 # Serialization helpers
 # ---------------------------------------------------------------------------
 
+
 def _module_to_bytes(module: MibModule) -> bytes:
     """Serialise MibModule to orjson bytes. source_text is intentionally
     excluded from the cache to keep files small."""
+
     def _obj(o: MibObject) -> dict[str, Any]:
         return {
             "name": o.name,
@@ -66,6 +69,7 @@ def _module_to_bytes(module: MibModule) -> bytes:
 
 def _module_from_dict(d: dict[str, Any]) -> MibModule:
     """Reconstruct a MibModule from a deserialised dict."""
+
     def _obj(o: dict[str, Any]) -> MibObject:
         return MibObject(
             name=o["name"],
@@ -102,6 +106,7 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
 # MibCache
 # ---------------------------------------------------------------------------
 
+
 class MibCache:
     """Disk-backed cache for compiled MibModule objects.
 
@@ -125,9 +130,7 @@ class MibCache:
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise MibCacheError(
-                f"Cannot create cache directory {self._dir}: {exc}"
-            ) from exc
+            raise MibCacheError(f"Cannot create cache directory {self._dir}: {exc}") from exc
 
     def _path(self, mib_name: str) -> Path:
         return self._dir / f"{mib_name}.json"

@@ -5,6 +5,7 @@ Syntax types (integer_type, octet_string_type, …) return _SyntaxInfo objects
 directly, so assignment methods use typed extractors — no string sniffing.
 Description/status/access fields use typed wrappers for the same reason.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,25 +21,31 @@ from trishul_smi.parser._constants import SMIv2_MARKERS
 # Internal typed wrapper dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _SyntaxInfo:
     value: str
+
 
 @dataclass
 class _DescriptionInfo:
     value: str
 
+
 @dataclass
 class _StatusInfo:
     value: str
+
 
 @dataclass
 class _AccessInfo:
     value: str
 
+
 @dataclass
 class _IndexInfo:
     columns: list[str]
+
 
 @dataclass
 class _AugmentsInfo:
@@ -48,6 +55,7 @@ class _AugmentsInfo:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _unquote(token: Token | str) -> str:
     s = str(token)
@@ -84,6 +92,7 @@ def _resolve_oid(components: list) -> tuple[str, list[int]]:
 # ---------------------------------------------------------------------------
 # Transformer
 # ---------------------------------------------------------------------------
+
 
 class MibTransformer(Transformer):
     """Walks the Lark parse tree and builds a MibModule."""
@@ -155,8 +164,7 @@ class MibTransformer(Transformer):
     def module_identity_assignment(self, children: list) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
-        return MibObject(name=name, oid=oid_str, oid_path=oid_path,
-                         object_type="MODULE-IDENTITY")
+        return MibObject(name=name, oid=oid_str, oid_path=oid_path, object_type="MODULE-IDENTITY")
 
     # ------------------------------------------------------------------
     # OBJECT-IDENTITY
@@ -165,10 +173,14 @@ class MibTransformer(Transformer):
     def object_identity_assignment(self, children: list) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
-        return MibObject(name=name, oid=oid_str, oid_path=oid_path,
-                         object_type="OBJECT-IDENTITY",
-                         status=self._status(children),
-                         description=self._description(children))
+        return MibObject(
+            name=name,
+            oid=oid_str,
+            oid_path=oid_path,
+            object_type="OBJECT-IDENTITY",
+            status=self._status(children),
+            description=self._description(children),
+        )
 
     # ------------------------------------------------------------------
     # OBJECT-TYPE
@@ -180,7 +192,9 @@ class MibTransformer(Transformer):
         index_info = next((c for c in children if isinstance(c, _IndexInfo)), None)
         augments_info = next((c for c in children if isinstance(c, _AugmentsInfo)), None)
         return MibObject(
-            name=name, oid=oid_str, oid_path=oid_path,
+            name=name,
+            oid=oid_str,
+            oid_path=oid_path,
             object_type="OBJECT-TYPE",
             syntax=self._syntax(children),
             max_access=self._access(children),
@@ -197,10 +211,14 @@ class MibTransformer(Transformer):
     def notification_type_assignment(self, children: list) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
-        return MibObject(name=name, oid=oid_str, oid_path=oid_path,
-                         object_type="NOTIFICATION-TYPE",
-                         status=self._status(children),
-                         description=self._description(children))
+        return MibObject(
+            name=name,
+            oid=oid_str,
+            oid_path=oid_path,
+            object_type="NOTIFICATION-TYPE",
+            status=self._status(children),
+            description=self._description(children),
+        )
 
     # ------------------------------------------------------------------
     # TEXTUAL-CONVENTION
@@ -208,8 +226,11 @@ class MibTransformer(Transformer):
 
     def textual_convention_assignment(self, children: list) -> MibType:
         name = str(children[0])
-        return MibType(name=name, base_type=self._syntax(children) or "",
-                       description=self._description(children))
+        return MibType(
+            name=name,
+            base_type=self._syntax(children) or "",
+            description=self._description(children),
+        )
 
     # ------------------------------------------------------------------
     # Type / Value assignments
@@ -224,8 +245,9 @@ class MibTransformer(Transformer):
         oid_list = self._oid(children)
         if oid_list:
             oid_str, oid_path = _resolve_oid(oid_list)
-            return MibObject(name=name, oid=oid_str, oid_path=oid_path,
-                             object_type="OBJECT IDENTIFIER")
+            return MibObject(
+                name=name, oid=oid_str, oid_path=oid_path, object_type="OBJECT IDENTIFIER"
+            )
         return None
 
     # ------------------------------------------------------------------
@@ -249,8 +271,7 @@ class MibTransformer(Transformer):
         number = next(
             (str(c) for c in children if isinstance(c, Token) and c.type == "NUMBER"), "0"
         )
-        return MibObject(name=name, oid=number, oid_path=[int(number)],
-                         object_type="TRAP-TYPE")
+        return MibObject(name=name, oid=number, oid_path=[int(number)], object_type="TRAP-TYPE")
 
     def assignment(self, children: list):
         return children[0] if children else None
@@ -287,25 +308,62 @@ class MibTransformer(Transformer):
     def augments_part(self, children: list) -> _AugmentsInfo:
         return _AugmentsInfo(str(children[0]))
 
-    def revision(self, _): return None
-    def compliance_module(self, _): return None
-    def mandatory_groups(self, _): return None
-    def compliance_item(self, _): return None
-    def compliance_group(self, _): return None
-    def compliance_object(self, _): return None
-    def capabilities_module(self, _): return None
-    def variation(self, _): return None
-    def trap_variables_clause(self, _): return None
-    def units_clause(self, _): return None
-    def reference_clause(self, _): return None
-    def display_hint_clause(self, _): return None
-    def defval_clause(self, _): return None
-    def objects_clause(self, _): return None
-    def scalar_value(self, _): return None
-    def write_syntax_clause(self, _): return None
-    def min_access_clause(self, _): return None
-    def access_clause(self, _): return None
-    def creation_requires_clause(self, _): return None
+    def revision(self, _):
+        return None
+
+    def compliance_module(self, _):
+        return None
+
+    def mandatory_groups(self, _):
+        return None
+
+    def compliance_item(self, _):
+        return None
+
+    def compliance_group(self, _):
+        return None
+
+    def compliance_object(self, _):
+        return None
+
+    def capabilities_module(self, _):
+        return None
+
+    def variation(self, _):
+        return None
+
+    def trap_variables_clause(self, _):
+        return None
+
+    def units_clause(self, _):
+        return None
+
+    def reference_clause(self, _):
+        return None
+
+    def display_hint_clause(self, _):
+        return None
+
+    def defval_clause(self, _):
+        return None
+
+    def objects_clause(self, _):
+        return None
+
+    def scalar_value(self, _):
+        return None
+
+    def write_syntax_clause(self, _):
+        return None
+
+    def min_access_clause(self, _):
+        return None
+
+    def access_clause(self, _):
+        return None
+
+    def creation_requires_clause(self, _):
+        return None
 
     def object_list(self, children: list) -> list[str]:
         return [str(c) for c in children]
@@ -334,24 +392,59 @@ class MibTransformer(Transformer):
         val = children[0] if children else ""
         return val if isinstance(val, _SyntaxInfo) else _SyntaxInfo(str(val))
 
-    def integer_type(self, _):           return _SyntaxInfo("INTEGER")
-    def octet_string_type(self, _):      return _SyntaxInfo("OCTET STRING")
-    def oid_type(self, _):               return _SyntaxInfo("OBJECT IDENTIFIER")
-    def null_type(self, _):              return _SyntaxInfo("NULL")
-    def ip_address_type(self, _):        return _SyntaxInfo("IpAddress")
-    def counter32_type(self, _):         return _SyntaxInfo("Counter32")
-    def counter64_type(self, _):         return _SyntaxInfo("Counter64")
-    def gauge32_type(self, _):           return _SyntaxInfo("Gauge32")
-    def unsigned32_type(self, _):        return _SyntaxInfo("Unsigned32")
-    def timeticks_type(self, _):         return _SyntaxInfo("TimeTicks")
-    def opaque_type(self, _):            return _SyntaxInfo("Opaque")
-    def integer32_type(self, _):         return _SyntaxInfo("Integer32")
-    def network_address_type(self, _):   return _SyntaxInfo("NetworkAddress")
-    def counter_type(self, _):           return _SyntaxInfo("Counter")
-    def gauge_type(self, _):             return _SyntaxInfo("Gauge")
-    def bits_type(self, _):              return _SyntaxInfo("BITS")
-    def sequence_type(self, _):          return _SyntaxInfo("SEQUENCE")
-    def choice_type(self, _):            return _SyntaxInfo("CHOICE")
+    def integer_type(self, _):
+        return _SyntaxInfo("INTEGER")
+
+    def octet_string_type(self, _):
+        return _SyntaxInfo("OCTET STRING")
+
+    def oid_type(self, _):
+        return _SyntaxInfo("OBJECT IDENTIFIER")
+
+    def null_type(self, _):
+        return _SyntaxInfo("NULL")
+
+    def ip_address_type(self, _):
+        return _SyntaxInfo("IpAddress")
+
+    def counter32_type(self, _):
+        return _SyntaxInfo("Counter32")
+
+    def counter64_type(self, _):
+        return _SyntaxInfo("Counter64")
+
+    def gauge32_type(self, _):
+        return _SyntaxInfo("Gauge32")
+
+    def unsigned32_type(self, _):
+        return _SyntaxInfo("Unsigned32")
+
+    def timeticks_type(self, _):
+        return _SyntaxInfo("TimeTicks")
+
+    def opaque_type(self, _):
+        return _SyntaxInfo("Opaque")
+
+    def integer32_type(self, _):
+        return _SyntaxInfo("Integer32")
+
+    def network_address_type(self, _):
+        return _SyntaxInfo("NetworkAddress")
+
+    def counter_type(self, _):
+        return _SyntaxInfo("Counter")
+
+    def gauge_type(self, _):
+        return _SyntaxInfo("Gauge")
+
+    def bits_type(self, _):
+        return _SyntaxInfo("BITS")
+
+    def sequence_type(self, _):
+        return _SyntaxInfo("SEQUENCE")
+
+    def choice_type(self, _):
+        return _SyntaxInfo("CHOICE")
 
     def named_type(self, children: list) -> _SyntaxInfo:
         return _SyntaxInfo(str(children[0]))

@@ -1,4 +1,5 @@
 """Unit tests for CompilerConfig — defaults, isolation, and validators."""
+
 from pathlib import Path
 
 import pytest

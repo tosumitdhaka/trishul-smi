@@ -24,6 +24,7 @@ Error handling
   fails to fetch or parse, A\'s imports are never queued. Callers should
   not assume all reachable dependencies will appear in ResolveResult.errors.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -40,6 +41,7 @@ from trishul_smi.resolver.dependency import topological_sort
 @dataclass
 class ResolveResult:
     """Returned by MibResolver.resolve()."""
+
     modules: list[MibModule] = field(default_factory=list)
     """All successfully resolved modules in dependency order."""
     errors: dict[str, Exception] = field(default_factory=dict)
@@ -82,7 +84,7 @@ class MibResolver:
             for anything that failed.
         """
         fetched: dict[str, MibModule] = {}
-        errors:  dict[str, Exception] = {}
+        errors: dict[str, Exception] = {}
         pending: set[str] = set(mib_names)
 
         while pending:

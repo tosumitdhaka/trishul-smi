@@ -1,4 +1,5 @@
 """Unit tests for SmiParser — uses fixture MIB strings."""
+
 from __future__ import annotations
 
 import pytest
@@ -70,6 +71,7 @@ INVALID_MIB = "this is not a valid MIB"
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestSmiParserV2:
     def test_parse_minimal_module(self):
         parser = SmiParser()
@@ -135,8 +137,10 @@ class TestSmiParserErrors:
 class TestAutoDetect:
     def test_detects_smiv2_from_imports(self):
         from trishul_smi.parser.smi_parser import _detect_dialect
+
         assert _detect_dialect(MINIMAL_V2) == "smiv2"
 
     def test_detects_smiv1_without_markers(self):
         from trishul_smi.parser.smi_parser import _detect_dialect
+
         assert _detect_dialect(MINIMAL_V1) == "smiv1"

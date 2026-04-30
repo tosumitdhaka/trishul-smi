@@ -1,4 +1,5 @@
 """Unit tests for errors.py — hierarchy, import safety, instantiation."""
+
 import pytest
 
 from trishul_smi.errors import (

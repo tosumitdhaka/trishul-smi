@@ -11,6 +11,7 @@ Fallback semantics:
 This prevents a size-limit hit on reader 1 from silently falling through
 to a second reader that might return a truncated or stale copy.
 """
+
 from __future__ import annotations
 
 from trishul_smi.errors import MibNotFoundError

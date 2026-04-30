@@ -5,6 +5,7 @@ parsed metadata: imports, objects, types, notifications.
 
 Output file: {output_dir}/{ModuleName}.json
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -52,8 +53,6 @@ class JsonFormatter:
             "imports": module.imports,
             "objects": {k: _obj_dict(v) for k, v in module.objects.items()},
             "types": {k: _type_dict(v) for k, v in module.types.items()},
-            "notifications": {
-                k: _obj_dict(v) for k, v in module.notifications.items()
-            },
+            "notifications": {k: _obj_dict(v) for k, v in module.notifications.items()},
         }
         return orjson.dumps(payload, option=orjson.OPT_INDENT_2)

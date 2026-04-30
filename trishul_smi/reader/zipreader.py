@@ -32,9 +32,7 @@ class ZipReader(AbstractReader):
             + ", ".join(str(p) for p in self._zip_paths)
         )
 
-    def _search_zip(
-        self, zip_path: Path, mib_name: str, _depth: int = 0
-    ) -> str | None:
+    def _search_zip(self, zip_path: Path, mib_name: str, _depth: int = 0) -> str | None:
         if _depth > 4:
             return None
         if not zip_path.is_file():

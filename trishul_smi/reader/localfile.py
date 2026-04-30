@@ -32,6 +32,5 @@ class FileReader(AbstractReader):
                     )
                 return data.decode("utf-8", errors="replace")
         raise MibNotFoundError(
-            f"MIB '{mib_name}' not found in directories: "
-            + ", ".join(str(d) for d in self._dirs)
+            f"MIB '{mib_name}' not found in directories: " + ", ".join(str(d) for d in self._dirs)
         )
