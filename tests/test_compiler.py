@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -180,7 +179,7 @@ class TestPysnmpFormatter:
 
 
 class TestPysnmpObjClass:
-    """Unit tests for _pysnmp_obj_class object-type detection (issue #2)."""
+    """Unit tests for _pysnmp_obj_class object-type detection."""
 
     def _module(self, **types):
         from trishul_smi.models.mib_type import MibType
@@ -216,8 +215,8 @@ class TestPysnmpObjClass:
 
 class TestMibCompiler:
     def test_unknown_format_raises_at_construction(self):
-        """Issue #1: unknown format raises ValueError at __init__, not KeyError
-        buried inside an async stack trace.
+        """Unknown format raises ValueError at __init__, not KeyError deep
+        inside an async stack trace.
         """
         with pytest.raises(ValueError, match="Unknown output format"):
             MibCompiler(CompilerConfig(formats=["invalid-fmt"], cache_dir=None))
@@ -322,9 +321,10 @@ class TestMibCompiler:
     async def test_formatter_error_captured_in_warnings_not_raised(
         self, tmp_path: Path
     ):
-        """Issue #3/11: a formatter that raises must not abort the compile run.
-        The error is captured in result.warnings and logged at WARNING level;
-        output_paths for that format is empty, but other formats still write.
+        """A formatter that raises must not abort the compile run.
+        The error is captured in result.warnings and logged at WARNING;
+        output_paths for that format is empty, but the module status
+        remains 'compiled'.
         """
         config = CompilerConfig(output_dir=tmp_path, cache_dir=None,
                                 formats=["json"])
@@ -332,29 +332,19 @@ class TestMibCompiler:
             MockReader({"TEST-MIB": MINIMAL_V2})
         )
 
-        # Patch JsonFormatter.format to raise
-        with patch(
-            "trishul_smi.compiler.JsonFormatter.format",
-            side_effect=RuntimeError("simulated formatter crash"),
-        ):
-            # Should NOT raise — error is non-fatal
-            with pytest.raises(AttributeError):  # patch target adjustment
-                pass  # tested below via direct patch path
+        # Monkey-patch the formatter instance to raise on format()
+        def _raise(_):
+            raise RuntimeError("simulated crash")
 
-        # Correct patch path: patch on the formatter instance inside compiler
-        original_formatters = compiler._formatters
         broken_formatter = JsonFormatter()
-        broken_formatter.format = lambda m: (_ for _ in ()).throw(  # type: ignore
-            RuntimeError("simulated crash")
-        )
+        broken_formatter.format = _raise  # type: ignore[method-assign]
         compiler._formatters = {"json": broken_formatter}
 
-        with pytest.warns(None):  # no pytest.warns needed; just check no raise
-            results = await compiler.compile("TEST-MIB")
+        results = await compiler.compile("TEST-MIB")
 
         compiled = next((r for r in results if r.name == "TEST-MIB"), None)
         assert compiled is not None
-        assert compiled.status == "compiled"   # still compiled
+        assert compiled.status == "compiled"    # run completed
         assert len(compiled.output_paths) == 0  # file not written
         assert any("formatter error" in w for w in compiled.warnings)
         assert any("simulated crash" in w for w in compiled.warnings)

@@ -31,9 +31,6 @@ Output file: {output_dir}/{ModuleName}.py
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
-
 from jinja2 import BaseLoader, Environment
 
 from trishul_smi.models.mib_module import MibModule
@@ -57,7 +54,6 @@ def _pysnmp_obj_class(obj: MibObject, module: MibModule) -> str:
     syntax = (obj.syntax or "").strip()
     if syntax.upper().startswith("SEQUENCE OF"):
         return "MibTable"
-    # Named type that resolves to SEQUENCE in this module = table row
     if syntax and syntax in module.types:
         base = (module.types[syntax].base_type or "").upper()
         if base.startswith("SEQUENCE"):
@@ -176,6 +172,11 @@ def _oid_tuple(oid_path: list[int]) -> str:
 
 
 def _pysnmp_class_for_type(object_type: str) -> str:
+    # Fallback should never be hit — the template only calls this filter for
+    # the object types explicitly enumerated in _PYSNMP_CLASS_FOR_TYPE.
+    # If a future parser change introduces a new type string and this filter
+    # is called with it, MibIdentifier is a conservative wrong answer rather
+    # than a crash. The TODO comment in the generated output will flag it.
     return _PYSNMP_CLASS_FOR_TYPE.get(object_type, "MibIdentifier")
 
 
