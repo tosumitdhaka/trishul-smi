@@ -26,14 +26,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
-import sys
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
+from rich import box
 from rich.console import Console
 from rich.table import Table
-from rich import box
 
 from trishul_smi.compiler import MibCompiler
 from trishul_smi.config import CompilerConfig
@@ -43,7 +42,7 @@ app = typer.Typer(
     name="trishul-smi",
     help="Compile SNMP MIB definitions to JSON or pysnmp format.",
     no_args_is_help=True,
-    pretty_exceptions_enable=False,  # let our own error handling surface cleanly
+    pretty_exceptions_enable=False,  # our own handlers surface errors cleanly
 )
 
 console = Console()
@@ -69,7 +68,7 @@ def version() -> None:
 # ---------------------------------------------------------------------------
 
 @app.command()
-def compile(  # noqa: A001  (shadows builtin, but acceptable in CLI scope)
+def compile(  # noqa: A001
     mib_names: Annotated[
         list[str],
         typer.Argument(help="One or more MIB names to compile (e.g. IF-MIB IP-MIB)."),
@@ -79,27 +78,27 @@ def compile(  # noqa: A001  (shadows builtin, but acceptable in CLI scope)
         typer.Option("--output-dir", "-o", help="Directory for output files."),
     ] = Path("./mibs-output"),
     formats: Annotated[
-        list[str],
+        Optional[list[str]],
         typer.Option(
             "--format", "-f",
             help="Output format: json or pysnmp. Repeat to write both.",
         ),
-    ] = ["json"],
+    ] = None,
     mib_dirs: Annotated[
-        list[Path],
+        Optional[list[Path]],
         typer.Option(
             "--mib-dir", "-d",
             help="Local directory to search for MIB text files. Repeat for multiple.",
         ),
-    ] = [],
+    ] = None,
     sources: Annotated[
-        list[str],
+        Optional[list[str]],
         typer.Option(
             "--source", "-s",
-            help="HTTP source URL template (@mib@ is replaced with MIB name). "
+            help="HTTP source URL template (@mib@ replaced with MIB name). "
                  "Repeat for multiple. Defaults to pysnmp.com + circitor.fr.",
         ),
-    ] = [],
+    ] = None,
     cache_dir: Annotated[
         Optional[str],
         typer.Option(
@@ -131,28 +130,33 @@ def compile(  # noqa: A001  (shadows builtin, but acceptable in CLI scope)
     """Compile one or more MIB definitions and all transitive dependencies."""
 
     # --- Resolve cache_dir ---
-    # cache_dir CLI arg is Optional[str] so the user can pass "" to disable.
+    # Optional[str] lets the user pass "" to explicitly disable the cache.
     resolved_cache: Path | None
     if cache_dir is None:
         resolved_cache = Path.home() / ".cache" / "trishul-smi"  # default on
     elif cache_dir == "":
-        resolved_cache = None  # explicitly disabled
+        resolved_cache = None   # explicitly disabled
     else:
         resolved_cache = Path(cache_dir)
 
     # --- Build config (validates all fields eagerly) ---
+    # Only pass `sources` and `formats` when the user explicitly supplied them;
+    # omitting them lets CompilerConfig use its own documented defaults without
+    # reaching into __dataclass_fields__.
     try:
+        extra: dict = {}
+        if sources:
+            extra["sources"] = sources
+        if formats:
+            extra["formats"] = formats
         config = CompilerConfig(
             output_dir=output_dir,
-            formats=formats,
-            sources=sources if sources else CompilerConfig.__dataclass_fields__[
-                "sources"
-            ].default_factory(),  # type: ignore[misc]
             cache_dir=resolved_cache,
             cache_ttl_days=cache_ttl_days,
             max_mib_size=max_mib_size,
             http_timeout=http_timeout,
             http_retries=http_retries,
+            **extra,
         )
         compiler = MibCompiler(config)
     except ValueError as exc:
@@ -162,11 +166,11 @@ def compile(  # noqa: A001  (shadows builtin, but acceptable in CLI scope)
     # --- Compile ---
     console.print(
         f"[bold]Compiling[/bold] {', '.join(mib_names)} → "
-        f"{output_dir} [dim]({', '.join(formats)})[/dim]"
+        f"{output_dir} [dim]({', '.join(config.formats)})[/dim]"
     )
     try:
         results = asyncio.run(
-            _compile_async(compiler, config, mib_dirs, mib_names)
+            _compile_async(compiler, config, mib_dirs or [], mib_names)
         )
     except KeyboardInterrupt:
         err.print("\n[yellow]Interrupted.[/yellow]")
@@ -178,8 +182,7 @@ def compile(  # noqa: A001  (shadows builtin, but acceptable in CLI scope)
     # --- Display results ---
     _print_results(results, verbose=verbose)
 
-    failed = [r for r in results if r.status == "failed"]
-    if failed:
+    if any(r.status == "failed" for r in results):
         raise typer.Exit(1)
 
 
@@ -194,19 +197,21 @@ async def _compile_async(
     mib_names: list[str],
 ) -> list[CompileResult]:
     """Wire up readers and run the compiler inside the async event loop."""
-    # Import here to avoid pulling httpx into the import graph at CLI startup
-    # for users who only use the library programmatically.
+    # Deferred imports: avoids pulling httpx into the import graph at CLI
+    # startup for users who use the library programmatically without HTTP.
     from trishul_smi.reader.file import FileReader
     from trishul_smi.reader.http import HttpReader
 
-    # FileReaders first (local dir takes priority over HTTP)
+    # FileReaders first so local copies take priority over HTTP
     for d in mib_dirs:
         if not d.is_dir():
-            err.print(f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping.")
+            err.print(
+                f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping."
+            )
             continue
         compiler.add_reader(FileReader(d))
 
-    # HttpReader last (fallback); always present so external MIBs are reachable
+    # HttpReader is always present so external transitive deps are reachable
     async with HttpReader(config.sources) as http:
         compiler.add_reader(http)
         return await compiler.compile(*mib_names)
@@ -221,10 +226,9 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     failed   = [r for r in results if r.status == "failed"]
     warned   = [r for r in compiled if r.warnings]
 
-    # --- Results table ---
     tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold")
-    tbl.add_column("Status",  width=10)
-    tbl.add_column("Module",  style="cyan")
+    tbl.add_column("Status", width=10)
+    tbl.add_column("Module", style="cyan")
     tbl.add_column("Details")
 
     for r in results:
@@ -243,7 +247,6 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
 
     console.print(tbl)
 
-    # --- Summary line ---
     parts = [f"[green]{len(compiled)} compiled[/green]"]
     if failed:
         parts.append(f"[red]{len(failed)} failed[/red]")

@@ -2,11 +2,12 @@
 
 Strategy:
 - Use typer.testing.CliRunner for all invocations.
-- Patch MibCompiler.compile (or the async runner) to avoid real I/O.
+- Patch _compile_async to avoid real I/O.
 - Verify exit codes, stdout content, and table structure.
 """
 from __future__ import annotations
 
+import importlib.metadata
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -58,11 +59,14 @@ class TestVersionCommand:
         assert "trishul-smi" in result.stdout
 
     def test_dev_fallback_when_not_installed(self):
-        with patch("importlib.metadata.version",
-                   side_effect=Exception("not installed")):
+        """version command catches PackageNotFoundError and prints a dev label."""
+        with patch(
+            "trishul_smi.cli.main.importlib.metadata.version",
+            side_effect=importlib.metadata.PackageNotFoundError("trishul-smi"),
+        ):
             result = runner.invoke(app, ["version"])
-        # should not crash even if importlib.metadata raises
         assert result.exit_code == 0
+        assert "development" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +81,7 @@ class TestCompileArgs:
 
     def test_compile_no_mib_names_shows_usage(self):
         result = runner.invoke(app, ["compile"])
-        # typer exits with 2 (UsageError) when required arg is missing
-        assert result.exit_code != 0
+        assert result.exit_code == 2  # typer UsageError for missing required argument
 
     def test_compile_single_mib_exit_zero(self):
         with _patch_run([_make_result("IF-MIB")]):
@@ -94,7 +97,6 @@ class TestCompileArgs:
         assert "IP-MIB" in result.stdout
 
     def test_unknown_format_exits_2(self):
-        """CompilerConfig raises ValueError for unknown formats; CLI maps to exit 2."""
         result = runner.invoke(app, ["compile", "IF-MIB", "-f", "xml"])
         assert result.exit_code == 2
 
@@ -199,3 +201,23 @@ class TestCacheDirOption:
 
         if captured:
             assert captured[0].cache_dir == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# compile — --mib-dir
+# ---------------------------------------------------------------------------
+
+class TestMibDir:
+    def test_nonexistent_mib_dir_warns_not_crashes(self, tmp_path: Path):
+        """A --mib-dir path that doesn\'t exist emits a warning but does not
+        crash or exit non-zero; the compile run continues with HTTP fallback.
+        """
+        fake_dir = tmp_path / "does-not-exist"
+        with _patch_run([_make_result("IF-MIB")]):
+            result = runner.invoke(
+                app, ["compile", "IF-MIB", "-d", str(fake_dir)]
+            )
+        assert result.exit_code == 0
+        # Warning is written to stderr; CliRunner with mix_stderr=False
+        # captures stdout separately. Check stderr for the warning text.
+        assert "not a directory" in result.stderr or "Warning" in result.stderr
