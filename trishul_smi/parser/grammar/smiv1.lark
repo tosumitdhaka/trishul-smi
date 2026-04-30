@@ -1,7 +1,14 @@
 // smiv1.lark — SMIv1 grammar (RFC 1155, RFC 1212, RFC 1215)
-// Independent complete grammar — NOT inherited from smiv2.lark.
-// Lark has no grammar override mechanism; both files are standalone.
-// Shared terminals are inlined (same as smiv2.lark).
+// Standalone: NOT inherited from smiv2.lark.
+//
+// TODO (issue #8): bits_type is technically an SMIv2 extension, but some
+//   vendor MIBs declare it in otherwise-SMIv1 files. Add:
+//     bits_type : "BITS" "{" named_bits "}"
+//     named_bits : named_bit ("," named_bit)*
+//     named_bit  : LOWER_ID "(" NUMBER ")"
+//   and add bits_type to the syntax_type alternatives if vendor compat needed.
+//
+// QUOTED_STRING: same multiline fix as smiv2.lark (see note there).
 
 // ---------------------------------------------------------------------------
 // Top-level
@@ -84,7 +91,7 @@ object_list           : LOWER_ID ("," LOWER_ID)*
 
 
 // ---------------------------------------------------------------------------
-// Plain type and value assignments
+// Type / Value assignments
 // ---------------------------------------------------------------------------
 
 type_assignment  : UPPER_ID "::=" syntax_type
@@ -155,7 +162,7 @@ oid_component : LOWER_ID "(" NUMBER ")"  -> named_arc
 
 
 // ---------------------------------------------------------------------------
-// Terminals
+// Terminals  (same multiline QUOTED_STRING fix as smiv2.lark)
 // ---------------------------------------------------------------------------
 
 UPPER_ID      : /[A-Z][A-Za-z0-9\-]*/
@@ -163,7 +170,7 @@ LOWER_ID      : /[a-z][A-Za-z0-9\-]*/
 NUMBER        : /[0-9]+/
 HEX_STRING    : /\'[0-9A-Fa-f]*\'H/
 BIN_STRING    : /\'[01]*\'B/
-QUOTED_STRING : /"([^"\\]|\\.)*"/
+QUOTED_STRING : /"(?:[^\\"]|\\[\s\S])*"/
 
 WS      : /[ \t\n\r]+/
 COMMENT : /--[^\n]*/

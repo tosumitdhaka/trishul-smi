@@ -6,11 +6,10 @@ from typing import Any
 
 import httpx
 from tenacity import (
-    retry,
+    AsyncRetrying,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    RetryCallState,
 )
 
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
@@ -23,10 +22,10 @@ class HttpReader(AbstractReader):
     """Fetches MIBs from HTTP(S) sources.
 
     Features:
-    - httpx.AsyncClient with explicit timeout (from constructor, not hardcoded)
-    - Exponential backoff via tenacity (retry count from constructor)
+    - httpx.AsyncClient with explicit timeout (from constructor)
+    - Exponential backoff: retry count from ``self._retries``, NOT hardcoded
     - ETag caching: skips re-download when server returns 304
-    - TTL: forces re-fetch after cache_ttl_days regardless of ETag
+    - TTL: forces re-fetch after cache_ttl_days days regardless of ETag
     - Content-Length pre-check against max_size before downloading body
     """
 
@@ -70,9 +69,7 @@ class HttpReader(AbstractReader):
         if self._cache_ttl_seconds <= 0:
             return False
         fetched = self._fetched_at.get(url)
-        if fetched is None:
-            return True
-        return (time.monotonic() - fetched) > self._cache_ttl_seconds
+        return fetched is None or (time.monotonic() - fetched) > self._cache_ttl_seconds
 
     async def fetch(self, mib_name: str) -> str:
         last_exc: Exception = MibNotFoundError(mib_name)
@@ -90,14 +87,13 @@ class HttpReader(AbstractReader):
         )
 
     async def _fetch_url_with_retry(self, url: str) -> str:
-        """Wrap _fetch_url with a dynamically-configured tenacity retry.
+        """Retry _fetch_url using self._retries (NOT a hardcoded constant).
 
-        The retry count comes from self._retries (set in __init__ from
-        CompilerConfig.http_retries) rather than a hardcoded decorator —
-        keeps config and behaviour in sync.
+        Uses tenacity.AsyncRetrying built at call-time so the retry count
+        always reflects whatever was passed to __init__ (or set via
+        CompilerConfig.http_retries). A static @retry decorator would ignore
+        the instance attribute.
         """
-        from tenacity import AsyncRetrying
-
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type(httpx.TransportError),
             stop=stop_after_attempt(self._retries),

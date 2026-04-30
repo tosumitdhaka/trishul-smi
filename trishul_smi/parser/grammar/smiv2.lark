@@ -1,6 +1,22 @@
 // smiv2.lark — SMIv2 grammar (RFC 2578, RFC 2579, RFC 2580)
-// Strategy: LALR(1) for standard MIBs; caller falls back to Earley on parse failure.
-// Terminals from common.lark are inlined here for self-containment.
+//
+// QUOTED_STRING note (issue #3):
+//   Real DESCRIPTION fields span multiple lines with literal newlines.
+//   The pattern below allows: any char that isn't backslash or quote
+//   (which includes \n/\r since character classes are not line-anchored),
+//   plus backslash-escape sequences where \[\s\S] covers \" and also
+//   backslash-at-end-of-line (\\\n). Both literal \n and escaped \n are
+//   handled correctly.
+//
+// Inline comment note (issue #9):
+//   Standard ASN.1 allows inline comments: -- text -- more_code
+//   where the comment ends at the closing --. The COMMENT terminal below
+//   handles the common -- text EOL form only. The rare closing-double-dash
+//   style is not used in practice in IETF/vendor MIBs, so we do not
+//   complicate the lexer for it. If needed, change:
+//     COMMENT : /--[^\n]*/
+//   to:
+//     COMMENT : /--(?:[^-]|-(?!-))*(?:--)?/
 
 // ---------------------------------------------------------------------------
 // Top-level
@@ -32,7 +48,7 @@ module_ref : UPPER_ID
 
 
 // ---------------------------------------------------------------------------
-// Assignments (top-level MIB declarations)
+// Assignments
 // ---------------------------------------------------------------------------
 
 assignment : object_type_assignment
@@ -50,7 +66,7 @@ assignment : object_type_assignment
 
 
 // ---------------------------------------------------------------------------
-// MODULE-IDENTITY (RFC 2578 s4)
+// MODULE-IDENTITY
 // ---------------------------------------------------------------------------
 
 module_identity_assignment : LOWER_ID "MODULE-IDENTITY"
@@ -65,7 +81,7 @@ revision : "REVISION" QUOTED_STRING "DESCRIPTION" QUOTED_STRING
 
 
 // ---------------------------------------------------------------------------
-// OBJECT-IDENTITY (RFC 2578 s4)
+// OBJECT-IDENTITY
 // ---------------------------------------------------------------------------
 
 object_identity_assignment : LOWER_ID "OBJECT-IDENTITY"
@@ -76,7 +92,7 @@ object_identity_assignment : LOWER_ID "OBJECT-IDENTITY"
 
 
 // ---------------------------------------------------------------------------
-// OBJECT-TYPE (RFC 2578 s7)
+// OBJECT-TYPE
 // ---------------------------------------------------------------------------
 
 object_type_assignment : LOWER_ID "OBJECT-TYPE"
@@ -84,7 +100,7 @@ object_type_assignment : LOWER_ID "OBJECT-TYPE"
     units_clause?
     max_access_clause
     "STATUS" status_value
-    "DESCRIPTION" QUOTED_STRING
+    description_clause
     reference_clause?
     index_clause?
     defval_clause?
@@ -110,13 +126,13 @@ bits_value    : LOWER_ID
 
 
 // ---------------------------------------------------------------------------
-// NOTIFICATION-TYPE (RFC 2578 s8)
+// NOTIFICATION-TYPE
 // ---------------------------------------------------------------------------
 
 notification_type_assignment : LOWER_ID "NOTIFICATION-TYPE"
     objects_clause?
     "STATUS" status_value
-    "DESCRIPTION" QUOTED_STRING
+    description_clause
     reference_clause?
     "::=" oid_value
 
@@ -125,13 +141,13 @@ object_list    : LOWER_ID ("," LOWER_ID)*
 
 
 // ---------------------------------------------------------------------------
-// TEXTUAL-CONVENTION (RFC 2579)
+// TEXTUAL-CONVENTION
 // ---------------------------------------------------------------------------
 
 textual_convention_assignment : UPPER_ID "::=" "TEXTUAL-CONVENTION"
     display_hint_clause?
     "STATUS" status_value
-    "DESCRIPTION" QUOTED_STRING
+    description_clause
     reference_clause?
     "SYNTAX" syntax_type
 
@@ -139,15 +155,10 @@ display_hint_clause : "DISPLAY-HINT" QUOTED_STRING
 
 
 // ---------------------------------------------------------------------------
-// Plain type assignment  (TypeName ::= SomeType)
+// Type / Value assignments
 // ---------------------------------------------------------------------------
 
-type_assignment : UPPER_ID "::=" syntax_type
-
-
-// ---------------------------------------------------------------------------
-// Value assignment  (name OBJECT IDENTIFIER ::= { ... }  or  name TYPE ::= value)
-// ---------------------------------------------------------------------------
+type_assignment  : UPPER_ID "::=" syntax_type
 
 value_assignment : LOWER_ID "OBJECT" "IDENTIFIER" "::=" oid_value
                  | LOWER_ID UPPER_ID "::=" scalar_value
@@ -156,31 +167,31 @@ scalar_value : NUMBER | QUOTED_STRING | LOWER_ID
 
 
 // ---------------------------------------------------------------------------
-// OBJECT-GROUP / NOTIFICATION-GROUP (RFC 2580)
+// OBJECT-GROUP / NOTIFICATION-GROUP
 // ---------------------------------------------------------------------------
 
 object_group_assignment : LOWER_ID "OBJECT-GROUP"
     "OBJECTS" "{" object_list "}"
     "STATUS" status_value
-    "DESCRIPTION" QUOTED_STRING
+    description_clause
     reference_clause?
     "::=" oid_value
 
 notification_group_assignment : LOWER_ID "NOTIFICATION-GROUP"
     "NOTIFICATIONS" "{" object_list "}"
     "STATUS" status_value
-    "DESCRIPTION" QUOTED_STRING
+    description_clause
     reference_clause?
     "::=" oid_value
 
 
 // ---------------------------------------------------------------------------
-// MODULE-COMPLIANCE (RFC 2580)
+// MODULE-COMPLIANCE
 // ---------------------------------------------------------------------------
 
 module_compliance_assignment : LOWER_ID "MODULE-COMPLIANCE"
     "STATUS" status_value
-    "DESCRIPTION" QUOTED_STRING
+    description_clause
     reference_clause?
     compliance_module*
     "::=" oid_value
@@ -193,13 +204,13 @@ mandatory_groups : "MANDATORY-GROUPS" "{" object_list "}"
 
 compliance_item : compliance_group | compliance_object
 
-compliance_group : "GROUP" LOWER_ID "DESCRIPTION" QUOTED_STRING
+compliance_group : "GROUP" LOWER_ID description_clause
 
 compliance_object : "OBJECT" LOWER_ID
     syntax_clause?
     write_syntax_clause?
     min_access_clause?
-    "DESCRIPTION" QUOTED_STRING
+    description_clause
 
 syntax_clause       : "SYNTAX" syntax_type
 write_syntax_clause : "WRITE-SYNTAX" syntax_type
@@ -207,13 +218,13 @@ min_access_clause   : "MIN-ACCESS" access_value
 
 
 // ---------------------------------------------------------------------------
-// AGENT-CAPABILITIES (RFC 2580)
+// AGENT-CAPABILITIES
 // ---------------------------------------------------------------------------
 
 agent_capabilities_assignment : LOWER_ID "AGENT-CAPABILITIES"
     "PRODUCT-RELEASE" QUOTED_STRING
     "STATUS"          status_value
-    "DESCRIPTION"     QUOTED_STRING
+    description_clause
     reference_clause?
     capabilities_module*
     "::=" oid_value
@@ -228,20 +239,20 @@ variation : "VARIATION" LOWER_ID
     access_clause?
     creation_requires_clause?
     defval_clause?
-    "DESCRIPTION" QUOTED_STRING
+    description_clause
 
 access_clause            : "ACCESS" access_value
 creation_requires_clause : "CREATION-REQUIRES" "{" object_list "}"
 
 
 // ---------------------------------------------------------------------------
-// TRAP-TYPE (SMIv1 compat macro, kept here for mixed-dialect MIBs)
+// TRAP-TYPE (SMIv1 compat)
 // ---------------------------------------------------------------------------
 
 trap_type_assignment : UPPER_ID "TRAP-TYPE"
     "ENTERPRISE" LOWER_ID
     trap_variables_clause?
-    "DESCRIPTION" QUOTED_STRING
+    description_clause?
     reference_clause?
     "::=" NUMBER
 
@@ -252,13 +263,15 @@ trap_variables_clause : "VARIABLES" "{" object_list "}"
 // Shared clauses
 // ---------------------------------------------------------------------------
 
+description_clause : "DESCRIPTION" QUOTED_STRING
+
 reference_clause : "REFERENCE" QUOTED_STRING
 
 status_value : "current" | "deprecated" | "obsolete" | "mandatory" | "optional"
 
 access_value : "read-only" | "read-write" | "read-create"
              | "not-accessible" | "accessible-for-notify"
-             | "write-only"  // SMIv1 compat
+             | "write-only"
 
 
 // ---------------------------------------------------------------------------
@@ -304,7 +317,6 @@ integer_enum : "{" enum_items "}"
 enum_items   : enum_item ("," enum_item)*
 enum_item    : LOWER_ID "(" NUMBER ")"
 
-// constraint = value range OR integer enum
 constraint : "(" range_items ")"
            | integer_enum
 
@@ -318,7 +330,7 @@ size_constraint : "(" "SIZE" "(" range_items ")" ")"
 
 
 // ---------------------------------------------------------------------------
-// OID value  { parent sub-id* }
+// OID value
 // ---------------------------------------------------------------------------
 
 oid_value : "{" oid_component+ "}"
@@ -329,7 +341,7 @@ oid_component : LOWER_ID "(" NUMBER ")"  -> named_arc
 
 
 // ---------------------------------------------------------------------------
-// Terminals (self-contained; common.lark values are inlined)
+// Terminals
 // ---------------------------------------------------------------------------
 
 UPPER_ID      : /[A-Z][A-Za-z0-9\-]*/
@@ -337,7 +349,13 @@ LOWER_ID      : /[a-z][A-Za-z0-9\-]*/
 NUMBER        : /[0-9]+/
 HEX_STRING    : /\'[0-9A-Fa-f]*\'H/
 BIN_STRING    : /\'[01]*\'B/
-QUOTED_STRING : /"([^"\\]|\\.)*"/
+
+// QUOTED_STRING: allows literal newlines (common in DESCRIPTION fields) and
+// backslash-escape sequences including backslash-newline (\\\n).
+// [^\\"]: any char except backslash and quote — character classes
+//         include \n/\r so multiline strings work without special flags.
+// \\[\s\S]: backslash followed by ANY char incl. newline.
+QUOTED_STRING : /"(?:[^\\"]|\\[\s\S])*"/
 
 WS      : /[ \t\n\r]+/
 COMMENT : /--[^\n]*/

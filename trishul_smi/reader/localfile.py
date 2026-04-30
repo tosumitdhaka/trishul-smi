@@ -5,7 +5,6 @@ from pathlib import Path
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
 from trishul_smi.reader.base import AbstractReader
 
-# File extensions tried in order when no extension is given
 _EXTENSIONS = ["", ".mib", ".txt", ".my"]
 
 
@@ -20,13 +19,18 @@ class FileReader(AbstractReader):
         for directory in self._dirs:
             for ext in _EXTENSIONS:
                 candidate = directory / f"{mib_name}{ext}"
-                if candidate.is_file():
-                    if candidate.stat().st_size > self._max_size:
-                        raise MibSizeLimitError(
-                            f"{candidate} exceeds size limit of {self._max_size} bytes"
-                        )
-                    with open(candidate, encoding="utf-8", errors="replace") as fh:
-                        return fh.read()
+                if not candidate.is_file():
+                    continue
+                # Open first, check size after read to avoid TOCTOU race
+                # between stat() and open(). Read max_size+1 bytes so we can
+                # detect an overrun without reading the entire file.
+                with open(candidate, "rb") as fh:
+                    data = fh.read(self._max_size + 1)
+                if len(data) > self._max_size:
+                    raise MibSizeLimitError(
+                        f"{candidate} exceeds size limit of {self._max_size} bytes"
+                    )
+                return data.decode("utf-8", errors="replace")
         raise MibNotFoundError(
             f"MIB '{mib_name}' not found in directories: "
             + ", ".join(str(d) for d in self._dirs)

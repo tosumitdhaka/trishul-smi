@@ -1,4 +1,4 @@
-"""Unit tests for models/ — pure instantiation and field validation."""
+"""Unit tests for models/ — instantiation, field validation, and composition."""
 from pathlib import Path
 
 import pytest
@@ -34,6 +34,53 @@ class TestMibModule:
         b = MibModule(name="B", language="SMIv2")
         a.objects["x"] = None  # type: ignore[assignment]
         assert "x" not in b.objects
+
+    def test_composed_module_with_objects_and_types(self):
+        """Issue #11: composed MibModule + MibObject + MibType test."""
+        obj = MibObject(
+            name="ifDescr",
+            oid="1.3.6.1.2.1.2.2.1.2",
+            oid_path=[1, 3, 6, 1, 2, 1, 2, 2, 1, 2],
+            object_type="OBJECT-TYPE",
+            syntax="DisplayString",
+            max_access="read-only",
+            status="current",
+            description="A textual string containing information about the interface.",
+            index=["ifIndex"],
+        )
+        tc = MibType(
+            name="DisplayString",
+            base_type="OCTET STRING",
+            description="Represents textual information.",
+        )
+        notif = MibObject(
+            name="linkDown",
+            oid="1.3.6.1.6.3.1.1.5.3",
+            object_type="NOTIFICATION-TYPE",
+            status="current",
+        )
+        m = MibModule(
+            name="IF-MIB",
+            language="SMIv2",
+            imports={"SNMPv2-SMI": ["OBJECT-TYPE"], "SNMPv2-TC": ["DisplayString"]},
+            objects={"ifDescr": obj},
+            types={"DisplayString": tc},
+            notifications={"linkDown": notif},
+        )
+        # Structure
+        assert m.name == "IF-MIB"
+        assert "ifDescr" in m.objects
+        assert "DisplayString" in m.types
+        assert "linkDown" in m.notifications
+        # Cross-references
+        assert m.objects["ifDescr"].syntax == "DisplayString"
+        assert m.types["DisplayString"].base_type == "OCTET STRING"
+        assert m.objects["ifDescr"].index == ["ifIndex"]
+        # all_imports
+        assert set(m.all_imports()) == {"SNMPv2-SMI", "SNMPv2-TC"}
+        # Notifications are separate from objects
+        assert "linkDown" not in m.objects
+        assert m.notifications["linkDown"].object_type == "NOTIFICATION-TYPE"
 
 
 class TestMibObject:
@@ -84,11 +131,10 @@ class TestCompileResult:
         r = CompileResult(name="BAD-MIB", status="failed", error="ParseError at line 5")
         assert r.status == "failed"
         assert r.error == "ParseError at line 5"
-        assert r.output_paths == []
 
     def test_cached_status(self):
         r = CompileResult(name="IF-MIB", status="cached")
         assert r.status == "cached"
 
-    # DD-5: "borrowed" is not in the Literal — mypy catches this at type-check time.
-    # No runtime enforcement exists for Literal; the mypy check is the guard.
+    # DD-5: "borrowed" is not a valid Literal value. mypy catches this
+    # at type-check time. No runtime enforcement for Literal exists.

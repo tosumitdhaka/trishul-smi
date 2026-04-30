@@ -1,10 +1,9 @@
 """Lark Transformer: converts a parsed Tree into a MibModule dataclass.
 
 Design: every grammar rule method receives already-transformed children.
-Syntax types (integer_type, octet_string_type, …) return typed strings directly,
-so assignment methods receive a clean _SyntaxInfo object — no string sniffing.
-Description fields are extracted from named _DescriptionInfo wrappers — no
-positional offset fragility.
+Syntax types (integer_type, octet_string_type, …) return _SyntaxInfo objects
+directly, so assignment methods use typed extractors — no string sniffing.
+Description/status/access fields use typed wrappers for the same reason.
 """
 from __future__ import annotations
 
@@ -14,41 +13,35 @@ from lark import Transformer, Token, Tree
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.models.mib_type import MibType
+from trishul_smi.parser._constants import SMIv2_MARKERS
 
 
 # ---------------------------------------------------------------------------
-# Internal wrapper types — tag transformer output so assignment methods
-# can reliably distinguish syntax from description from status/access.
+# Internal typed wrapper dataclasses
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _SyntaxInfo:
-    """Carries the resolved syntax type string from a syntax_type rule."""
     value: str
 
 @dataclass
 class _DescriptionInfo:
-    """Carries the unquoted DESCRIPTION string."""
     value: str
 
 @dataclass
 class _StatusInfo:
-    """Carries the STATUS value string."""
     value: str
 
 @dataclass
 class _AccessInfo:
-    """Carries the MAX-ACCESS / ACCESS value string."""
     value: str
 
 @dataclass
 class _IndexInfo:
-    """Carries the INDEX column list."""
     columns: list[str]
 
 @dataclass
 class _AugmentsInfo:
-    """Carries the AUGMENTS row name."""
     row: str
 
 
@@ -66,8 +59,8 @@ def _unquote(token: Token | str) -> str:
 def _resolve_oid(components: list) -> tuple[str, list[int]]:
     """Convert oid_component list → (dotted_string, int_path).
 
-    Named arcs without a number (e.g. 'mib-2') are preserved in the dotted
-    string but skipped in the int path — full numeric resolution happens later
+    Named arcs without a number (e.g. 'mib-2') are kept in the dotted
+    string but skipped in int_path — full numeric resolution happens later
     in resolver/ once all modules are loaded.
     """
     parts_str: list[str] = []
@@ -95,10 +88,6 @@ def _resolve_oid(components: list) -> tuple[str, list[int]]:
 class MibTransformer(Transformer):
     """Walks the Lark parse tree and builds a MibModule."""
 
-    # ------------------------------------------------------------------
-    # Module-level
-    # ------------------------------------------------------------------
-
     def start(self, children: list) -> MibModule:
         return children[0]
 
@@ -121,12 +110,8 @@ class MibTransformer(Transformer):
                     objects[child.name] = child
             elif isinstance(child, MibType):
                 types[child.name] = child
-            # None from unhandled assignments — skipped
 
-        language: str = "SMIv1"
-        smiv2_markers = {"SNMPv2-SMI", "SNMPv2-TC", "SNMPv2-CONF"}
-        if any(m in imports for m in smiv2_markers):
-            language = "SMIv2"
+        language = "SMIv2" if any(m in imports for m in SMIv2_MARKERS) else "SMIv1"
 
         return MibModule(
             name=module_name,
@@ -152,9 +137,7 @@ class MibTransformer(Transformer):
         return {"__imports__": result}
 
     def import_clause(self, children: list) -> dict[str, list[str]]:
-        symbols: list[str] = children[0]
-        module: str = str(children[1])
-        return {module: symbols}
+        return {str(children[1]): children[0]}
 
     def symbol_list(self, children: list) -> list[str]:
         return [str(c) for c in children]
@@ -172,10 +155,8 @@ class MibTransformer(Transformer):
     def module_identity_assignment(self, children: list) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
-        return MibObject(
-            name=name, oid=oid_str, oid_path=oid_path,
-            object_type="MODULE-IDENTITY",
-        )
+        return MibObject(name=name, oid=oid_str, oid_path=oid_path,
+                         object_type="MODULE-IDENTITY")
 
     # ------------------------------------------------------------------
     # OBJECT-IDENTITY
@@ -184,12 +165,10 @@ class MibTransformer(Transformer):
     def object_identity_assignment(self, children: list) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
-        return MibObject(
-            name=name, oid=oid_str, oid_path=oid_path,
-            object_type="OBJECT-IDENTITY",
-            status=self._status(children),
-            description=self._description(children),
-        )
+        return MibObject(name=name, oid=oid_str, oid_path=oid_path,
+                         object_type="OBJECT-IDENTITY",
+                         status=self._status(children),
+                         description=self._description(children))
 
     # ------------------------------------------------------------------
     # OBJECT-TYPE
@@ -218,12 +197,10 @@ class MibTransformer(Transformer):
     def notification_type_assignment(self, children: list) -> MibObject:
         name = str(children[0])
         oid_str, oid_path = _resolve_oid(self._oid(children))
-        return MibObject(
-            name=name, oid=oid_str, oid_path=oid_path,
-            object_type="NOTIFICATION-TYPE",
-            status=self._status(children),
-            description=self._description(children),
-        )
+        return MibObject(name=name, oid=oid_str, oid_path=oid_path,
+                         object_type="NOTIFICATION-TYPE",
+                         status=self._status(children),
+                         description=self._description(children))
 
     # ------------------------------------------------------------------
     # TEXTUAL-CONVENTION
@@ -231,23 +208,16 @@ class MibTransformer(Transformer):
 
     def textual_convention_assignment(self, children: list) -> MibType:
         name = str(children[0])
-        return MibType(
-            name=name,
-            base_type=self._syntax(children) or "",
-            description=self._description(children),
-        )
+        return MibType(name=name, base_type=self._syntax(children) or "",
+                       description=self._description(children))
 
     # ------------------------------------------------------------------
-    # Type assignment  TypeName ::= SomeBaseType
+    # Type / Value assignments
     # ------------------------------------------------------------------
 
     def type_assignment(self, children: list) -> MibType:
         name = str(children[0])
         return MibType(name=name, base_type=self._syntax(children) or "")
-
-    # ------------------------------------------------------------------
-    # Value assignment
-    # ------------------------------------------------------------------
 
     def value_assignment(self, children: list) -> MibObject | None:
         name = str(children[0])
@@ -286,80 +256,59 @@ class MibTransformer(Transformer):
         return children[0] if children else None
 
     # ------------------------------------------------------------------
-    # Clause wrappers — produce typed info objects (no string sniffing)
+    # Clause wrappers — typed info objects
     # ------------------------------------------------------------------
 
     def description_clause(self, children: list) -> _DescriptionInfo:
         return _DescriptionInfo(_unquote(children[0]))
 
     def max_access_clause(self, children: list) -> _AccessInfo:
-        return _AccessInfo(str(children[0]))
-
-    def units_clause(self, children: list):
-        return None  # not stored in model v1.0
-
-    def reference_clause(self, children: list):
-        return None  # not stored in model v1.0
-
-    def display_hint_clause(self, children: list):
-        return None
-
-    def defval_clause(self, children: list):
-        return None  # not stored in model v1.0
-
-    def objects_clause(self, children: list):
-        return None
+        info = next((c for c in children if isinstance(c, _AccessInfo)), None)
+        return info if info is not None else _AccessInfo(str(children[0]))
 
     def index_clause(self, children: list):
         return children[0] if children else None
 
     def index_part(self, children: list) -> _IndexInfo:
-        cols = [str(c.columns[0]) if isinstance(c, _IndexInfo) else str(c)
-                for c in children if not isinstance(c, type(None))]
-        return _IndexInfo(cols)
+        # children[0] is _IndexInfo produced by index_list, which already
+        # holds ALL column names. Bug fix: old code did c.columns[0] which
+        # silently dropped columns 2..N in composite indexes.
+        info = next((c for c in children if isinstance(c, _IndexInfo)), None)
+        return info if info is not None else _IndexInfo([])
 
     def index_list(self, children: list) -> _IndexInfo:
+        # children are strings from index_item rules
         return _IndexInfo([c for c in children if isinstance(c, str)])
 
     def index_item(self, children: list) -> str:
-        # children may be ["IMPLIED", name] or just [name]
+        # grammar: "IMPLIED"? LOWER_ID — take last child (always the identifier)
         return str(children[-1])
 
     def augments_part(self, children: list) -> _AugmentsInfo:
         return _AugmentsInfo(str(children[0]))
 
-    def revision(self, children: list):
-        return None
-
-    def compliance_module(self, children: list):
-        return None
-
-    def mandatory_groups(self, children: list):
-        return None
-
-    def compliance_item(self, children: list):
-        return None
-
-    def compliance_group(self, children: list):
-        return None
-
-    def compliance_object(self, children: list):
-        return None
-
-    def capabilities_module(self, children: list):
-        return None
-
-    def variation(self, children: list):
-        return None
-
-    def trap_variables_clause(self, children: list):
-        return None
+    def revision(self, _): return None
+    def compliance_module(self, _): return None
+    def mandatory_groups(self, _): return None
+    def compliance_item(self, _): return None
+    def compliance_group(self, _): return None
+    def compliance_object(self, _): return None
+    def capabilities_module(self, _): return None
+    def variation(self, _): return None
+    def trap_variables_clause(self, _): return None
+    def units_clause(self, _): return None
+    def reference_clause(self, _): return None
+    def display_hint_clause(self, _): return None
+    def defval_clause(self, _): return None
+    def objects_clause(self, _): return None
+    def scalar_value(self, _): return None
+    def write_syntax_clause(self, _): return None
+    def min_access_clause(self, _): return None
+    def access_clause(self, _): return None
+    def creation_requires_clause(self, _): return None
 
     def object_list(self, children: list) -> list[str]:
         return [str(c) for c in children]
-
-    def scalar_value(self, children: list):
-        return None
 
     # ------------------------------------------------------------------
     # OID passthrough
@@ -378,14 +327,12 @@ class MibTransformer(Transformer):
         return Tree("number_arc", children)
 
     # ------------------------------------------------------------------
-    # Syntax type rules — each returns a _SyntaxInfo (typed, not a plain string)
+    # Syntax type rules — each returns _SyntaxInfo
     # ------------------------------------------------------------------
 
     def syntax_type(self, children: list) -> _SyntaxInfo:
         val = children[0] if children else ""
-        if isinstance(val, _SyntaxInfo):
-            return val
-        return _SyntaxInfo(str(val))
+        return val if isinstance(val, _SyntaxInfo) else _SyntaxInfo(str(val))
 
     def integer_type(self, _):           return _SyntaxInfo("INTEGER")
     def octet_string_type(self, _):      return _SyntaxInfo("OCTET STRING")
@@ -424,20 +371,8 @@ class MibTransformer(Transformer):
     def syntax_clause(self, children: list) -> _SyntaxInfo | None:
         return next((c for c in children if isinstance(c, _SyntaxInfo)), None)
 
-    def write_syntax_clause(self, children: list):
-        return None
-
-    def min_access_clause(self, children: list):
-        return None
-
-    def access_clause(self, children: list):
-        return None
-
-    def creation_requires_clause(self, children: list):
-        return None
-
     # ------------------------------------------------------------------
-    # Private typed extractors — no string sniffing anywhere
+    # Private typed extractors
     # ------------------------------------------------------------------
 
     def _oid(self, children: list) -> list:

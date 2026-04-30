@@ -7,12 +7,15 @@ from pathlib import Path
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
 from trishul_smi.reader.base import AbstractReader
 
+# Extensions tried when looking for a MIB entry inside a ZIP.
+_MIB_SUFFIXES = {"", ".mib", ".txt", ".my"}
+
 
 class ZipReader(AbstractReader):
     """Reads MIB files from one or more ZIP archives.
 
-    Handles nested ZIPs correctly — seeds `data = b""` before the loop,
-    fixing the pysmi NameError-on-nested-ZIP bug (see motivation in plan.md).
+    Handles nested ZIPs — `data = b""` is initialised before the read loop,
+    fixing the pysmi NameError-on-nested-ZIP bug.
     """
 
     def __init__(self, *zip_paths: str | Path, max_size: int = 10 * 1024 * 1024) -> None:
@@ -32,7 +35,6 @@ class ZipReader(AbstractReader):
     def _search_zip(
         self, zip_path: Path, mib_name: str, _depth: int = 0
     ) -> str | None:
-        """Recursively search zip_path for mib_name. Returns text or None."""
         if _depth > 4:
             return None
         if not zip_path.is_file():
@@ -43,34 +45,33 @@ class ZipReader(AbstractReader):
                 names = zf.namelist()
 
                 for entry in names:
-                    stem = Path(entry).stem
-                    suffix = Path(entry).suffix.lower()
-                    if stem == mib_name and suffix in ("", ".mib", ".txt", ".my"):
+                    p = Path(entry)
+                    # suffix check uses _MIB_SUFFIXES set — no redundant condition
+                    if p.stem == mib_name and p.suffix.lower() in _MIB_SUFFIXES:
                         data: bytes = b""  # initialised before read — no NameError
                         with zf.open(entry) as fh:
                             data = fh.read()
                         if len(data) > self._max_size:
                             raise MibSizeLimitError(
-                                f"{entry} in {zip_path} exceeds size limit {self._max_size}"
+                                f"{entry} in {zip_path} exceeds limit {self._max_size}"
                             )
                         return data.decode("utf-8", errors="replace")
 
                 for entry in names:
-                    if entry.lower().endswith(".zip"):
-                        data = b""  # reset before each nested read
-                        with zf.open(entry) as fh:
-                            data = fh.read()
-                        with tempfile.NamedTemporaryFile(
-                            suffix=".zip", delete=False
-                        ) as tmp:
-                            tmp.write(data)
-                            tmp_path = Path(tmp.name)
-                        try:
-                            result = self._search_zip(tmp_path, mib_name, _depth + 1)
-                            if result is not None:
-                                return result
-                        finally:
-                            tmp_path.unlink(missing_ok=True)
+                    if not entry.lower().endswith(".zip"):
+                        continue
+                    data = b""  # reset before each nested read
+                    with zf.open(entry) as fh:
+                        data = fh.read()
+                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                        tmp.write(data)
+                        tmp_path = Path(tmp.name)
+                    try:
+                        result = self._search_zip(tmp_path, mib_name, _depth + 1)
+                        if result is not None:
+                            return result
+                    finally:
+                        tmp_path.unlink(missing_ok=True)
 
         except zipfile.BadZipFile:
             return None
