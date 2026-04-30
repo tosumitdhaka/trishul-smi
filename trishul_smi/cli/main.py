@@ -181,7 +181,9 @@ def compile(  # noqa: A001
         )
     except KeyboardInterrupt:
         err.print("\n[yellow]Interrupted.[/yellow]")
-        raise typer.Exit(1)
+        # typer.Exit is intentional control flow, not derived from
+        # KeyboardInterrupt — suppress the spurious exception context chain.
+        raise typer.Exit(1) from None
     except Exception as exc:  # noqa: BLE001
         err.print(f"[bold red]Fatal error:[/bold red] {exc}")
         raise typer.Exit(1) from exc

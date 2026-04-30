@@ -105,7 +105,9 @@ class MibResolver:
             )
 
             newly_fetched: set[str] = set()
-            for name, result in zip(names_ordered, results):
+            # strict=True: asyncio.gather always returns exactly one result per
+            # coroutine, so a length mismatch would be a bug — fail loudly.
+            for name, result in zip(names_ordered, results, strict=True):
                 if isinstance(result, MibSizeLimitError):
                     # Propagate immediately — size limit is a config error,
                     # not a per-module failure. Use `raise result` (not bare
