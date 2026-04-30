@@ -218,6 +218,24 @@ class TestMibDir:
                 app, ["compile", "IF-MIB", "-d", str(fake_dir)]
             )
         assert result.exit_code == 0
-        # Warning is written to stderr; CliRunner with mix_stderr=False
-        # captures stdout separately. Check stderr for the warning text.
         assert "not a directory" in result.stderr or "Warning" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Package integrity
+# ---------------------------------------------------------------------------
+
+class TestPackageIntegrity:
+    def test_grammar_file_importable(self):
+        """Fail fast if the wheel was built without the grammar directory.
+
+        ``pip install -e .`` always has smiv2.lark on the filesystem, so this
+        test is a no-op during local development. A broken PyPI wheel — one
+        where the MANIFEST.in / tool.hatch force-include for trishul_smi/parser/
+        grammar/ was accidentally removed — fails here during CI before the
+        broken release reaches any user. importlib.resources is used (not a raw
+        Path) so the check works identically inside a zip-imported wheel.
+        """
+        from importlib.resources import files
+        grammar = files("trishul_smi.parser.grammar").joinpath("smiv2.lark")
+        assert grammar.is_file(), "smiv2.lark missing from installed package"
