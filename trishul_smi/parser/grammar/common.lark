@@ -1,0 +1,18 @@
+// common.lark — shared terminals imported by smiv2.lark and smiv1.lark
+
+// Identifiers
+UPPER_ID   : /[A-Z][A-Za-z0-9\-]*/
+LOWER_ID   : /[a-z][A-Za-z0-9\-]*/
+
+// Literals
+NUMBER     : /[0-9]+/
+HEX_STRING : /\'[0-9A-Fa-f]*\'H/
+BIN_STRING : /\'[01]*\'B/
+QUOTED_STRING : /"([^"\\]|\\.)*"/
+
+// Whitespace and comments
+WS         : /[ \t\n\r]+/
+COMMENT    : /--[^\n]*/
+
+%ignore WS
+%ignore COMMENT

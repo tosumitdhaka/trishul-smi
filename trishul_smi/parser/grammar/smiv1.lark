@@ -1,0 +1,172 @@
+// smiv1.lark — SMIv1 grammar (RFC 1155, RFC 1212, RFC 1215)
+// Independent complete grammar — NOT inherited from smiv2.lark.
+// Lark has no grammar override mechanism; both files are standalone.
+// Shared terminals are inlined (same as smiv2.lark).
+
+// ---------------------------------------------------------------------------
+// Top-level
+// ---------------------------------------------------------------------------
+
+start : module_definition
+
+module_definition : module_name "DEFINITIONS" "::=" "BEGIN"
+                    imports?
+                    assignment*
+                    "END"
+
+module_name : UPPER_ID
+
+
+// ---------------------------------------------------------------------------
+// IMPORTS
+// ---------------------------------------------------------------------------
+
+imports : "IMPORTS" import_clause+ ";"
+
+import_clause : symbol_list "FROM" module_ref
+
+symbol_list : symbol ("," symbol)*
+
+symbol : UPPER_ID | LOWER_ID
+
+module_ref : UPPER_ID
+
+
+// ---------------------------------------------------------------------------
+// Assignments
+// ---------------------------------------------------------------------------
+
+assignment : object_type_assignment
+           | trap_type_assignment
+           | type_assignment
+           | value_assignment
+
+
+// ---------------------------------------------------------------------------
+// OBJECT-TYPE (RFC 1212)
+// ---------------------------------------------------------------------------
+
+object_type_assignment : LOWER_ID "OBJECT-TYPE"
+    "SYNTAX"      syntax_type
+    "ACCESS"      access_value
+    "STATUS"      smiv1_status_value
+    description_clause?
+    reference_clause?
+    index_clause?
+    defval_clause?
+    "::=" oid_value
+
+description_clause : "DESCRIPTION" QUOTED_STRING
+
+index_clause : index_part | augments_part
+index_part   : "INDEX" "{" index_list "}"
+index_list   : index_item ("," index_item)*
+index_item   : "IMPLIED"? LOWER_ID
+augments_part: "AUGMENTS" "{" LOWER_ID "}"
+
+defval_clause : "DEFVAL" "{" defval_value "}"
+defval_value  : LOWER_ID | NUMBER | QUOTED_STRING | HEX_STRING | BIN_STRING
+
+
+// ---------------------------------------------------------------------------
+// TRAP-TYPE (RFC 1215)
+// ---------------------------------------------------------------------------
+
+trap_type_assignment : UPPER_ID "TRAP-TYPE"
+    "ENTERPRISE"  LOWER_ID
+    trap_variables_clause?
+    description_clause?
+    reference_clause?
+    "::=" NUMBER
+
+trap_variables_clause : "VARIABLES" "{" object_list "}"
+object_list           : LOWER_ID ("," LOWER_ID)*
+
+
+// ---------------------------------------------------------------------------
+// Plain type and value assignments
+// ---------------------------------------------------------------------------
+
+type_assignment  : UPPER_ID "::=" syntax_type
+
+value_assignment : LOWER_ID "OBJECT" "IDENTIFIER" "::=" oid_value
+                 | LOWER_ID UPPER_ID "::=" scalar_value
+
+scalar_value : NUMBER | QUOTED_STRING | LOWER_ID
+
+
+// ---------------------------------------------------------------------------
+// Shared clauses
+// ---------------------------------------------------------------------------
+
+reference_clause : "REFERENCE" QUOTED_STRING
+
+smiv1_status_value : "mandatory" | "optional" | "obsolete" | "deprecated"
+
+access_value : "read-only" | "read-write" | "write-only" | "not-accessible"
+
+
+// ---------------------------------------------------------------------------
+// Syntax types (RFC 1155 subset)
+// ---------------------------------------------------------------------------
+
+syntax_type : builtin_type
+            | named_type
+            | sequence_of_type
+            | sequence_type
+
+builtin_type : "INTEGER"          integer_enum?              -> integer_type
+             | "OCTET" "STRING"   size_constraint?           -> octet_string_type
+             | "OBJECT" "IDENTIFIER"                         -> oid_type
+             | "NULL"                                        -> null_type
+             | "NetworkAddress"                              -> network_address_type
+             | "IpAddress"                                   -> ip_address_type
+             | "Counter"                                     -> counter_type
+             | "Gauge"                                       -> gauge_type
+             | "TimeTicks"                                   -> timeticks_type
+             | "Opaque"                                      -> opaque_type
+
+named_type      : UPPER_ID constraint?
+sequence_of_type: "SEQUENCE" "OF" UPPER_ID
+sequence_type   : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
+sequence_field  : LOWER_ID syntax_type
+
+integer_enum : "{" enum_items "}"
+enum_items   : enum_item ("," enum_item)*
+enum_item    : LOWER_ID "(" NUMBER ")"
+
+constraint       : "(" range_items ")"
+range_items      : range_item ("|" range_item)*
+range_item       : range_bound ".." range_bound  -> range
+                 | range_bound                    -> single_value
+range_bound      : NUMBER | HEX_STRING | "MIN" | "MAX"
+size_constraint  : "(" "SIZE" "(" range_items ")" ")"
+
+
+// ---------------------------------------------------------------------------
+// OID value
+// ---------------------------------------------------------------------------
+
+oid_value : "{" oid_component+ "}"
+
+oid_component : LOWER_ID "(" NUMBER ")"  -> named_arc
+              | LOWER_ID                 -> name_arc
+              | NUMBER                   -> number_arc
+
+
+// ---------------------------------------------------------------------------
+// Terminals
+// ---------------------------------------------------------------------------
+
+UPPER_ID      : /[A-Z][A-Za-z0-9\-]*/
+LOWER_ID      : /[a-z][A-Za-z0-9\-]*/
+NUMBER        : /[0-9]+/
+HEX_STRING    : /\'[0-9A-Fa-f]*\'H/
+BIN_STRING    : /\'[01]*\'B/
+QUOTED_STRING : /"([^"\\]|\\.)*"/
+
+WS      : /[ \t\n\r]+/
+COMMENT : /--[^\n]*/
+
+%ignore WS
+%ignore COMMENT
