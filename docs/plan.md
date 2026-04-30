@@ -1,8 +1,8 @@
 # trishul-smi — Project Plan
 
-> **Status:** Draft v0.1 — under review  
+> **Status:** Draft v0.2 — approved  
 > **Author:** GhaatakJi  
-> **Last updated:** 2026-04-29
+> **Last updated:** 2026-04-30
 
 ---
 
@@ -11,8 +11,9 @@
 Build a **clean, modern, pure-Python SMI/MIB compiler** that:
 
 - Parses ASN.1 SMI MIB files (SMIv1 and SMIv2)
-- Converts them to structured **JSON**
-- Converts existing **PySNMP `.py` MIB modules** to JSON
+- Converts them to structured **JSON** (primary output)
+- Optionally outputs **PySNMP-compatible `.py` modules** (secondary output, for compat)
+- Converts existing **PySNMP `.py` MIB modules** to JSON (reverse conversion utility)
 - Resolves MIB dependencies **automatically**
 - Downloads missing MIBs from the web **on demand**
 - Exposes a simple **CLI** and a **Python API**
@@ -34,6 +35,7 @@ The existing reference implementation — [pysmi](https://github.com/lextudio/py
 | Circular imports in `error.py` | `ImportError` on some environments |
 | `**options` kwargs with no type safety | Opaque, fragile API |
 | Mixed concerns across modules | Hard to test in isolation |
+| Built on PLY (aging lex/yacc port) | Verbose, manual AST construction |
 
 Rather than patching pysmi incrementally, `trishul-smi` is a **ground-up rewrite** with correctness, testability, and clean design as first-class goals.
 
@@ -45,8 +47,10 @@ Rather than patching pysmi incrementally, `trishul-smi` is a **ground-up rewrite
 - [ ] Parse SMIv2 MIB files (RFC 2578, 2579, 2580)
 - [ ] Parse SMIv1 MIB files (RFC 1155, 1212, 1215)
 - [ ] Handle common vendor dialect quirks (Cisco, HP, NET-SNMP)
-- [ ] Output clean, structured JSON per MIB module
-- [ ] Convert PySNMP `.py` MIB modules → JSON
+- [ ] Output clean, structured **JSON** per MIB module (primary)
+- [ ] Output **PySNMP-compatible `.py` modules** (secondary, `--format pysnmp`)
+- [ ] Support **both outputs simultaneously** (`--format json pysnmp`)
+- [ ] Convert existing PySNMP `.py` MIB modules → JSON (utility)
 - [ ] Automatic dependency resolution (BFS, cycle detection)
 - [ ] Fetch missing MIBs from HTTP sources with retry + timeout
 - [ ] Read MIBs from local filesystem and ZIP archives
@@ -77,7 +81,7 @@ Rather than patching pysmi incrementally, `trishul-smi` is a **ground-up rewrite
 
 pysmi's core issues are **architectural**, not just bugs. The parser is built on PLY (an aging lex/yacc port), the pipeline has tight coupling between reader/parser/codegen, and the public API uses `**kwargs` throughout — making it hard to add type safety without a near-total rewrite. Fixing it means owning their architecture.
 
-### Why JSON output?
+### Why JSON as primary output?
 
 JSON is universally consumable. Every language, framework, and tool can read JSON. A MIB compiled to JSON can be used in:
 - Network management dashboards
@@ -86,15 +90,65 @@ JSON is universally consumable. Every language, framework, and tool can read JSO
 - AI/ML pipelines processing network telemetry
 - Any language without a native MIB parser
 
+PySNMP `.py` output is a **walled garden** — only useful inside the PySNMP ecosystem. JSON breaks MIB data free for any consumer.
+
+### Why also support PySNMP `.py` output?
+
+- Existing PySNMP-based tooling still needs `.py` format
+- The `AbstractCodeGen` architecture makes adding a second codegen **zero-cost to the pipeline**
+- Makes `trishul-smi` a **complete drop-in replacement** for pysmi, not just a partial tool
+- Users can generate both formats in a single run
+
 ### Why async + httpx?
 
 Fetching MIBs from the web is I/O bound. Async allows batch compilation of many MIBs (and their dependencies) without blocking on each HTTP request. `httpx` is the modern replacement for `requests` — async-native, timeout-safe, and easier to mock in tests.
 
 ---
 
-## 5. How — High-Level Approach
+## 5. Design Decisions
 
-### 5.1 Pipeline
+### DD-1: Lark over PLY for parsing
+
+| Concern | PLY | Lark |
+|---|---|---|
+| Grammar style | Verbose BNF, C-like | Clean EBNF |
+| AST construction | Manual `p_rule()` for every rule | Auto-built from grammar structure |
+| Ambiguity handling | ❌ LALR(1) only | ✅ Earley algorithm for ambiguous grammars |
+| Python 3 support | Legacy, Python 2 roots | Native Python 3, typed since v1.0 |
+| Maintenance | Largely inactive | Actively maintained |
+| Relevance to SMI | Vendor dialect quirks cause ambiguity | Earley handles this gracefully |
+
+**Decision:** Use `lark-parser` with LALR(1) for standard SMIv2, fall back to Earley for ambiguous vendor dialects.
+
+---
+
+### DD-2: JSON as primary, PySNMP `.py` as secondary output
+
+**Decision:** JSON is the default and primary output format. PySNMP `.py` is supported as an optional secondary format via `--format pysnmp`. Both can be generated in a single run.
+
+**CLI:**
+```bash
+trishul-smi compile IF-MIB                        # JSON only (default)
+trishul-smi compile IF-MIB --format pysnmp        # PySNMP .py only
+trishul-smi compile IF-MIB --format json pysnmp   # both simultaneously
+```
+
+---
+
+### DD-3: PySNMP `.py` → JSON as a separate utility command
+
+The reverse conversion (reading existing PySNMP `.py` files and converting them to JSON) is a distinct concern from compilation. It uses Python's `ast` module — not the SMI grammar parser.
+
+**CLI:**
+```bash
+trishul-smi convert IF_MIB.py                     # PySNMP .py → JSON
+```
+
+---
+
+## 6. How — High-Level Approach
+
+### 6.1 Pipeline
 
 ```
 [Source: file / zip / http]
@@ -106,19 +160,19 @@ Fetching MIBs from the web is I/O bound. Async allows batch compilation of many 
 [MibModule dataclass]
         ↓  Dependency Resolver  (BFS queue)
 [Ordered MibModule list]
-        ↓  CodeGen  (json / pysnmp→json)
-[dict]
+        ↓  CodeGen  (json_codegen / pysnmp_codegen — one or both)
+[dict / .py string]
         ↓  Writer  (file / stdout / callback)
-[Output JSON file]
+[Output artifacts]
 ```
 
 Each stage is **independently testable** with clean interfaces.
 
-### 5.2 Key Technology Choices
+### 6.2 Key Technology Choices
 
 | Concern | Choice | Reason |
 |---|---|---|
-| ASN.1 parsing | `lark-parser` | Clean EBNF grammar, readable, great error messages |
+| ASN.1 parsing | `lark-parser` | Clean EBNF, auto AST, Earley for ambiguity |
 | HTTP client | `httpx` | Async, timeout-safe, easy to mock |
 | Retry logic | `tenacity` | Exponential backoff, clean decorator API |
 | JSON output | `orjson` | Fast, compact, handles bytes |
@@ -129,58 +183,62 @@ Each stage is **independently testable** with clean interfaces.
 | Testing | `pytest` + `pytest-httpx` | Async support, HTTP mocking |
 | Packaging | `hatchling` + `pyproject.toml` | Modern Python packaging standard |
 
-### 5.3 Core Modules (Planned)
+### 6.3 Core Modules (Planned)
 
 ```
 trishul_smi/
-├── compiler.py          ← orchestrator (MibCompiler class)
-├── config.py            ← CompilerConfig dataclass
-├── errors.py            ← exception hierarchy (no circular imports)
-├── models/              ← MibModule, MibObject, MibType, CompileResult
+├── compiler.py           ← orchestrator (MibCompiler class)
+├── config.py             ← CompilerConfig dataclass
+├── errors.py             ← exception hierarchy (no circular imports)
+├── models/               ← MibModule, MibObject, MibType, CompileResult
 ├── parser/
-│   ├── grammar/         ← smiv2.lark, smiv1.lark
-│   ├── transformer.py   ← Lark tree → MibModule
-│   └── smi_parser.py    ← public parse(text) → MibModule
+│   ├── grammar/          ← smiv2.lark, smiv1.lark
+│   ├── transformer.py    ← Lark tree → MibModule
+│   └── smi_parser.py     ← public parse(text) → MibModule
 ├── reader/
-│   ├── base.py          ← AbstractReader ABC
-│   ├── localfile.py     ← filesystem reader
-│   ├── httpclient.py    ← async HTTP reader
-│   ├── zipreader.py     ← ZIP archive reader
-│   └── chain.py         ← ReaderChain (tries readers in order)
+│   ├── base.py           ← AbstractReader ABC
+│   ├── localfile.py      ← filesystem reader
+│   ├── httpclient.py     ← async HTTP reader
+│   ├── zipreader.py      ← ZIP archive reader
+│   └── chain.py          ← ReaderChain (tries readers in order)
 ├── resolver/
-│   ├── resolver.py      ← DependencyResolver (BFS + cycle detection)
-│   └── cache.py         ← MibCache (memory + optional disk)
+│   ├── resolver.py       ← DependencyResolver (BFS + cycle detection)
+│   └── cache.py          ← MibCache (memory + optional disk)
 ├── codegen/
-│   ├── base.py          ← AbstractCodeGen ABC
-│   ├── json_codegen.py  ← MibModule → JSON dict
-│   └── pysnmp_codegen.py ← PySNMP .py → JSON (via ast module)
+│   ├── base.py           ← AbstractCodeGen ABC
+│   ├── json_codegen.py   ← MibModule → JSON dict          [PRIMARY]
+│   ├── pysnmp_codegen.py ← MibModule → PySNMP .py string  [SECONDARY]
+│   └── pysnmp_reader.py  ← PySNMP .py → JSON (via ast)   [UTILITY]
 ├── writer/
-│   ├── base.py          ← AbstractWriter ABC
+│   ├── base.py           ← AbstractWriter ABC
 │   ├── file_writer.py
 │   ├── stdout_writer.py
 │   └── callback_writer.py
 └── cli/
-    ├── main.py          ← typer app
-    └── display.py       ← rich output helpers
+    ├── main.py           ← typer app (compile + convert commands)
+    └── display.py        ← rich output helpers
 ```
 
-### 5.4 Build Order
+### 6.4 Build Order
 
 1. `models/` — data structures, no deps
 2. `errors.py` — exception hierarchy
 3. `reader/` — fetch raw MIB text
-4. `parser/grammar/smiv2.lark` — hardest piece
+4. `parser/grammar/smiv2.lark` — hardest piece, SMIv2 first
 5. `parser/transformer.py` + `smi_parser.py`
 6. `resolver/` — dependency BFS
-7. `codegen/json_codegen.py`
-8. `codegen/pysnmp_codegen.py`
-9. `writer/`
-10. `compiler.py` — wire everything
-11. `cli/` — last, always backed by real logic
+7. `codegen/json_codegen.py` — primary output
+8. `codegen/pysnmp_codegen.py` — secondary output
+9. `codegen/pysnmp_reader.py` — reverse utility
+10. `writer/`
+11. `compiler.py` — wire everything
+12. `cli/` — last, always backed by real logic
 
 ---
 
-## 6. JSON Output Schema (Target)
+## 7. Output Formats
+
+### 7.1 JSON Schema (Target)
 
 ```json
 {
@@ -206,9 +264,13 @@ trishul_smi/
 }
 ```
 
+### 7.2 PySNMP `.py` Output
+
+Standard PySNMP MIB module format, compatible with PySNMP v6+. Generated via `pysnmp_codegen.py` using Jinja2 template (v1.x).
+
 ---
 
-## 7. Open Questions
+## 8. Open Questions
 
 - [ ] Should the resolver support **parallel async fetching** of independent deps?
 - [ ] Should we support **MIB borrowing** (pre-compiled fallback) like pysmi does?
@@ -218,11 +280,12 @@ trishul_smi/
 
 ---
 
-## 8. Success Criteria
+## 9. Success Criteria
 
 The project is considered v1.0 ready when:
 
 - `trishul-smi compile IF-MIB` works end-to-end from a clean environment
+- `trishul-smi compile IF-MIB --format json pysnmp` produces both output formats correctly
 - All standard RFC MIBs (SNMPv2-SMI, SNMPv2-TC, IF-MIB, IP-MIB, etc.) compile without error
 - Test suite passes with ≥ 80% coverage
 - `mypy --strict` passes with zero errors
