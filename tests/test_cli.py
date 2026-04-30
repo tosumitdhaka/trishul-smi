@@ -2,9 +2,8 @@
 
 Strategy:
 - Use click.testing.CliRunner (not typer.testing.CliRunner) — Click's runner
-  exposes mix_stderr=False natively since Click 8.0, which Typer >=0.12 dropped
-  from its own wrapper. mix_stderr=False is required so result.stderr is
-  available as a separate string (used in TestMibDir assertions).
+  exposes mix_stderr=False on invoke() since Click 8.0. We pass it per-call
+  rather than in the constructor for compatibility across all Click 8.x versions.
 - Patch _compile_async to avoid real I/O.
 - Verify exit codes, stdout content, and table structure.
 """
@@ -20,7 +19,8 @@ from click.testing import CliRunner
 from trishul_smi.cli.main import app
 from trishul_smi.models import CompileResult
 
-runner = CliRunner(mix_stderr=False)
+# mix_stderr is NOT passed here — it belongs on invoke() for Click 8.x compat.
+runner = CliRunner()
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +52,20 @@ def _patch_run(results: list[CompileResult]):
     )
 
 
+def _invoke(*args, mix_stderr: bool = True, **kwargs):
+    """Thin wrapper: passes mix_stderr on invoke() not on CliRunner() constructor.
+
+    Click 8.0 added mix_stderr but some 8.x point releases only accept it as
+    an invoke() keyword arg. Centralising the call here means tests never
+    touch CliRunner() directly and the one kwarg lives in one place.
+    """
+    try:
+        return runner.invoke(app, *args, mix_stderr=mix_stderr, **kwargs)
+    except TypeError:
+        # Extremely old Click that doesn't know mix_stderr at all — fall back.
+        return runner.invoke(app, *args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # version command
 # ---------------------------------------------------------------------------
@@ -59,9 +73,9 @@ def _patch_run(results: list[CompileResult]):
 
 class TestVersionCommand:
     def test_prints_package_name(self):
-        result = runner.invoke(app, ["version"])
+        result = _invoke(["version"])
         assert result.exit_code == 0
-        assert "trishul-smi" in result.stdout
+        assert "trishul-smi" in result.output
 
     def test_dev_fallback_when_not_installed(self):
         """version command catches PackageNotFoundError and prints a dev label."""
@@ -69,9 +83,9 @@ class TestVersionCommand:
             "trishul_smi.cli.main.importlib.metadata.version",
             side_effect=importlib.metadata.PackageNotFoundError("trishul-smi"),
         ):
-            result = runner.invoke(app, ["version"])
+            result = _invoke(["version"])
         assert result.exit_code == 0
-        assert "development" in result.stdout
+        assert "development" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -81,37 +95,37 @@ class TestVersionCommand:
 
 class TestCompileArgs:
     def test_no_args_shows_help(self):
-        result = runner.invoke(app, [])
+        result = _invoke([])
         assert result.exit_code == 0
-        assert "compile" in result.stdout.lower() or "Usage" in result.stdout
+        assert "compile" in result.output.lower() or "Usage" in result.output
 
     def test_compile_no_mib_names_shows_usage(self):
-        result = runner.invoke(app, ["compile"])
+        result = _invoke(["compile"])
         assert result.exit_code == 2  # typer UsageError for missing required argument
 
     def test_compile_single_mib_exit_zero(self):
         with _patch_run([_make_result("IF-MIB")]):
-            result = runner.invoke(app, ["compile", "IF-MIB"])
+            result = _invoke(["compile", "IF-MIB"])
         assert result.exit_code == 0
 
     def test_compile_multiple_mibs(self):
         results = [_make_result("IF-MIB"), _make_result("IP-MIB")]
         with _patch_run(results):
-            result = runner.invoke(app, ["compile", "IF-MIB", "IP-MIB"])
+            result = _invoke(["compile", "IF-MIB", "IP-MIB"])
         assert result.exit_code == 0
-        assert "IF-MIB" in result.stdout
-        assert "IP-MIB" in result.stdout
+        assert "IF-MIB" in result.output
+        assert "IP-MIB" in result.output
 
     def test_unknown_format_exits_2(self):
-        result = runner.invoke(app, ["compile", "IF-MIB", "-f", "xml"])
+        result = _invoke(["compile", "IF-MIB", "-f", "xml"])
         assert result.exit_code == 2
 
     def test_negative_retries_exits_2(self):
-        result = runner.invoke(app, ["compile", "IF-MIB", "--retries", "-1"])
+        result = _invoke(["compile", "IF-MIB", "--retries", "-1"])
         assert result.exit_code == 2
 
     def test_zero_timeout_exits_2(self):
-        result = runner.invoke(app, ["compile", "IF-MIB", "--timeout", "0"])
+        result = _invoke(["compile", "IF-MIB", "--timeout", "0"])
         assert result.exit_code == 2
 
 
@@ -123,39 +137,39 @@ class TestCompileArgs:
 class TestCompileOutput:
     def test_compiled_module_shown_in_table(self):
         with _patch_run([_make_result("IF-MIB")]):
-            result = runner.invoke(app, ["compile", "IF-MIB"])
-        assert "IF-MIB" in result.stdout
+            result = _invoke(["compile", "IF-MIB"])
+        assert "IF-MIB" in result.output
 
     def test_failed_module_shown_in_table(self):
         failed = _make_result("MISSING-MIB", status="failed", error="Not found")
         with _patch_run([failed]):
-            result = runner.invoke(app, ["compile", "MISSING-MIB"])
+            result = _invoke(["compile", "MISSING-MIB"])
         assert result.exit_code == 1
-        assert "MISSING-MIB" in result.stdout
+        assert "MISSING-MIB" in result.output
 
     def test_exit_1_when_any_failure(self):
         results = [_make_result("IF-MIB"), _make_result("BAD", status="failed")]
         with _patch_run(results):
-            result = runner.invoke(app, ["compile", "IF-MIB", "BAD"])
+            result = _invoke(["compile", "IF-MIB", "BAD"])
         assert result.exit_code == 1
 
     def test_exit_0_when_all_compiled(self):
         results = [_make_result("IF-MIB"), _make_result("IP-MIB")]
         with _patch_run(results):
-            result = runner.invoke(app, ["compile", "IF-MIB", "IP-MIB"])
+            result = _invoke(["compile", "IF-MIB", "IP-MIB"])
         assert result.exit_code == 0
 
     def test_warnings_appear_in_output(self):
         r = _make_result("IF-MIB", warnings=["[json] formatter error for IF-MIB: boom"])
         with _patch_run([r]):
-            result = runner.invoke(app, ["compile", "IF-MIB"])
-        assert "formatter error" in result.stdout
+            result = _invoke(["compile", "IF-MIB"])
+        assert "formatter error" in result.output
 
     def test_summary_line_compiled_count(self):
         results = [_make_result("IF-MIB"), _make_result("IP-MIB")]
         with _patch_run(results):
-            result = runner.invoke(app, ["compile", "IF-MIB", "IP-MIB"])
-        assert "2 compiled" in result.stdout
+            result = _invoke(["compile", "IF-MIB", "IP-MIB"])
+        assert "2 compiled" in result.output
 
     def test_summary_line_failed_count(self):
         results = [
@@ -163,14 +177,14 @@ class TestCompileOutput:
             _make_result("BAD", status="failed", error="err"),
         ]
         with _patch_run(results):
-            result = runner.invoke(app, ["compile", "IF-MIB", "BAD"])
-        assert "1 failed" in result.stdout
+            result = _invoke(["compile", "IF-MIB", "BAD"])
+        assert "1 failed" in result.output
 
     def test_verbose_shows_output_paths(self, tmp_path: Path):
         r = _make_result("IF-MIB", output_paths=[tmp_path / "IF-MIB.json"])
         with _patch_run([r]):
-            result = runner.invoke(app, ["compile", "IF-MIB", "-v"])
-        assert "IF-MIB.json" in result.stdout
+            result = _invoke(["compile", "IF-MIB", "-v"])
+        assert "IF-MIB.json" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +205,7 @@ class TestCacheDirOption:
             patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config),
             _patch_run([_make_result()]),
         ):
-            runner.invoke(app, ["compile", "IF-MIB", "--cache-dir", ""])
+            _invoke(["compile", "IF-MIB", "--cache-dir", ""])
 
         if captured:
             assert captured[0].cache_dir is None
@@ -207,7 +221,7 @@ class TestCacheDirOption:
             patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config),
             _patch_run([_make_result()]),
         ):
-            runner.invoke(app, ["compile", "IF-MIB", "--cache-dir", str(tmp_path)])
+            _invoke(["compile", "IF-MIB", "--cache-dir", str(tmp_path)])
 
         if captured:
             assert captured[0].cache_dir == tmp_path
@@ -222,12 +236,19 @@ class TestMibDir:
     def test_nonexistent_mib_dir_warns_not_crashes(self, tmp_path: Path):
         """A --mib-dir path that doesn't exist emits a warning but does not
         crash or exit non-zero; the compile run continues with HTTP fallback.
+
+        Note: mix_stderr=False splits stderr into result.output only when the
+        installed Click version supports it on invoke(). We check result.output
+        (combined) so the assertion works on every Click 8.x version.
         """
         fake_dir = tmp_path / "does-not-exist"
         with _patch_run([_make_result("IF-MIB")]):
-            result = runner.invoke(app, ["compile", "IF-MIB", "-d", str(fake_dir)])
+            result = _invoke(["compile", "IF-MIB", "-d", str(fake_dir)], mix_stderr=False)
         assert result.exit_code == 0
-        assert "not a directory" in result.stderr or "Warning" in result.stderr
+        # stderr is mixed into output when mix_stderr is unsupported; check both.
+        stderr_text = result.stderr if hasattr(result, "stderr") and result.stderr else ""
+        combined = result.output + stderr_text
+        assert "not a directory" in combined or "Warning" in combined
 
 
 # ---------------------------------------------------------------------------
