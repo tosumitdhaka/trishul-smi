@@ -1,0 +1,11 @@
+# Pre-commit hooks — runs on every `git commit`.
+# Install once:  pip install pre-commit && pre-commit install
+# Run manually:  pre-commit run --all-files
+# Update pins:   pre-commit autoupdate
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12  # keep in sync with ruff version in pyproject.toml
+    hooks:
+      - id: ruff          # linter: ruff check --fix (auto-fixes safe rules)
+        args: [--fix]
+      - id: ruff-format   # formatter: ruff format (replaces black)
