@@ -27,6 +27,14 @@ class HttpReader(AbstractReader):
     - ETag caching: skips re-download when server returns 304
     - TTL: forces re-fetch after cache_ttl_days days regardless of ETag
     - Content-Length pre-check against max_size before downloading body
+
+    304 edge case:
+    If the server returns 304 but the local cache file is missing (cache_dir
+    is None, the file was deleted, or the process restarted without cache),
+    we fall back to an unconditional GET without If-None-Match rather than
+    calling raise_for_status() on the 304 (which would raise HTTPStatusError
+    since 304 is not a 2xx). This matters for long-running daemon deployments
+    where the on-disk cache can be cleared independently of the ETag store.
     """
 
     def __init__(
@@ -87,13 +95,7 @@ class HttpReader(AbstractReader):
         )
 
     async def _fetch_url_with_retry(self, url: str) -> str:
-        """Retry _fetch_url using self._retries (NOT a hardcoded constant).
-
-        Uses tenacity.AsyncRetrying built at call-time so the retry count
-        always reflects whatever was passed to __init__ (or set via
-        CompilerConfig.http_retries). A static @retry decorator would ignore
-        the instance attribute.
-        """
+        """Retry _fetch_url using self._retries (NOT a hardcoded constant)."""
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type(httpx.TransportError),
             stop=stop_after_attempt(self._retries),
@@ -111,6 +113,7 @@ class HttpReader(AbstractReader):
         if not self._is_stale(url) and url in self._etags:
             headers["If-None-Match"] = self._etags[url]
 
+        # HEAD pre-check: bail early if Content-Length already exceeds limit
         head = await client.head(url)
         if head.status_code == 404:
             raise MibNotFoundError(f"HTTP 404: {url}")
@@ -123,9 +126,17 @@ class HttpReader(AbstractReader):
         response = await client.get(url, headers=headers)
 
         if response.status_code == 304:
+            # Server says content hasn't changed. Try the disk cache first.
             cached = self._read_cache(url)
             if cached is not None:
                 return cached
+            # Cache miss despite 304: cache_dir is None, or the file was
+            # deleted on disk while the in-memory ETag survived. Re-fetch
+            # unconditionally rather than calling raise_for_status() on a 304
+            # (which would raise HTTPStatusError — 304 is not a 2xx).
+            # Also clear the stale ETag so future calls don't repeat this.
+            self._etags.pop(url, None)
+            response = await client.get(url)  # unconditional GET, no If-None-Match
 
         if response.status_code == 404:
             raise MibNotFoundError(f"HTTP 404: {url}")
