@@ -1,6 +1,7 @@
 """Unit tests for CompilerConfig — defaults, isolation, and validators."""
-import pytest
 from pathlib import Path
+
+import pytest
 
 from trishul_smi.config import CompilerConfig
 

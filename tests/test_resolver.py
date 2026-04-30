@@ -12,10 +12,9 @@ from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import AbstractReader
-from trishul_smi.resolver.cache import MibCache, _module_to_bytes, _module_from_dict
-from trishul_smi.resolver.dependency import topological_sort, build_dependency_graph
-from trishul_smi.resolver.resolver import MibResolver, ResolveResult
-
+from trishul_smi.resolver.cache import MibCache
+from trishul_smi.resolver.dependency import build_dependency_graph, topological_sort
+from trishul_smi.resolver.resolver import MibResolver
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers

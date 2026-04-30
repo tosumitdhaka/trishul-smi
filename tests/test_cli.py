@@ -11,7 +11,6 @@ import importlib.metadata
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 from trishul_smi.cli.main import app

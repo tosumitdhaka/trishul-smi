@@ -8,13 +8,13 @@ Description/status/access fields use typed wrappers for the same reason.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from lark import Transformer, Token, Tree
+
+from lark import Token, Transformer, Tree
 
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.models.mib_type import MibType
 from trishul_smi.parser._constants import SMIv2_MARKERS
-
 
 # ---------------------------------------------------------------------------
 # Internal typed wrapper dataclasses

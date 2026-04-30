@@ -6,18 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import MockReader
 from trishul_smi.compiler import MibCompiler
 from trishul_smi.config import CompilerConfig
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
-from trishul_smi.models import CompileResult
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter, _pysnmp_obj_class
 from trishul_smi.reader.chain import ReaderChain
-
-from tests.helpers import MockReader
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

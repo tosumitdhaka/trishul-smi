@@ -1,9 +1,7 @@
 """Unit tests for models/ — instantiation, field validation, and composition."""
 from pathlib import Path
 
-import pytest
-
-from trishul_smi.models import MibModule, MibObject, MibType, CompileResult
+from trishul_smi.models import CompileResult, MibModule, MibObject, MibType
 
 
 class TestMibModule:

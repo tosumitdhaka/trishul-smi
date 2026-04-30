@@ -36,7 +36,6 @@ from jinja2 import BaseLoader, Environment
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 
-
 # ---------------------------------------------------------------------------
 # Object-class detection
 # ---------------------------------------------------------------------------

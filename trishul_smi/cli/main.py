@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 from pathlib import Path
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 
 import typer
 from rich import box
@@ -98,21 +98,21 @@ def compile(  # noqa: A001
         typer.Option("--output-dir", "-o", help="Directory for output files."),
     ] = Path("./mibs-output"),
     formats: Annotated[
-        Optional[list[str]],
+        list[str] | None,
         typer.Option(
             "--format", "-f",
             help="Output format: json or pysnmp. Repeat to write both.",
         ),
     ] = None,
     mib_dirs: Annotated[
-        Optional[list[Path]],
+        list[Path] | None,
         typer.Option(
             "--mib-dir", "-d",
             help="Local directory to search for MIB text files. Repeat for multiple.",
         ),
     ] = None,
     sources: Annotated[
-        Optional[list[str]],
+        list[str] | None,
         typer.Option(
             "--source", "-s",
             help="HTTP source URL template (@mib@ replaced with MIB name). "
@@ -120,7 +120,7 @@ def compile(  # noqa: A001
         ),
     ] = None,
     cache_dir: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--cache-dir",
             help="Compiled-module cache directory. Pass empty string to disable.",
@@ -205,8 +205,8 @@ async def _compile_async(
     """Wire up readers and run the compiler inside the async event loop."""
     # Deferred imports: avoids pulling httpx into the import graph at CLI
     # startup for users who use the library programmatically without HTTP.
-    from trishul_smi.reader.localfile import FileReader
     from trishul_smi.reader.httpclient import HttpReader
+    from trishul_smi.reader.localfile import FileReader
 
     for d in mib_dirs:
         if not d.is_dir():

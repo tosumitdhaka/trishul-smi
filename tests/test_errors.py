@@ -2,14 +2,14 @@
 import pytest
 
 from trishul_smi.errors import (
-    TrishulError,
+    CircularDependencyError,
+    CodeGenError,
+    MibCacheError,
     MibNotFoundError,
     MibSizeLimitError,
     ParseError,
-    CircularDependencyError,
-    CodeGenError,
+    TrishulError,
     WriterError,
-    MibCacheError,
 )
 
 

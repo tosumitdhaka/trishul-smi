@@ -90,7 +90,7 @@ class MibCompiler:
     # Fluent reader registration
     # ------------------------------------------------------------------
 
-    def add_reader(self, reader: FetchProtocol) -> "MibCompiler":
+    def add_reader(self, reader: FetchProtocol) -> MibCompiler:
         """Append a reader to the fallback chain. Returns self for chaining."""
         self._readers.append(reader)
         return self

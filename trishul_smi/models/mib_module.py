@@ -16,9 +16,9 @@ class MibModule:
     language: Literal["SMIv1", "SMIv2"]
     imports: dict[str, list[str]] = field(default_factory=dict)
     # {"SNMPv2-SMI": ["OBJECT-TYPE", "Integer32"], ...}
-    objects: dict[str, "MibObject"] = field(default_factory=dict)
-    types: dict[str, "MibType"] = field(default_factory=dict)
-    notifications: dict[str, "MibObject"] = field(default_factory=dict)
+    objects: dict[str, MibObject] = field(default_factory=dict)
+    types: dict[str, MibType] = field(default_factory=dict)
+    notifications: dict[str, MibObject] = field(default_factory=dict)
     source_text: str | None = None  # original raw ASN.1, kept for debugging
 
     def all_imports(self) -> list[str]:

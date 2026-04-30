@@ -6,7 +6,7 @@ registry and future authors know exactly what contract to satisfy.
 """
 from __future__ import annotations
 
-from typing import Protocol, Union
+from typing import Protocol
 
 from trishul_smi.models.mib_module import MibModule
 
@@ -29,5 +29,5 @@ class FormatterProtocol(Protocol):
 
     FILE_SUFFIX: str
 
-    def format(self, module: MibModule) -> Union[str, bytes]:  # noqa: A003
+    def format(self, module: MibModule) -> str | bytes:  # noqa: A003
         ...
