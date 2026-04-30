@@ -96,7 +96,15 @@ class HttpReader(AbstractReader):
         )
 
     async def _fetch_url_with_retry(self, url: str) -> str:
-        """Retry _fetch_url using self._retries (NOT a hardcoded constant)."""
+        """Retry _fetch_url using self._retries (NOT a hardcoded constant).
+
+        NOTE: ``NetworkError`` (errors.py) is reserved for the retry-exhaustion
+        path — its docstring says "Raised by HttpReader when retries are
+        exhausted" — but is not yet wired. When tenacity\'s reraise=True fires,
+        ``httpx.TransportError`` propagates as-is. Wire NetworkError here
+        (``raise NetworkError(...) from exc``) when callers need to
+        distinguish transport failures from other exceptions by type.
+        """
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type(httpx.TransportError),
             stop=stop_after_attempt(self._retries),

@@ -36,7 +36,17 @@ class ReaderChain:
         self._readers: list[FetchProtocol] = list(readers)
 
     def append(self, reader: FetchProtocol) -> None:
-        """Add a reader to the end of the chain at runtime."""
+        """Add a reader to the end of the chain at runtime.
+
+        Note:
+            ``MibCompiler`` does **not** call this method internally — it
+            always constructs a fresh ``ReaderChain(*self._readers)`` at the
+            start of each ``compile()`` call. This method is provided for
+            library consumers who manage a ``ReaderChain`` directly and need
+            to add readers after construction (e.g. in a long-running service
+            that registers sources lazily). It is not used by the CLI or the
+            compiler pipeline in v0.1.
+        """
         self._readers.append(reader)
 
     async def fetch(self, mib_name: str) -> str:
