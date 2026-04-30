@@ -109,7 +109,8 @@ class TestReaderChain:
         d1.mkdir()
         d2.mkdir()
         (d2 / "X-MIB.mib").write_text(MINIMAL_MIB)
-        chain = ReaderChain([FileReader(d1), FileReader(d2)])
+        # varargs — NOT ReaderChain([reader1, reader2])
+        chain = ReaderChain(FileReader(d1), FileReader(d2))
         text = await chain.fetch("X-MIB")
         assert text
 
@@ -117,13 +118,13 @@ class TestReaderChain:
     async def test_raises_combined_not_found(self, tmp_path: Path):
         d1 = tmp_path / "d1"
         d1.mkdir()
-        chain = ReaderChain([FileReader(d1)])
+        chain = ReaderChain(FileReader(d1))
         with pytest.raises(MibNotFoundError, match="not found in any reader"):
             await chain.fetch("MISSING")
 
     def test_raises_on_empty_readers(self):
         with pytest.raises(ValueError, match="at least one reader"):
-            ReaderChain([])
+            ReaderChain()
 
     @pytest.mark.asyncio
     async def test_size_limit_propagates_immediately(self, tmp_path: Path):
@@ -132,6 +133,6 @@ class TestReaderChain:
         d1.mkdir()
         big = d1 / "BIG-MIB.mib"
         big.write_bytes(b"x" * 2048)
-        chain = ReaderChain([FileReader(d1, max_size=512)])
+        chain = ReaderChain(FileReader(d1, max_size=512))
         with pytest.raises(MibSizeLimitError):
             await chain.fetch("BIG-MIB")
