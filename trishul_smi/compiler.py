@@ -21,11 +21,10 @@ Typical usage::
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Literal
 
 from trishul_smi.config import CompilerConfig
-from trishul_smi.errors import MibNotFoundError
 from trishul_smi.models import CompileResult
 from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter
@@ -35,10 +34,14 @@ from trishul_smi.reader.chain import ReaderChain
 from trishul_smi.resolver.cache import MibCache
 from trishul_smi.resolver.resolver import MibResolver
 
-_FORMATTERS = {
+logger = logging.getLogger(__name__)
+
+_FORMATTER_CLASSES = {
     "json":   JsonFormatter,
     "pysnmp": PysnmpFormatter,
 }
+
+_VALID_FORMATS = frozenset(_FORMATTER_CLASSES)
 
 
 class MibCompiler:
@@ -49,10 +52,25 @@ class MibCompiler:
     Args:
         config: CompilerConfig controlling output location, formats, cache,
                 HTTP settings, and size limits.
+
+    Raises:
+        ValueError: if ``config.formats`` contains an unrecognised format name.
+            Raised at construction time so the CLI surfaces the error before
+            any I/O begins.
     """
 
     def __init__(self, config: CompilerConfig | None = None) -> None:
         self._config = config or CompilerConfig()
+
+        # Validate formats eagerly — a KeyError in compile() deep inside an
+        # async gather would be opaque. Surface it here instead.
+        unknown = set(self._config.formats) - _VALID_FORMATS
+        if unknown:
+            raise ValueError(
+                f"Unknown output format(s): {sorted(unknown)}. "
+                f"Valid formats: {sorted(_VALID_FORMATS)}"
+            )
+
         self._readers: list[FetchProtocol] = []
         # Parser is a singleton per compiler — grammar compiled on first parse.
         self._parser = SmiParser()
@@ -63,7 +81,10 @@ class MibCompiler:
             else None
         )
         # Formatter instances (stateless, reusable)
-        self._formatters = {fmt: _FORMATTERS[fmt]() for fmt in self._config.formats}
+        self._formatters = {
+            fmt: _FORMATTER_CLASSES[fmt]()
+            for fmt in self._config.formats
+        }
 
     # ------------------------------------------------------------------
     # Fluent reader registration
@@ -86,7 +107,10 @@ class MibCompiler:
         Status values:
         - ``'compiled'`` — successfully parsed and written to disk.
         - ``'failed'``   — fetch or parse error; see ``.error``.
-        - ``'cached'``   — not yet used here (reserved for future skip logic).
+
+        Formatter errors (e.g. a buggy Jinja2 template) are non-fatal:
+        they are appended to ``result.warnings`` and logged at WARNING
+        level so they surface in the CLI without aborting the entire run.
         """
         if not self._readers:
             raise RuntimeError(
@@ -116,7 +140,9 @@ class MibCompiler:
                         out_path.write_text(content, encoding="utf-8")
                     output_paths.append(out_path)
                 except Exception as exc:  # noqa: BLE001
-                    warnings.append(f"[{fmt_name}] formatter error: {exc}")
+                    msg = f"[{fmt_name}] formatter error for {module.name}: {exc}"
+                    warnings.append(msg)
+                    logger.warning(msg)  # visible in CLI without aborting the run
 
             results.append(CompileResult(
                 name=module.name,

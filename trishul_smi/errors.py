@@ -33,6 +33,19 @@ class CircularDependencyError(TrishulError):
     """A circular import chain was detected during dependency resolution."""
 
 
+class NetworkError(TrishulError):
+    """HTTP/network failure that is not a simple 404 (MibNotFoundError).
+
+    Raised by HttpReader when retries are exhausted and the underlying cause
+    is a transport error, DNS failure, timeout, or a 5xx response.
+    Wraps the original exception as ``__cause__`` so callers can inspect it.
+
+    Example::
+
+        raise NetworkError(f"GET {url} failed after {retries} retries") from exc
+    """
+
+
 class CodeGenError(TrishulError):
     """Code generation failed for a MibModule."""
 

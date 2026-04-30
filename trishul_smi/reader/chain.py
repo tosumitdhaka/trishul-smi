@@ -5,11 +5,11 @@ MibResolver and MibCompiler without any special handling.
 
 Fallback semantics:
 - MibNotFoundError from a reader → try next reader.
-- Any other exception (MibSizeLimitError, httpx.TransportError after
-  retries exhausted, …) → propagates immediately without trying further.
+- Any other exception (MibSizeLimitError, NetworkError after retries, …)
+  propagates immediately without trying further readers.
 
-This means a size-limit hit on the first reader will NOT silently fall
-through to a second reader that might return a truncated copy.
+This prevents a size-limit hit on reader 1 from silently falling through
+to a second reader that might return a truncated or stale copy.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class ReaderChain:
         chain = ReaderChain(
             FileReader("/usr/share/snmp/mibs"),
             ZipReader("/opt/vendor-mibs.zip"),
-            http_reader,            # HttpReader used as async context manager
+            http_reader,
         )
         text = await chain.fetch("IF-MIB")
     """
@@ -41,11 +41,15 @@ class ReaderChain:
 
     async def fetch(self, mib_name: str) -> str:
         """Try each reader in order; raise the last MibNotFoundError if all fail."""
-        last_exc: MibNotFoundError = MibNotFoundError(mib_name)
+        # last_exc is MibNotFoundError | None rather than narrowing to
+        # MibNotFoundError upfront, which would require a dummy construction.
+        # We assert before re-raise so mypy is satisfied and the intent is clear.
+        last_exc: MibNotFoundError | None = None
         for reader in self._readers:
             try:
                 return await reader.fetch(mib_name)
             except MibNotFoundError as exc:
                 last_exc = exc
                 # continue to next reader
+        assert last_exc is not None  # guaranteed: loop ran ≥1 iteration
         raise last_exc

@@ -5,23 +5,64 @@ The output closely follows the format used by pysmi-compiled MIBs:
 
     mibBuilder.importSymbols(\'SNMPv2-SMI\', \'ModuleIdentity\', ...)
     ifMIB = ModuleIdentity((1, 3, 6, 1, 2, 1, 31,))
-    mibBuilder.exportSymbols(\'IF-MIB\', **{'ifMIB': ifMIB, ...})
+    mibBuilder.exportSymbols(\'IF-MIB\', **{\'ifMIB\': ifMIB, ...})
 
-Limitations (out of scope for this iteration):
-- TEXTUAL-CONVENTION constraints are not fully emitted.
-- NOTIFICATION-TYPE OBJECTS list is omitted.
-- SEQUENCE / CHOICE types generate a placeholder.
-These are annotated with TODO comments in the output.
+pysnmp object-class mapping
+----------------------------
+
+    OBJECT-TYPE syntax            pysnmp class
+    ------------------------------------------
+    SEQUENCE OF <X>               MibTable
+    Named type → SEQUENCE in      MibTableRow
+      module.types
+    Everything else               MibScalar
+
+MibTableColumn detection requires knowing which OID is the parent row.
+This needs full OID tree resolution (resolver/ phase), which is not
+available to the formatter. Scalars are emitted as MibScalar; a
+post-processing pass after OID resolution can upgrade them.
+
+Known limitations (each annotated with TODO in generated output):
+- TEXTUAL-CONVENTION constraints not fully emitted.
+- NOTIFICATION-TYPE OBJECTS clause omitted.
+- SEQUENCE / CHOICE types generate a placeholder comment.
 
 Output file: {output_dir}/{ModuleName}.py
 """
 from __future__ import annotations
 
-from jinja2 import Environment, BaseLoader
+from dataclasses import dataclass
+from typing import Any
+
+from jinja2 import BaseLoader, Environment
 
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
-from trishul_smi.models.mib_type import MibType
+
+
+# ---------------------------------------------------------------------------
+# Object-class detection
+# ---------------------------------------------------------------------------
+
+def _pysnmp_obj_class(obj: MibObject, module: MibModule) -> str:
+    """Return the correct pysnmp constructor class name for *obj*.
+
+    Resolution order (first match wins):
+    1. syntax starts with ``SEQUENCE OF`` → MibTable (the table object itself)
+    2. syntax is a named type that resolves to SEQUENCE in this module’s types
+       → MibTableRow (the row object)
+    3. Everything else → MibScalar
+       (MibTableColumn needs OID-tree resolution — see module docstring)
+    """
+    syntax = (obj.syntax or "").strip()
+    if syntax.upper().startswith("SEQUENCE OF"):
+        return "MibTable"
+    # Named type that resolves to SEQUENCE in this module = table row
+    if syntax and syntax in module.types:
+        base = (module.types[syntax].base_type or "").upper()
+        if base.startswith("SEQUENCE"):
+            return "MibTableRow"
+    return "MibScalar"
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +86,7 @@ mibBuilder = MibBuilder()
 # --- MODULE-IDENTITY / OBJECT-IDENTITY --------------------------------
 {% for name, obj in module.objects.items() if obj.object_type in (
        'MODULE-IDENTITY', 'OBJECT-IDENTITY', 'OBJECT IDENTIFIER') %}
-{{ name | pyid }} = {{ obj.object_type | pysnmp_class }}(
+{{ name | pyid }} = {{ obj.object_type | pysnmp_class_for_type }}(
     {{ obj.oid_path | oid_tuple }}
 )
 {% if obj.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ obj.status }}')
@@ -57,8 +98,8 @@ mibBuilder = MibBuilder()
 {% endfor %}
 
 # --- OBJECT-TYPE ------------------------------------------------------
-{% for name, obj in module.objects.items() if obj.object_type == 'OBJECT-TYPE' %}
-{{ name | pyid }} = {{ obj.object_type | pysnmp_class }}(
+{% for name, obj, cls in objects_with_class %}
+{{ name | pyid }} = {{ cls }}(
     {{ obj.oid_path | oid_tuple }},
     {{ obj.syntax | pysnmp_syntax }}
 ).setMaxAccess('{{ obj.max_access or 'read-only' }}')
@@ -99,13 +140,12 @@ mibBuilder.exportSymbols(
 # Jinja2 filters
 # ---------------------------------------------------------------------------
 
-_PYSNMP_CLASS = {
-    "MODULE-IDENTITY":  "ModuleIdentity",
-    "OBJECT-IDENTITY":  "ObjectIdentity",
+_PYSNMP_CLASS_FOR_TYPE = {
+    "MODULE-IDENTITY":   "ModuleIdentity",
+    "OBJECT-IDENTITY":   "ObjectIdentity",
     "OBJECT IDENTIFIER": "MibIdentifier",
-    "OBJECT-TYPE":      "MibScalar",      # overridden per-object if columnar
     "NOTIFICATION-TYPE": "NotificationType",
-    "TRAP-TYPE":        "NotificationType",
+    "TRAP-TYPE":         "NotificationType",
 }
 
 _PYSNMP_SYNTAX = {
@@ -125,8 +165,7 @@ _PYSNMP_SYNTAX = {
 
 
 def _pyid(name: str) -> str:
-    """Convert a MIB identifier to a valid Python identifier.
-    Hyphens are not valid in Python; replace with underscores."""
+    """Replace hyphens with underscores — hyphens are invalid in Python identifiers."""
     return name.replace("-", "_")
 
 
@@ -136,8 +175,8 @@ def _oid_tuple(oid_path: list[int]) -> str:
     return "(" + ", ".join(str(n) for n in oid_path) + ",)"
 
 
-def _pysnmp_class(object_type: str) -> str:
-    return _PYSNMP_CLASS.get(object_type, "MibScalar")
+def _pysnmp_class_for_type(object_type: str) -> str:
+    return _PYSNMP_CLASS_FOR_TYPE.get(object_type, "MibIdentifier")
 
 
 def _pysnmp_syntax(syntax: str | None) -> str:
@@ -163,7 +202,7 @@ def _make_env() -> Environment:
     env = Environment(loader=BaseLoader(), keep_trailing_newline=True)
     env.filters["pyid"] = _pyid
     env.filters["oid_tuple"] = _oid_tuple
-    env.filters["pysnmp_class"] = _pysnmp_class
+    env.filters["pysnmp_class_for_type"] = _pysnmp_class_for_type
     env.filters["pysnmp_syntax"] = _pysnmp_syntax
     env.filters["map_pysnmp_assign"] = _map_pysnmp_assign
     return env
@@ -179,4 +218,12 @@ class PysnmpFormatter:
         self._tmpl = self._env.from_string(_TEMPLATE)
 
     def format(self, module: MibModule) -> str:
-        return self._tmpl.render(module=module)
+        # Precompute (name, obj, pysnmp_class) for all OBJECT-TYPE entries.
+        # Done in Python rather than Jinja2 to keep the template readable and
+        # to avoid threading the module reference through filters.
+        objects_with_class = [
+            (name, obj, _pysnmp_obj_class(obj, module))
+            for name, obj in module.objects.items()
+            if obj.object_type == "OBJECT-TYPE"
+        ]
+        return self._tmpl.render(module=module, objects_with_class=objects_with_class)
