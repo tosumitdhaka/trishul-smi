@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 
 @dataclass
@@ -21,7 +20,11 @@ class CompilerConfig:
 
     # Output
     output_dir: Path = field(default_factory=lambda: Path("./mibs-output"))
-    formats: list[Literal["json", "pysnmp"]] = field(default_factory=lambda: ["json"])
+    # list[str] rather than list[Literal[...]] so that adding a new formatter
+    # to compiler._FORMATTER_CLASSES does not require updating this annotation.
+    # Runtime validation below mirrors _VALID_FORMATS in compiler.py — keep
+    # the two sets in sync when adding a new output format.
+    formats: list[str] = field(default_factory=lambda: ["json"])
 
     # HTTP
     http_timeout: float = 30.0
@@ -57,3 +60,13 @@ class CompilerConfig:
             raise ValueError("sources must not be empty")
         if not self.formats:
             raise ValueError("formats must not be empty")
+        # Format names are validated here (early, before any I/O) and again
+        # in MibCompiler.__init__ against the live _FORMATTER_CLASSES registry.
+        # Both guards must agree — keep this set in sync with compiler.py.
+        _known_formats = {"json", "pysnmp"}
+        unknown = set(self.formats) - _known_formats
+        if unknown:
+            raise ValueError(
+                f"Unknown format(s): {sorted(unknown)}. "
+                f"Valid formats: {sorted(_known_formats)}"
+            )

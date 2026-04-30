@@ -19,6 +19,7 @@ from typing import Any
 
 import orjson
 
+from trishul_smi.errors import MibCacheError
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.models.mib_type import MibType
@@ -109,6 +110,11 @@ class MibCache:
             Compiled modules go in ``{cache_dir}/compiled/``.
         ttl_days: Entries older than this many days are treated as stale
             and re-fetched. ``0`` means never expire.
+
+    Raises:
+        MibCacheError: if the cache directory cannot be created (e.g.
+            permission denied). Raised at construction time so the caller
+            learns immediately rather than on the first cache write.
     """
 
     _SUBDIR = "compiled"
@@ -116,7 +122,12 @@ class MibCache:
     def __init__(self, cache_dir: Path, ttl_days: int = 7) -> None:
         self._dir = cache_dir / self._SUBDIR
         self._ttl_seconds = ttl_days * 86_400  # 0 → never expire
-        self._dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise MibCacheError(
+                f"Cannot create cache directory {self._dir}: {exc}"
+            ) from exc
 
     def _path(self, mib_name: str) -> Path:
         return self._dir / f"{mib_name}.json"
