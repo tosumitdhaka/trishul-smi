@@ -2,10 +2,10 @@
 
 ---
 
-## `trishul-smi compile`
+## `tsmi compile` / `trishul-smi compile`
 
 ```
-trishul-smi compile [OPTIONS] MIB [MIB ...]
+tsmi compile [OPTIONS] MIB [MIB ...]
 ```
 
 Compile one or more MIBs and all their transitive dependencies.
@@ -22,8 +22,9 @@ Compile one or more MIBs and all their transitive dependencies.
 |---|---|---|
 | `-o` / `--output-dir` | `./mibs-output` | Directory to write output files |
 | `-f` / `--format` | `json` | Output format: `json` or `pysnmp`. Repeat for multiple. |
-| `-d` / `--mib-dir` | — | Local MIB directory searched before HTTP. Repeat for multiple. |
-| `-s` / `--source` | pysnmp.com + circitor.fr | HTTP URL template (`@mib@` replaced with MIB name). Repeat for multiple. |
+| `-d` / `--mib-dir` | — | Local MIB directory. Repeat for multiple. Searched before HTTP. |
+| `--online` | off | Fetch missing MIBs from HTTP sources (pysnmp.com + mibbrowser.online). Off by default. |
+| `-s` / `--source` | — | Custom HTTP URL template (`@mib@` replaced with MIB name). Implies `--online`. Repeat for multiple. |
 | `--cache-dir` | `~/.cache/trishul-smi` | Compiled-module cache directory. Pass `""` to disable. |
 | `--cache-ttl-days` | `7` | Cache TTL in days. `0` = never expire. |
 | `--max-mib-size` | `10485760` | Maximum MIB source size in bytes. |
@@ -32,28 +33,28 @@ Compile one or more MIBs and all their transitive dependencies.
 | `-v` / `--verbose` | — | Show output file paths per module. |
 | `--help` | — | Show help and exit. |
 
-**Exit codes:** `0` all compiled — `1` any failure — `2` bad option.
+**Exit codes:** `0` all compiled — `1` any failure — `2` bad option or no source configured.
 
 **Examples**
 
 ```bash
-# Compile to JSON (default)
-trishul-smi compile IF-MIB
+# Compile from a local directory (no HTTP)
+tsmi compile IF-MIB -d /usr/share/snmp/mibs
 
-# Compile to pysnmp Python modules
-trishul-smi compile IF-MIB --format pysnmp
+# Fetch from the internet
+tsmi compile IF-MIB --online
 
 # Both formats, custom output directory
-trishul-smi compile IF-MIB IP-MIB -f json -f pysnmp -o ./out
+tsmi compile IF-MIB IP-MIB -f json -f pysnmp --online -o ./out
 
-# Search a local directory first, fall back to HTTP
-trishul-smi compile IF-MIB -d /usr/share/snmp/mibs
+# Local directory first, fall back to HTTP
+tsmi compile IF-MIB -d /usr/share/snmp/mibs --online
 
 # Disable the disk cache
-trishul-smi compile IF-MIB --cache-dir ""
+tsmi compile IF-MIB --online --cache-dir ""
 
 # Show per-module output paths
-trishul-smi compile IF-MIB --verbose
+tsmi compile IF-MIB --online --verbose
 ```
 
 **Sample output**
@@ -61,19 +62,18 @@ trishul-smi compile IF-MIB --verbose
 ```
 Compiling IF-MIB → ./mibs-output (json)
 Status    Module
-✅        SNMPv2-SMI
-✅        SNMPv2-CONF
+✅        IANAifType-MIB
 ✅        IF-MIB
 
-3 compiled
+2 compiled
 ```
 
 ---
 
-## `trishul-smi version`
+## `tsmi version` / `trishul-smi version`
 
 ```
-trishul-smi version
+tsmi version
 ```
 
 Print the installed version and exit.
@@ -123,4 +123,4 @@ ifMIB = ModuleIdentity((1, 3, 6, 1, 2, 1, 31,))
 mibBuilder.exportSymbols('IF-MIB', **{'ifMIB': ifMIB})
 ```
 
-> **Known limitation (v0.1.0):** `MibTableColumn` detection requires full OID-tree resolution not yet available at format time. Table columns are emitted as `MibScalar` with a `# TODO` comment. Planned for v0.2.0.
+> **Known limitation:** `MibTableColumn` detection requires full OID-tree resolution (not yet available). Table columns are emitted as `MibScalar` with a `# TODO` comment. See [roadmap.md](roadmap.md).

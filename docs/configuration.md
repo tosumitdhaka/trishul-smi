@@ -21,7 +21,7 @@ config = CompilerConfig(
 |---|---|---|---|
 | `output_dir` | `Path` | `./mibs-output` | Directory where output files are written |
 | `formats` | `list[str]` | `["json"]` | Output formats to generate: `"json"`, `"pysnmp"`, or both |
-| `sources` | `list[str]` | pysnmp.com + circitor.fr | HTTP URL templates; `@mib@` is replaced with the MIB name |
+| `sources` | `list[str]` | pysnmp.com + mibbrowser.online | HTTP URL templates; `@mib@` is replaced with the MIB name |
 | `cache_dir` | `Path \| None` | `~/.cache/trishul-smi` | Compiled-module cache directory; `None` disables the cache |
 | `cache_ttl_days` | `int` | `7` | Cache TTL in days; `0` = never expire |
 | `max_mib_size` | `int` | `10485760` (10 MB) | Maximum MIB source size in bytes; raises `MibSizeLimitError` if exceeded |
@@ -34,17 +34,17 @@ config = CompilerConfig(
 
 ```
 https://mibs.pysnmp.com/asn1/@mib@
-https://www.circitor.fr/Mibs/Mib/@mib@.mib
+https://mibbrowser.online/mibs/@mib@.mib
 ```
 
-Sources are tried in order. To prepend a private mirror:
+Sources are tried in order. HTTP is opt-in via `--online` on the CLI. To prepend a private mirror:
 
 ```python
 config = CompilerConfig(
     sources=[
         "https://internal.corp/mibs/@mib@",
         "https://mibs.pysnmp.com/asn1/@mib@",
-        "https://www.circitor.fr/Mibs/Mib/@mib@.mib",
+        "https://mibbrowser.online/mibs/@mib@.mib",
     ]
 )
 ```

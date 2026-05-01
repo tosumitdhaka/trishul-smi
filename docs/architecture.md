@@ -80,7 +80,8 @@ tests/
 docs/
 ├── index.md               ← documentation index
 ├── architecture.md        ← this file
-├── plan.md                ← design decisions and goals
+├── design-notes.md        ← design decisions and goals
+├── roadmap.md             ← planned features and known limitations
 └── CHANGELOG.md           ← version history
 ```
 
@@ -297,7 +298,7 @@ trishul-smi compile MIB [MIB ...]  [OPTIONS]
 trishul-smi version
 ```
 
-CLI constructs a `CompilerConfig` from flags → builds `MibCompiler` with default readers (FileReader if `--mib-dir` given, then HttpReader) → calls `compile()` → displays results via Rich table.
+CLI constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2.
 
 Exit codes: `0` all compiled — `1` any failure — `2` bad option.
 
@@ -306,11 +307,11 @@ Exit codes: `0` all compiled — `1` any failure — `2` bad option.
 ## 4. Data Flow — End to End
 
 ```
-$ trishul-smi compile IF-MIB -f json -f pysnmp
+$ tsmi compile IF-MIB -f json -f pysnmp --online
 
 cli/main.py
   ├─ CompilerConfig(formats=["json","pysnmp"], ...)
-  ├─ MibCompiler(config).add_reader(FileReader(...)).add_reader(http)
+  ├─ MibCompiler(config).add_reader(FileReader(...)).add_reader(http)  # http only if --online
   └─ await compiler.compile("IF-MIB")
         │
         ├─ MibResolver.resolve(["IF-MIB"])

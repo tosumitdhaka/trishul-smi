@@ -5,6 +5,9 @@
 [![PyPI](https://img.shields.io/pypi/v/trishul-smi)](https://pypi.org/project/trishul-smi/)
 [![Python](https://img.shields.io/pypi/pyversions/trishul-smi)](https://pypi.org/project/trishul-smi/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/tosumitdhaka/trishul-smi?style=flat)](https://github.com/tosumitdhaka/trishul-smi/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/tosumitdhaka/trishul-smi?style=flat)](https://github.com/tosumitdhaka/trishul-smi/forks)
+[![GitHub Issues](https://img.shields.io/github/issues/tosumitdhaka/trishul-smi)](https://github.com/tosumitdhaka/trishul-smi/issues)
 
 `trishul-smi` fetches, parses, and compiles SNMP MIB definitions (SMIv1 and SMIv2)
 into structured JSON or pysnmp-compatible Python modules.
@@ -38,11 +41,11 @@ Requires Python ≥ 3.10.
 ## Quick Start
 
 ```bash
-# Compile IF-MIB and all its dependencies to JSON
-trishul-smi compile IF-MIB
+# Compile from a local MIB directory
+tsmi compile IF-MIB --mib-dir /usr/share/snmp/mibs
 
-# Compile to both JSON and pysnmp Python modules
-trishul-smi compile IF-MIB IP-MIB -f json -f pysnmp -o ./out
+# Fetch from the internet and compile to JSON + pysnmp
+tsmi compile IF-MIB IP-MIB -f json -f pysnmp --online -o ./out
 ```
 
 Python API:
@@ -55,13 +58,9 @@ from trishul_smi.reader import FileReader, HttpReader
 
 async def main():
     config = CompilerConfig(output_dir=Path("./out"))
-    async with HttpReader(config.sources) as http:
-        compiler = (
-            MibCompiler(config)
-            .add_reader(FileReader("/usr/share/snmp/mibs"))
-            .add_reader(http)
-        )
-        results = await compiler.compile("IF-MIB", "IP-MIB")
+    compiler = MibCompiler(config).add_reader(FileReader("/usr/share/snmp/mibs"))
+    # optionally add HTTP: async with HttpReader(*config.sources) as http: compiler.add_reader(http)
+    results = await compiler.compile("IF-MIB", "IP-MIB")
     for r in results:
         print(r.name, r.status, r.output_paths)
 
@@ -75,6 +74,7 @@ asyncio.run(main())
 - [CLI Reference](docs/cli.md) — all commands, options, and output format examples
 - [Configuration](docs/configuration.md) — `CompilerConfig` fields and defaults
 - [Architecture](docs/architecture.md) — package structure, data flow, design principles
+- [Roadmap](docs/roadmap.md) — planned features and known limitations
 - [Contributing](docs/contributing.md) — dev setup, test and lint commands
 - [Changelog](docs/CHANGELOG.md) — version history
 
