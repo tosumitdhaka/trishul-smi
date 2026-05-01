@@ -20,7 +20,7 @@ class CompilerConfig:
     sources: list[str] = field(
         default_factory=lambda: [
             "https://mibs.pysnmp.com/asn1/@mib@",
-            "https://www.circitor.fr/Mibs/Mib/@mib@.mib",
+            "https://mibbrowser.online/mibs/@mib@.mib",
         ]
     )
 

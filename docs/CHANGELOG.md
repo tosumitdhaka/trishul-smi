@@ -8,6 +8,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.1] — 2026-05-01
 
+### Changed
+
+- Default HTTP fallback source replaced: `circitor.fr` → `mibbrowser.online`
+  (`https://mibbrowser.online/mibs/@mib@.mib`). circitor.fr issued 301 redirects
+  that the HTTP client did not follow reliably.
+- HTTP fetching is now **opt-in**. `trishul-smi compile` no longer contacts the
+  network by default. Pass `--online` to enable HTTP sources, or `--source URL`
+  to use a custom source. Running without either and without `--mib-dir` now
+  exits with code 2 and a clear error message.
+
 ### Fixed
 
 - Grammar now parses `named_type` with SIZE constraints (e.g., `DisplayString (SIZE (0..255))`).
@@ -18,6 +28,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Grammar now accepts negative values in `INTEGER` enumeration items and range bounds
   (e.g., `INTEGER { reserved(-2), low(-1), medium(0) }`).
   This was blocking `IP-MIB` on the pysnmp.com source.
+- Dialect detection no longer false-positives on `SNMPv2-TC-v1` (was matching
+  `SNMPv2-TC` as a substring, causing V1SMI files to be parsed as SMIv2).
+- `TRAP-TYPE` now accepts lowercase identifiers as the trap name (e.g.,
+  `ciscoEpmNotificationAlarm TRAP-TYPE ...`), matching real Cisco MIBs.
 
 [0.1.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.1.1
 

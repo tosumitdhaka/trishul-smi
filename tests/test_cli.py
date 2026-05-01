@@ -98,29 +98,40 @@ class TestCompileArgs:
         result = _invoke(["compile"])
         assert result.exit_code == 2
 
-    def test_compile_single_mib_exit_zero(self):
+    def test_no_source_exits_2(self):
+        """compile without --mib-dir and without --online must exit 2."""
+        result = _invoke(["compile", "IF-MIB"])
+        assert result.exit_code == 2
+        assert "No MIB source" in result.output or "No MIB source" in (result.output + "")
+
+    def test_compile_single_mib_with_online_exit_zero(self):
         with _patch_run([_make_result("IF-MIB")]):
-            result = _invoke(["compile", "IF-MIB"])
+            result = _invoke(["compile", "IF-MIB", "--online"])
+        assert result.exit_code == 0
+
+    def test_compile_single_mib_with_mib_dir_exit_zero(self, tmp_path: Path):
+        with _patch_run([_make_result("IF-MIB")]):
+            result = _invoke(["compile", "IF-MIB", "-d", str(tmp_path)])
         assert result.exit_code == 0
 
     def test_compile_multiple_mibs(self):
         results = [_make_result("IF-MIB"), _make_result("IP-MIB")]
         with _patch_run(results):
-            result = _invoke(["compile", "IF-MIB", "IP-MIB"])
+            result = _invoke(["compile", "IF-MIB", "IP-MIB", "--online"])
         assert result.exit_code == 0
         assert "IF-MIB" in result.output
         assert "IP-MIB" in result.output
 
     def test_unknown_format_exits_2(self):
-        result = _invoke(["compile", "IF-MIB", "-f", "xml"])
+        result = _invoke(["compile", "IF-MIB", "--online", "-f", "xml"])
         assert result.exit_code == 2
 
     def test_negative_retries_exits_2(self):
-        result = _invoke(["compile", "IF-MIB", "--retries", "-1"])
+        result = _invoke(["compile", "IF-MIB", "--online", "--retries", "-1"])
         assert result.exit_code == 2
 
     def test_zero_timeout_exits_2(self):
-        result = _invoke(["compile", "IF-MIB", "--timeout", "0"])
+        result = _invoke(["compile", "IF-MIB", "--online", "--timeout", "0"])
         assert result.exit_code == 2
 
 
@@ -132,38 +143,38 @@ class TestCompileArgs:
 class TestCompileOutput:
     def test_compiled_module_shown_in_table(self):
         with _patch_run([_make_result("IF-MIB")]):
-            result = _invoke(["compile", "IF-MIB"])
+            result = _invoke(["compile", "IF-MIB", "--online"])
         assert "IF-MIB" in result.output
 
     def test_failed_module_shown_in_table(self):
         failed = _make_result("MISSING-MIB", status="failed", error="Not found")
         with _patch_run([failed]):
-            result = _invoke(["compile", "MISSING-MIB"])
+            result = _invoke(["compile", "MISSING-MIB", "--online"])
         assert result.exit_code == 1
         assert "MISSING-MIB" in result.output
 
     def test_exit_1_when_any_failure(self):
         results = [_make_result("IF-MIB"), _make_result("BAD", status="failed")]
         with _patch_run(results):
-            result = _invoke(["compile", "IF-MIB", "BAD"])
+            result = _invoke(["compile", "IF-MIB", "BAD", "--online"])
         assert result.exit_code == 1
 
     def test_exit_0_when_all_compiled(self):
         results = [_make_result("IF-MIB"), _make_result("IP-MIB")]
         with _patch_run(results):
-            result = _invoke(["compile", "IF-MIB", "IP-MIB"])
+            result = _invoke(["compile", "IF-MIB", "IP-MIB", "--online"])
         assert result.exit_code == 0
 
     def test_warnings_appear_in_output(self):
         r = _make_result("IF-MIB", warnings=["[json] formatter error for IF-MIB: boom"])
         with _patch_run([r]):
-            result = _invoke(["compile", "IF-MIB"])
+            result = _invoke(["compile", "IF-MIB", "--online"])
         assert "formatter error" in result.output
 
     def test_summary_line_compiled_count(self):
         results = [_make_result("IF-MIB"), _make_result("IP-MIB")]
         with _patch_run(results):
-            result = _invoke(["compile", "IF-MIB", "IP-MIB"])
+            result = _invoke(["compile", "IF-MIB", "IP-MIB", "--online"])
         assert "2 compiled" in result.output
 
     def test_summary_line_failed_count(self):
@@ -172,13 +183,13 @@ class TestCompileOutput:
             _make_result("BAD", status="failed", error="err"),
         ]
         with _patch_run(results):
-            result = _invoke(["compile", "IF-MIB", "BAD"])
+            result = _invoke(["compile", "IF-MIB", "BAD", "--online"])
         assert "1 failed" in result.output
 
     def test_verbose_shows_output_paths(self):
         r = _make_result("IF-MIB", output_paths=[Path("IF-MIB.json")])
         with _patch_run([r]):
-            result = _invoke(["compile", "IF-MIB", "-v"])
+            result = _invoke(["compile", "IF-MIB", "--online", "-v"])
         assert "IF-MIB.json" in result.output
 
 
@@ -199,7 +210,7 @@ class TestCacheDirOption:
             patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config),
             _patch_run([_make_result()]),
         ):
-            _invoke(["compile", "IF-MIB", "--cache-dir", ""])
+            _invoke(["compile", "IF-MIB", "--online", "--cache-dir", ""])
 
         if captured:
             assert captured[0].cache_dir is None
@@ -215,7 +226,7 @@ class TestCacheDirOption:
             patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config),
             _patch_run([_make_result()]),
         ):
-            _invoke(["compile", "IF-MIB", "--cache-dir", str(tmp_path)])
+            _invoke(["compile", "IF-MIB", "--online", "--cache-dir", str(tmp_path)])
 
         if captured:
             assert captured[0].cache_dir == tmp_path
@@ -229,11 +240,11 @@ class TestCacheDirOption:
 class TestMibDir:
     def test_nonexistent_mib_dir_warns_not_crashes(self, tmp_path: Path):
         """A --mib-dir path that doesn't exist emits a warning but does not
-        crash or exit non-zero; the compile run continues with HTTP fallback.
+        crash or exit non-zero; the compile run continues.
         """
         fake_dir = tmp_path / "does-not-exist"
         with _patch_run([_make_result("IF-MIB")]):
-            result = _invoke(["compile", "IF-MIB", "-d", str(fake_dir)])
+            result = _invoke(["compile", "IF-MIB", "-d", str(fake_dir), "--online"])
         assert result.exit_code == 0
         assert "not a directory" in result.output or "Warning" in result.output
 

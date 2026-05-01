@@ -7,11 +7,14 @@ trishul-smi version                 Print the installed package version.
 
 Examples
 --------
-    # Compile two MIBs to JSON (default) using built-in HTTP sources:
-    trishul-smi compile IF-MIB IP-MIB
+    # Compile from a local directory:
+    trishul-smi compile IF-MIB -d /usr/share/snmp/mibs
 
-    # Write pysnmp Python modules; search a local dir first:
-    trishul-smi compile IF-MIB -f pysnmp -d /usr/share/snmp/mibs
+    # Compile using HTTP sources (opt-in):
+    trishul-smi compile IF-MIB IP-MIB --online
+
+    # Write pysnmp modules; local dir first, fall back to HTTP:
+    trishul-smi compile IF-MIB -f pysnmp -d /usr/share/snmp/mibs --online
 
     # Multiple formats, custom output dir, no disk cache:
     trishul-smi compile IF-MIB -f json -f pysnmp -o ./out --cache-dir ""
@@ -117,13 +120,21 @@ def compile(  # noqa: A001
             help="Local directory to search for MIB text files. Repeat for multiple.",
         ),
     ] = None,
+    online: Annotated[
+        bool,
+        typer.Option(
+            "--online",
+            help="Fetch missing MIBs from HTTP sources (pysnmp.com + circitor.fr). "
+            "Off by default — use --mib-dir for local-only operation.",
+        ),
+    ] = False,
     sources: Annotated[
         list[str] | None,
         typer.Option(
             "--source",
             "-s",
             help="HTTP source URL template (@mib@ replaced with MIB name). "
-            "Repeat for multiple. Defaults to pysnmp.com + circitor.fr.",
+            "Repeat for multiple. Implies --online; replaces default sources.",
         ),
     ] = None,
     cache_dir: Annotated[
@@ -178,6 +189,16 @@ def compile(  # noqa: A001
         err.print(f"[bold red]Configuration error:[/bold red] {exc}")
         raise typer.Exit(2) from exc
 
+    use_http = online or bool(sources)
+
+    if not mib_dirs and not use_http:
+        err.print(
+            "[bold red]Error:[/bold red] No MIB source configured. "
+            "Pass --mib-dir to read from a local directory, "
+            "or add --online to fetch from HTTP sources."
+        )
+        raise typer.Exit(2)
+
     for d in mib_dirs or []:
         if not d.is_dir():
             err.print(f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping.")
@@ -187,7 +208,9 @@ def compile(  # noqa: A001
         f"{output_dir} [dim]({', '.join(config.formats)})[/dim]"
     )
     try:
-        results = asyncio.run(_compile_async(compiler, config, mib_dirs or [], mib_names))
+        results = asyncio.run(
+            _compile_async(compiler, config, mib_dirs or [], mib_names, use_http=use_http)
+        )
     except KeyboardInterrupt:
         err.print("\n[yellow]Interrupted.[/yellow]")
         # typer.Exit is intentional control flow, not derived from
@@ -213,21 +236,27 @@ async def _compile_async(
     config: CompilerConfig,
     mib_dirs: list[Path],
     mib_names: list[str],
+    *,
+    use_http: bool,
 ) -> list[CompileResult]:
     """Wire up readers and run the compiler inside the async event loop."""
     # Deferred imports: avoids pulling httpx into the import graph at CLI
     # startup for users who use the library programmatically without HTTP.
-    from trishul_smi.reader.httpclient import HttpReader
     from trishul_smi.reader.localfile import FileReader
 
     for d in mib_dirs:
         if d.is_dir():
             compiler.add_reader(FileReader(d))
 
-    # HttpReader takes *url_templates (varargs), not a list — unpack with *.
-    async with HttpReader(*config.sources) as http:
-        compiler.add_reader(http)
-        return await compiler.compile(*mib_names)
+    if use_http:
+        from trishul_smi.reader.httpclient import HttpReader
+
+        # HttpReader takes *url_templates (varargs), not a list — unpack with *.
+        async with HttpReader(*config.sources) as http:
+            compiler.add_reader(http)
+            return await compiler.compile(*mib_names)
+
+    return await compiler.compile(*mib_names)
 
 
 # ---------------------------------------------------------------------------
