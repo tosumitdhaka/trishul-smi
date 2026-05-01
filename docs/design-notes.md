@@ -1,6 +1,6 @@
 # trishul-smi — Design Notes
 
-> **Status:** v0.4 — implementation complete; v0.1.0 shipped 2026-05-01  
+> **Status:** v0.2.0 — implementation complete; v0.2.0 shipped 2026-05-01  
 > **Author:** GhaatakJi  
 > **Last updated:** 2026-05-01
 
@@ -13,7 +13,7 @@ Build a **clean, modern, pure-Python SMI/MIB compiler** that:
 - Parses ASN.1 SMI MIB files (SMIv1 and SMIv2)
 - Converts them to structured **JSON** (primary output)
 - Optionally outputs **PySNMP-compatible `.py` modules** (secondary output, for compat)
-- Converts existing **PySNMP `.py` MIB modules** to JSON (reverse conversion utility — deferred to v1.x)
+- Converts existing **PySNMP `.py` MIB modules** to JSON (`tsmi convert FILE.py` — shipped in v0.2.0)
 - Resolves MIB dependencies **automatically** (parallel async fetching)
 - Downloads missing MIBs from the web **on demand**
 - Exposes a simple **CLI** and a **Python API**
@@ -50,7 +50,7 @@ Rather than patching pysmi incrementally, `trishul-smi` is a **ground-up rewrite
 - [ ] Output clean, structured **JSON** per MIB module (primary)
 - [ ] Output **PySNMP-compatible `.py` modules** (secondary, `--format pysnmp`)
 - [ ] Support **both outputs simultaneously** (`--format json pysnmp`)
-- [ ] Convert existing PySNMP `.py` MIB modules → JSON (utility — deferred to v1.x)
+- [x] Convert existing PySNMP `.py` MIB modules → JSON (`tsmi convert` — shipped v0.2.0)
 - [ ] Automatic dependency resolution with **parallel async fetching**
 - [ ] Fetch missing MIBs from HTTP sources with retry + timeout
 - [ ] Read MIBs from local filesystem and ZIP archives
@@ -136,7 +136,7 @@ trishul-smi compile IF-MIB --format json pysnmp   # both simultaneously
 
 ### DD-3: PySNMP `.py` → JSON as a separate utility command
 
-Reverse conversion was planned as a distinct `convert` command. **Deferred to v1.x.** Not implemented in v0.1.0.
+**Decision:** Implemented as `tsmi convert FILE.py` in v0.2.0. Uses Python's `ast` module — no SMI grammar required. Extracts OIDs, object types, syntax (resolving `_Name_Type` wrapper classes to their base type), `max_access`, `status`, and description from `setMaxAccess`/`setStatus`/`setDescription` calls. Emits JSON via `JsonFormatter` — same schema as the compile path.
 
 ---
 
@@ -166,14 +166,22 @@ Reverse conversion was planned as a distinct `convert` command. **Deferred to v1
 
 ### DD-8: PysnmpFormatter covers scalars, tables, notifications (minimum subset)
 
-**Decision:** `PysnmpFormatter` targets the **common subset** sufficient for 95% of MIBs in v0.1.0:
+**Decision (v0.1.0):** `PysnmpFormatter` targets the **common subset** sufficient for 95% of MIBs:
 - Scalar `OBJECT-TYPE` definitions
 - Table + row `OBJECT-TYPE` (with INDEX / AUGMENTS)
 - `NOTIFICATION-TYPE` definitions
 - `TEXTUAL-CONVENTION` types
 - `MODULE-IDENTITY` metadata
 
-Full format edge cases (AGENT-CAPABILITIES, MODULE-COMPLIANCE, OBJECT-GROUP) deferred to v1.x.
+**Extended in v0.2.0:**
+- `MibTableColumn` correctly classified (two-pass OID tree walk after full OID resolution)
+- Full TC class generation with `subtypeSpec`, `displayHint`, `status`, `description`
+- Per-OBJECT-TYPE `_Name_Type` wrapper classes for inline constraints
+- `setIndexNames` / `AUGMENTS → getIndexNames()`
+- `setOrganization`, `setRevisions`, `setDescription` on `MODULE-IDENTITY`
+- `setDescription` on `NOTIFICATION-TYPE`, `OBJECT-GROUP`, `MODULE-COMPLIANCE`, `AGENT-CAPABILITIES`
+- `exportSymbols` single-dict format
+- `--no-texts` flag to suppress all text fields
 
 ---
 
@@ -248,11 +256,11 @@ trishul_smi/
 │   └── cache.py          ← MibCache (orjson disk cache, atomic writes)
 ├── output/
 │   ├── json_fmt.py       ← MibModule → JSON          [PRIMARY]
-│   ├── pysnmp_fmt.py     ← MibModule → PySNMP .py   [SECONDARY, Jinja2]
-│   └── templates/
-│       └── pysnmp_module.j2
+│   └── pysnmp_fmt.py     ← MibModule → PySNMP .py   [SECONDARY, Jinja2 inline template]
+├── convert/
+│   └── pysnmp_reader.py  ← compiled .py → MibModule  [ast-based, no grammar]
 └── cli/
-    └── main.py           ← typer app (compile + version commands)
+    └── main.py           ← typer app (compile + convert + version commands)
 ```
 
 ### 6.4 Build Order
@@ -277,8 +285,9 @@ trishul_smi/
 
 ```json
 {
-  "name": "IF-MIB",
+  "module": "IF-MIB",
   "language": "SMIv2",
+  "generated_by": "trishul-smi",
   "imports": {
     "SNMPv2-SMI": ["MODULE-IDENTITY", "OBJECT-TYPE", "Integer32"],
     "SNMPv2-TC": ["DisplayString", "PhysAddress", "TruthValue"]
@@ -287,11 +296,13 @@ trishul_smi/
     "ifDescr": {
       "oid": "1.3.6.1.2.1.2.2.1.2",
       "oid_path": [1, 3, 6, 1, 2, 1, 2, 2, 1, 2],
-      "type": "OBJECT-TYPE",
+      "object_type": "OBJECT-TYPE",
       "syntax": "DisplayString",
       "max_access": "read-only",
       "status": "current",
-      "description": "A textual string containing information about the interface."
+      "description": "A textual string containing information about the interface.",
+      "index": null,
+      "augments": null
     }
   },
   "types": {},
@@ -301,7 +312,7 @@ trishul_smi/
 
 ### 7.2 PySNMP `.py` Output
 
-Generated from Jinja2 template (`output/templates/pysnmp_module.j2`). Covers the common subset defined in DD-8: scalars, tables, notifications, textual-conventions, module-identity.
+Generated from an inline Jinja2 template in `output/pysnmp_fmt.py`. Covers the full set defined in DD-8 (as extended in v0.2.0): scalars, tables, table columns (with INDEX/AUGMENTS), notifications, textual-conventions with full subtypeSpec, module-identity with organization/revisions/description.
 
 ---
 

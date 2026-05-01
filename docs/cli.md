@@ -14,7 +14,7 @@ Compile one or more MIBs and all their transitive dependencies.
 
 | Argument | Description |
 |---|---|
-| `MIB ...` | One or more MIB names (e.g. `IF-MIB IP-MIB`) |
+| `MIB ...` | One or more MIB names (e.g. `IF-MIB IP-MIB`). Omit to auto-discover every MIB file found in `--mib-dir` directories. |
 
 **Options**
 
@@ -30,6 +30,7 @@ Compile one or more MIBs and all their transitive dependencies.
 | `--max-mib-size` | `10485760` | Maximum MIB source size in bytes. |
 | `--timeout` | `30.0` | HTTP timeout in seconds. |
 | `--retries` | `3` | HTTP retry count on transient failure. |
+| `--no-texts` | off | Suppress `setDescription`/`setOrganization`/`setRevisions` and TC descriptions in pysnmp output. |
 | `-v` / `--verbose` | — | Show output file paths per module. |
 | `--help` | — | Show help and exit. |
 
@@ -50,11 +51,17 @@ tsmi compile IF-MIB IP-MIB -f json -f pysnmp --online -o ./out
 # Local directory first, fall back to HTTP
 tsmi compile IF-MIB -d /usr/share/snmp/mibs --online
 
+# Compile every MIB found in a directory (no explicit names)
+tsmi compile -d /usr/share/snmp/mibs -f json -f pysnmp
+
 # Disable the disk cache
 tsmi compile IF-MIB --online --cache-dir ""
 
 # Show per-module output paths
 tsmi compile IF-MIB --online --verbose
+
+# Lean pysnmp output without description text
+tsmi compile IF-MIB --online -f pysnmp --no-texts
 ```
 
 **Sample output**
@@ -67,6 +74,41 @@ Status    Module
 
 2 compiled
 ```
+
+---
+
+## `tsmi convert` / `trishul-smi convert`
+
+```
+tsmi convert FILE.py [OPTIONS]
+```
+
+Reverse-convert a compiled PySNMP `.py` MIB module back to JSON using Python's `ast` module — no SMI grammar required.
+
+**Arguments**
+
+| Argument | Description |
+|---|---|
+| `FILE.py` | Path to a compiled PySNMP `.py` MIB file |
+
+**Options**
+
+| Option | Default | Description |
+|---|---|---|
+| `-o` / `--output-dir` | `./mibs-output` | Directory to write the JSON output file |
+| `--help` | — | Show help and exit. |
+
+**Examples**
+
+```bash
+# Convert a compiled IF-MIB.py back to JSON
+tsmi convert IF-MIB.py
+
+# Write to a custom directory
+tsmi convert IF-MIB.py -o ./converted
+```
+
+**What is extracted:** OID paths, object types, syntax (resolving `_Name_Type` wrappers to their base class), `max_access`, `status`, and description text. Imports and TEXTUAL-CONVENTION class bodies are not reconstructed.
 
 ---
 
@@ -123,4 +165,3 @@ ifMIB = ModuleIdentity((1, 3, 6, 1, 2, 1, 31,))
 mibBuilder.exportSymbols('IF-MIB', **{'ifMIB': ifMIB})
 ```
 
-> **Known limitation:** `MibTableColumn` detection requires full OID-tree resolution (not yet available). Table columns are emitted as `MibScalar` with a `# TODO` comment. See [roadmap.md](roadmap.md).

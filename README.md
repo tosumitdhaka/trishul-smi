@@ -19,7 +19,11 @@ and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 ## Features
 
 - **Full import closure** — resolves every transitive dependency automatically
+- **Full OID resolution** — all objects carry absolute numeric OID paths after compile
 - **Two output formats** — structured JSON and pysnmp-compatible Python
+- **pysmi-parity pysnmp output** — MibTableColumn detection, full TC subtypeSpec, setIndexNames, setOrganization, setRevisions, inline constraint wrappers
+- **Reverse conversion** — `tsmi convert FILE.py` converts a compiled PySNMP module back to JSON
+- **Directory compile mode** — `tsmi compile -d /path/to/mibs` auto-discovers and compiles every MIB file
 - **Concurrent fetching** — parallel async HTTP with retry and timeout
 - **Pluggable readers** — `FileReader`, `HttpReader`, `ZipReader`, composable via `ReaderChain`
 - **Disk cache** — compiled modules cached with mtime-based TTL; atomic writes

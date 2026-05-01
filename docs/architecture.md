@@ -54,6 +54,7 @@ trishul_smi/
 ├── resolver/
 │   ├── resolver.py        ← MibResolver (BFS + asyncio.gather) + ResolveResult
 │   ├── dependency.py      ← build_dependency_graph, topological_sort (Kahn's)
+│   ├── oid_resolver.py    ← resolve_oids: rewrites MibObject.oid/oid_path to absolute paths
 │   └── cache.py           ← MibCache (orjson disk cache, mtime TTL)
 │
 ├── output/
@@ -61,8 +62,11 @@ trishul_smi/
 │   ├── json_fmt.py        ← JsonFormatter  (FILE_SUFFIX = ".json")
 │   └── pysnmp_fmt.py      ← PysnmpFormatter (Jinja2, FILE_SUFFIX = ".py")
 │
+├── convert/
+│   └── pysnmp_reader.py   ← PySNMPReader: compiled .py → MibModule (ast-based)
+│
 └── cli/
-    └── main.py            ← Typer app: compile + version commands
+    └── main.py            ← Typer app: compile + convert + version commands
 
 tests/
 ├── conftest.py            ← shared pytest fixtures
@@ -70,12 +74,15 @@ tests/
 ├── test_cli.py
 ├── test_compiler.py
 ├── test_config.py
+├── test_convert.py
 ├── test_errors.py
 ├── test_httpreader.py
 ├── test_models.py
+├── test_oid_resolver.py
 ├── test_parser.py
 ├── test_readers.py
-└── test_resolver.py
+├── test_resolver.py
+└── test_transformer.py
 
 docs/
 ├── index.md               ← documentation index
@@ -107,8 +114,8 @@ class MibModule:
 @dataclass
 class MibObject:
     name: str
-    oid: str                           # dotted: "1.3.6.1.2.1.2.2.1.2"
-    oid_path: list[int]
+    oid: str                           # absolute dotted: "1.3.6.1.2.1.2.2.1.2"
+    oid_path: list[int]                # absolute numeric arcs (resolved by oid_resolver)
     object_type: str                   # "OBJECT-TYPE", "MODULE-IDENTITY", etc.
     syntax: str | None = None
     max_access: str | None = None
@@ -116,13 +123,17 @@ class MibObject:
     description: str | None = None
     index: list[str] | None = None
     augments: str | None = None
+    oid_parent: str | None = None      # pre-resolution parent name arc
+    constraints: dict[str, Any] | None = None  # inline SYNTAX constraint
 
 @dataclass
 class MibType:
     name: str
     base_type: str
-    constraints: dict | None = None
+    constraints: dict[str, Any] | None = None
     description: str | None = None
+    display_hint: str | None = None
+    status: str | None = None
 
 @dataclass
 class CompileResult:
@@ -131,6 +142,7 @@ class CompileResult:
     output_paths: list[Path]
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    is_dependency: bool = False        # True for transitive deps, False for explicitly requested
 ```
 
 ---
@@ -220,10 +232,10 @@ class FormatterProtocol(Protocol):
 
 | Class | Output | Method |
 |---|---|---|
-| `JsonFormatter` | `.json` | `orjson` serialization |
-| `PysnmpFormatter` | `.py` | Jinja2 template; detects MibTable / MibTableRow / MibScalar |
+| `JsonFormatter` | `.json` | `orjson` serialization; descriptions normalized; `oid_path` compact |
+| `PysnmpFormatter` | `.py` | Jinja2 template; two-pass OID walk classifies MibTable / MibTableRow / MibTableColumn / MibScalar |
 
-`PysnmpFormatter` replaces hyphens in Python identifiers and annotates unresolvable table columns with `# TODO` comments (full OID-tree resolution not yet available at format time — planned for v0.2.0).
+`PysnmpFormatter` replaces hyphens in Python identifiers, emits full TEXTUAL-CONVENTION subclasses with `subtypeSpec`, inline `_Name_Type` wrappers for constrained OBJECT-TYPEs, `setIndexNames`/`AUGMENTS`, `setOrganization`, `setRevisions`, and `setDescription`. Supports `--no-texts` to suppress all text fields.
 
 ---
 
@@ -267,6 +279,7 @@ class CompilerConfig:
     max_mib_size: int            # bytes; default: 10 MB
     http_timeout: float          # seconds; default: 30.0
     http_retries: int            # default: 3
+    no_texts: bool               # suppress descriptions/org/revisions; default: False
 ```
 
 Unknown format names raise `ValueError` at `MibCompiler.__init__` time.
@@ -294,11 +307,14 @@ TrishulError
 ### 3.9 `cli/`
 
 ```
-trishul-smi compile MIB [MIB ...]  [OPTIONS]
+trishul-smi compile [MIB ...] [OPTIONS]
+trishul-smi convert FILE.py   [OPTIONS]
 trishul-smi version
 ```
 
-CLI constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2.
+**compile:** constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2. MIB names may be omitted to auto-discover every MIB file in `--mib-dir` directories.
+
+**convert:** reads a compiled PySNMP `.py` file via `PySNMPReader` → emits JSON via `JsonFormatter`. No network or grammar required.
 
 Exit codes: `0` all compiled — `1` any failure — `2` bad option.
 
@@ -319,6 +335,8 @@ cli/main.py
         │     ├─ wave 2: asyncio.gather(fetch deps)  → parallel
         │     ├─ wave N: closure complete
         │     └─ Kahn's sort → [SNMPv2-SMI, SNMPv2-CONF, ..., IF-MIB]
+        │
+        ├─ resolve_oids(modules)  → rewrite all oid/oid_path to absolute numeric paths
         │
         └─ for each module in ordered list:
              JsonFormatter.format(module)     → IF-MIB.json
@@ -345,14 +363,17 @@ cli/main.py
 
 ```
 cli
- └── compiler
-      ├── reader (chain, localfile, httpclient, zipreader)
-      ├── parser (grammar, transformer, smi_parser)
-      ├── resolver
-      │    ├── reader
-      │    ├── parser
-      │    └── cache
-      └── output (json_fmt, pysnmp_fmt)
+ ├── compiler
+ │    ├── reader (chain, localfile, httpclient, zipreader)
+ │    ├── parser (grammar, transformer, smi_parser)
+ │    ├── resolver
+ │    │    ├── reader
+ │    │    ├── parser
+ │    │    ├── oid_resolver
+ │    │    └── cache
+ │    └── output (json_fmt, pysnmp_fmt)
+ └── convert (pysnmp_reader)
+      └── output (json_fmt)
 
 All modules → models
 All modules → errors
