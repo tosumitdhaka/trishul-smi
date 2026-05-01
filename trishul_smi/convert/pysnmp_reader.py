@@ -19,6 +19,7 @@ Limitations
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from pathlib import Path
 
 from trishul_smi.errors import ParseError
@@ -73,7 +74,109 @@ def _module_name_from_export(tree: ast.Module) -> str | None:
     return None
 
 
-def _objects_from_assignments(tree: ast.Module) -> dict[str, MibObject]:
+def _build_type_name_map(tree: ast.Module) -> dict[str, str]:
+    """Build map from _Name_Type → real base type name.
+
+    Handles two patterns:
+      1. class _Foo_Type(BaseClass): ...   → _Foo_Type → 'BaseClass'
+      2. _Foo_Type.__name__ = "BaseClass"  → _Foo_Type → 'BaseClass'
+    """
+    name_map: dict[str, str] = {}
+    for node in ast.walk(tree):
+        # Pattern 1: class definition
+        if (
+            isinstance(node, ast.ClassDef)
+            and node.name.startswith("_")
+            and node.name.endswith("_Type")
+        ):
+            if node.bases:
+                base = node.bases[0]
+                if isinstance(base, ast.Name):
+                    name_map[node.name] = base.id
+                elif isinstance(base, ast.Attribute):
+                    name_map[node.name] = base.attr
+        # Pattern 2: __name__ assignment
+        elif isinstance(node, ast.Assign):
+            if (
+                len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Attribute)
+                and node.targets[0].attr == "__name__"
+                and isinstance(node.targets[0].value, ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                name_map[node.targets[0].value.id] = node.value.value
+    return name_map
+
+
+def _call_name(call: ast.Call) -> str | None:
+    """Return the function/constructor name from a Call node."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _extract_string_arg(call: ast.Call) -> str | None:
+    """Return the first string argument of a call, or None."""
+    if call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        return str(call.args[0].value)
+    return None
+
+
+def _collect_set_calls(tree: ast.Module) -> dict[str, dict[str, str]]:
+    """Collect setStatus/setMaxAccess/setDescription calls per object name.
+
+    Handles two forms:
+      obj.setMaxAccess('read-only')            (chained on assignment RHS)
+      if mibBuilder.loadTexts: obj.setStatus(...)
+    """
+    attrs: dict[str, dict[str, str]] = {}
+
+    def _record(obj_name: str, attr: str, value: str) -> None:
+        attrs.setdefault(obj_name, {})[attr] = value
+
+    for node in ast.walk(tree):
+        # Top-level expression: obj.setXxx(...) or if ...: obj.setXxx(...)
+        if isinstance(node, ast.If):
+            for stmt in node.body:
+                if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+                    _process_call_stmt(stmt.value, _record)
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            _process_call_stmt(node.value, _record)
+
+    return attrs
+
+
+def _process_call_stmt(
+    call: ast.Call,
+    record: Callable[[str, str, str], None],
+) -> None:
+    func = call.func
+    if not isinstance(func, ast.Attribute):
+        return
+    obj_node = func.value
+    if not isinstance(obj_node, ast.Name):
+        return
+    obj_name = obj_node.id
+    attr = func.attr
+    if attr in ("setStatus", "setMaxAccess"):
+        val = _extract_string_arg(call)
+        if val:
+            record(obj_name, attr, val)
+    elif attr == "setDescription":
+        arg0 = call.args[0] if call.args else None
+        if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+            record(obj_name, attr, " ".join(arg0.value.split()))
+
+
+def _objects_from_assignments(
+    tree: ast.Module,
+    type_name_map: dict[str, str],
+    set_calls: dict[str, dict[str, str]],
+) -> dict[str, MibObject]:
     """Extract MibObject entries from top-level Name = Constructor(...) assignments."""
     objects: dict[str, MibObject] = {}
 
@@ -85,30 +188,23 @@ def _objects_from_assignments(tree: ast.Module) -> dict[str, MibObject]:
         name = node.targets[0].id
         value = node.value
 
-        # Handle Name = Constructor(oid_tuple, ...) or
-        #        Name = Constructor(oid_tuple, ...).setMaxAccess(...)
-        call: ast.Call | None = None
-        if isinstance(value, ast.Call):
-            call = value
-        elif isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute):
-            call = value
-        # Unwrap chained .setMaxAccess(...) / .setStatus(...) calls
+        # Collect .setMaxAccess from chained calls on the assignment RHS
+        max_access_inline: str | None = None
         inner: ast.expr = value
         while isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute):
+            if inner.func.attr == "setMaxAccess":
+                val = _extract_string_arg(inner)
+                if val:
+                    max_access_inline = val
             inner = inner.func.value
-        if isinstance(inner, ast.Call):
-            call = inner
 
+        # inner should now be the Constructor(...) call
+        call: ast.Call | None = inner if isinstance(inner, ast.Call) else None
         if call is None:
             continue
 
-        # Get constructor name
-        func = call.func
-        if isinstance(func, ast.Name):
-            cls_name = func.id
-        elif isinstance(func, ast.Attribute):
-            cls_name = func.attr
-        else:
+        cls_name = _call_name(call)
+        if cls_name is None:
             continue
 
         object_type = _CLASS_TO_OBJECT_TYPE.get(cls_name)
@@ -124,16 +220,21 @@ def _objects_from_assignments(tree: ast.Module) -> dict[str, MibObject]:
 
         oid_str = ".".join(str(n) for n in oid_path)
 
-        # Extract syntax from second arg if present (e.g. DisplayString())
+        # Extract syntax from second arg (e.g. DisplayString() or _ifDescr_Type())
         syntax: str | None = None
         if len(call.args) >= 2:
             arg1 = call.args[1]
             if isinstance(arg1, ast.Call):
-                s_func = arg1.func
-                if isinstance(s_func, ast.Name):
-                    syntax = s_func.id
-                elif isinstance(s_func, ast.Attribute):
-                    syntax = s_func.attr
+                raw = _call_name(arg1)
+                if raw:
+                    # Resolve _Name_Type wrappers to their real base name
+                    syntax = type_name_map.get(raw, raw)
+
+        # Merge set-calls from loadTexts blocks
+        extra = set_calls.get(name, {})
+        status = extra.get("setStatus")
+        max_access = max_access_inline or extra.get("setMaxAccess")
+        description = extra.get("setDescription")
 
         objects[name] = MibObject(
             name=name,
@@ -141,6 +242,9 @@ def _objects_from_assignments(tree: ast.Module) -> dict[str, MibObject]:
             oid_path=oid_path,
             object_type=object_type,
             syntax=syntax,
+            max_access=max_access,
+            status=status,
+            description=description,
         )
 
     return objects
@@ -164,18 +268,19 @@ class PySNMPReader:
 
         module_name = _module_name_from_export(tree)
         if module_name is None:
-            # Fall back to the file stem (without .py)
             module_name = path.stem.replace("_", "-")
 
-        all_objects = _objects_from_assignments(tree)
+        type_name_map = _build_type_name_map(tree)
+        set_calls = _collect_set_calls(tree)
+        all_objects = _objects_from_assignments(tree, type_name_map, set_calls)
 
         objects: dict[str, MibObject] = {}
         notifications: dict[str, MibObject] = {}
-        for name, obj in all_objects.items():
+        for obj_name, obj in all_objects.items():
             if obj.object_type == "NOTIFICATION-TYPE":
-                notifications[name] = obj
+                notifications[obj_name] = obj
             else:
-                objects[name] = obj
+                objects[obj_name] = obj
 
         return MibModule(
             name=module_name,
@@ -195,7 +300,9 @@ class PySNMPReader:
         detected_name = _module_name_from_export(tree)
         name = detected_name or module_name
 
-        all_objects = _objects_from_assignments(tree)
+        type_name_map = _build_type_name_map(tree)
+        set_calls = _collect_set_calls(tree)
+        all_objects = _objects_from_assignments(tree, type_name_map, set_calls)
         objects: dict[str, MibObject] = {}
         notifications: dict[str, MibObject] = {}
         for obj_name, obj in all_objects.items():
