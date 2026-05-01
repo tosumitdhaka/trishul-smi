@@ -13,7 +13,7 @@ Build a **clean, modern, pure-Python SMI/MIB compiler** that:
 - Parses ASN.1 SMI MIB files (SMIv1 and SMIv2)
 - Converts them to structured **JSON** (primary output)
 - Optionally outputs **PySNMP-compatible `.py` modules** (secondary output, for compat)
-- Converts existing **PySNMP `.py` MIB modules** to JSON (reverse conversion utility)
+- Converts existing **PySNMP `.py` MIB modules** to JSON (reverse conversion utility — deferred to v1.x)
 - Resolves MIB dependencies **automatically** (parallel async fetching)
 - Downloads missing MIBs from the web **on demand**
 - Exposes a simple **CLI** and a **Python API**
@@ -50,14 +50,14 @@ Rather than patching pysmi incrementally, `trishul-smi` is a **ground-up rewrite
 - [ ] Output clean, structured **JSON** per MIB module (primary)
 - [ ] Output **PySNMP-compatible `.py` modules** (secondary, `--format pysnmp`)
 - [ ] Support **both outputs simultaneously** (`--format json pysnmp`)
-- [ ] Convert existing PySNMP `.py` MIB modules → JSON (utility)
+- [ ] Convert existing PySNMP `.py` MIB modules → JSON (utility — deferred to v1.x)
 - [ ] Automatic dependency resolution with **parallel async fetching**
 - [ ] Fetch missing MIBs from HTTP sources with retry + timeout
 - [ ] Read MIBs from local filesystem and ZIP archives
 - [ ] CLI: `trishul-smi compile <MIB-NAME>`
 - [ ] Python API: `MibCompiler` class
 - [ ] Full type annotations (mypy strict)
-- [ ] Test coverage ≥ 80%
+- [ ] Test coverage ≥ 95%
 - [ ] Published to PyPI as `0.1.0` (unstable marker)
 
 ### Nice to Have (v1.x)
@@ -136,17 +136,13 @@ trishul-smi compile IF-MIB --format json pysnmp   # both simultaneously
 
 ### DD-3: PySNMP `.py` → JSON as a separate utility command
 
-Reverse conversion uses Python’s `ast` module — not the SMI grammar parser. It is a distinct `convert` command.
-
-```bash
-trishul-smi convert IF_MIB.py     # PySNMP .py → JSON
-```
+Reverse conversion was planned as a distinct `convert` command. **Deferred to v1.x.** Not implemented in v0.1.0.
 
 ---
 
-### DD-4: Jinja2 for PySNMP `.py` codegen from v1.0
+### DD-4: Jinja2 for PySNMP `.py` output from v1.0
 
-**Decision:** Use Jinja2 for `PySnmpCodeGen` from day one. Avoids two code paths (manual string building vs. template). Templates live in `codegen/templates/pysnmp_module.j2`.
+**Decision:** Use Jinja2 for `PysnmpFormatter` from day one. Avoids two code paths (manual string building vs. template). Templates live in `output/templates/pysnmp_module.j2`.
 
 ---
 
@@ -168,9 +164,9 @@ trishul-smi convert IF_MIB.py     # PySNMP .py → JSON
 
 ---
 
-### DD-8: PySnmpCodeGen covers scalars, tables, notifications (minimum subset)
+### DD-8: PysnmpFormatter covers scalars, tables, notifications (minimum subset)
 
-**Decision:** `PySnmpCodeGen` targets the **common subset** sufficient for 95% of MIBs in v1.0:
+**Decision:** `PysnmpFormatter` targets the **common subset** sufficient for 95% of MIBs in v0.1.0:
 - Scalar `OBJECT-TYPE` definitions
 - Table + row `OBJECT-TYPE` (with INDEX / AUGMENTS)
 - `NOTIFICATION-TYPE` definitions
@@ -230,7 +226,7 @@ Each stage is **independently testable** with clean interfaces.
 ```
 trishul_smi/
 ├── compiler.py           ← orchestrator (MibCompiler class)
-├── config.py             ← CompilerConfig dataclass
+├── config.py             ← CompilerConfig dataclass + VALID_FORMATS
 ├── errors.py             ← exception hierarchy (no circular imports)
 ├── models/               ← MibModule, MibObject, MibType, CompileResult
 ├── parser/
@@ -239,31 +235,24 @@ trishul_smi/
 │   │   ├── smiv2.lark    ← complete SMIv2 grammar (RFC 2578)
 │   │   └── smiv1.lark    ← complete SMIv1 grammar (RFC 1155)
 │   ├── transformer.py    ← Lark tree → MibModule
-│   └── smi_parser.py     ← public parse(text) → MibModule
+│   ├── smi_parser.py     ← public parse(text) → MibModule
+│   └── _constants.py     ← BASE_MIBS skip list
 ├── reader/
-│   ├── base.py           ← AbstractReader ABC
 │   ├── localfile.py      ← filesystem reader (enforces max_mib_size)
 │   ├── httpclient.py     ← async HTTP reader (enforces max_mib_size, ETag + TTL)
 │   ├── zipreader.py      ← ZIP archive reader
 │   └── chain.py          ← ReaderChain
 ├── resolver/
-│   ├── resolver.py       ← DependencyResolver (Kahn’s + asyncio.gather)
-│   └── cache.py          ← MibCache (memory + orjson disk cache)
-├── codegen/
-│   ├── base.py
-│   ├── json_codegen.py   ← MibModule → JSON          [PRIMARY]
-│   ├── pysnmp_codegen.py ← MibModule → PySNMP .py   [SECONDARY, Jinja2]
-│   ├── pysnmp_reader.py  ← PySNMP .py → MibModule   [UTILITY]
+│   ├── resolver.py       ← MibResolver (Kahn’s + asyncio.gather)
+│   ├── dependency.py     ← topological sort
+│   └── cache.py          ← MibCache (orjson disk cache, atomic writes)
+├── output/
+│   ├── json_fmt.py       ← MibModule → JSON          [PRIMARY]
+│   ├── pysnmp_fmt.py     ← MibModule → PySNMP .py   [SECONDARY, Jinja2]
 │   └── templates/
 │       └── pysnmp_module.j2
-├── writer/
-│   ├── base.py
-│   ├── file_writer.py
-│   ├── stdout_writer.py
-│   └── callback_writer.py
 └── cli/
-    ├── main.py           ← typer app (compile + convert)
-    └── display.py
+    └── main.py           ← typer app (compile + version commands)
 ```
 
 ### 6.4 Build Order
@@ -275,12 +264,10 @@ trishul_smi/
 5. `parser/grammar/smiv2.lark` — hardest piece, SMIv2 first
 6. `parser/transformer.py` + `smi_parser.py`
 7. `resolver/` — Kahn’s algorithm + parallel fetch
-8. `codegen/json_codegen.py` — primary output
-9. `codegen/pysnmp_codegen.py` + `templates/pysnmp_module.j2`
-10. `codegen/pysnmp_reader.py` — reverse utility
-11. `writer/`
-12. `compiler.py` — wire everything
-13. `cli/` — last, always backed by real logic
+8. `output/json_fmt.py` — primary output
+9. `output/pysnmp_fmt.py` + `templates/pysnmp_module.j2`
+10. `compiler.py` — wire everything
+11. `cli/` — last, always backed by real logic
 
 ---
 
@@ -314,7 +301,7 @@ trishul_smi/
 
 ### 7.2 PySNMP `.py` Output
 
-Generated from Jinja2 template (`codegen/templates/pysnmp_module.j2`). Covers the common subset defined in DD-8: scalars, tables, notifications, textual-conventions, module-identity.
+Generated from Jinja2 template (`output/templates/pysnmp_module.j2`). Covers the common subset defined in DD-8: scalars, tables, notifications, textual-conventions, module-identity.
 
 ---
 
@@ -325,7 +312,7 @@ The project is considered v1.0 ready when:
 - `trishul-smi compile IF-MIB` works end-to-end from a clean environment
 - `trishul-smi compile IF-MIB --format json pysnmp` produces both output formats correctly
 - All standard RFC MIBs (SNMPv2-SMI, SNMPv2-TC, IF-MIB, IP-MIB, etc.) compile without error
-- Test suite passes with ≥ 80% coverage
+- Test suite passes with ≥ 95% coverage
 - `mypy --strict` passes with zero errors
 - `ruff check` passes with zero warnings
 - Package published to PyPI as `trishul-smi 0.1.0`

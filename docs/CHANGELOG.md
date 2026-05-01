@@ -68,6 +68,25 @@ First public release.
 - Corrected CLI reader import paths (`reader.localfile`, `reader.httpclient`) which were
   written as `reader.file` / `reader.http` — non-existent modules that would have raised
   `ImportError` on first `trishul-smi compile` invocation.
+- Lark 1.3.1 grammar compatibility: flattened multi-line rule bodies to single lines;
+  replaced `rule?` with `[rule]`; added `!` prefix to `status_value` and `access_value`
+  so anonymous string tokens are kept as transformer children.
+- `object_identity_assignment` grammar rule now uses `description_clause` (was inline
+  `"DESCRIPTION" QUOTED_STRING`), fixing a bug where `description` was always `None` for
+  OBJECT-IDENTITY objects.
+- Resolver now skips fetching well-known SNMP base MIBs (`SNMPv2-SMI`, `SNMPv2-TC`,
+  `RFC1213-MIB`, etc.) which are built into pysnmp and not available as standalone files.
+- `MibCache.put()` now wraps `OSError` in `MibCacheError` instead of leaking the raw exception.
+- `VALID_FORMATS` is now a single source of truth in `config.py`; `compiler.py` imports it
+  rather than defining its own copy. Error message aligned to `"Unknown output format(s):"`.
+- `HttpReader` 304-without-cache fallback now routes through `_fetch_url_with_retry()`
+  instead of a bare `client.get()` call, ensuring retry policy applies on the fallback.
+- CLI mib-dir non-existence warning is now emitted before `_compile_async()` so it is
+  visible when `_compile_async` is patched in tests.
+- `KeyboardInterrupt`/`SystemExit` returned by `asyncio.gather(return_exceptions=True)` are
+  now re-raised immediately instead of being silently collected in `ResolveResult.errors`.
+- `PysnmpFormatter` now includes `NOTIFICATION-TYPE` objects in `exportSymbols`.
+- CI test job now enforces `--cov-fail-under=95`.
 
 ### Known Limitations
 
@@ -75,6 +94,5 @@ First public release.
   (not yet available at format time). Columns are emitted as `MibScalar`. Planned for v0.2.0.
 - TEXTUAL-CONVENTION constraints (DisplayHint, range, enumerations) are partially emitted
   in pysnmp output. Full TC support planned for v0.2.0.
-- `ZipReader` does not yet support nested ZIP archives.
 
 [0.1.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.1.0
