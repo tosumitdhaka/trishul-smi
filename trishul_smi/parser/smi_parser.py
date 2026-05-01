@@ -20,6 +20,7 @@ Usage::
 from __future__ import annotations
 
 import importlib.resources
+import re
 from typing import ClassVar, Literal
 
 from lark import Lark, UnexpectedInput
@@ -31,6 +32,12 @@ from trishul_smi.parser.transformer import MibTransformer
 
 _DIALECT = Literal["smiv2", "smiv1", "auto"]
 
+# Pre-compiled pattern for word-boundary dialect detection.
+# Matches any SMIv2 marker as a whole token (not as a substring of e.g. SNMPv2-TC-v1).
+_SMIv2_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9\-])(" + "|".join(re.escape(m) for m in SMIv2_MARKERS) + r")(?![A-Za-z0-9\-])"
+)
+
 
 def _load_grammar(name: str) -> str:
     """Load a .lark grammar file from the grammar/ package directory."""
@@ -40,9 +47,8 @@ def _load_grammar(name: str) -> str:
 
 def _detect_dialect(text: str) -> Literal["smiv2", "smiv1"]:
     """Heuristic: scan text for SMIv2-specific IMPORTS module names."""
-    for marker in SMIv2_MARKERS:
-        if marker in text:
-            return "smiv2"
+    if _SMIv2_PATTERN.search(text):
+        return "smiv2"
     return "smiv1"
 
 

@@ -182,7 +182,7 @@ creation_requires_clause : "CREATION-REQUIRES" "{" object_list "}"
 // TRAP-TYPE (SMIv1 compat)
 // ---------------------------------------------------------------------------
 
-trap_type_assignment : UPPER_ID "TRAP-TYPE" "ENTERPRISE" LOWER_ID [trap_variables_clause] [description_clause] [reference_clause] "::=" NUMBER
+trap_type_assignment : (UPPER_ID | LOWER_ID) "TRAP-TYPE" "ENTERPRISE" LOWER_ID [trap_variables_clause] [description_clause] [reference_clause] "::=" NUMBER
 
 trap_variables_clause : "VARIABLES" "{" object_list "}"
 
@@ -218,16 +218,16 @@ builtin_type : "INTEGER"       [constraint]                    -> integer_type
              | "OBJECT" "IDENTIFIER"                           -> oid_type
              | "NULL"                                          -> null_type
              | "IpAddress"                                     -> ip_address_type
-             | "Counter32"                                     -> counter32_type
-             | "Counter64"                                     -> counter64_type
-             | "Gauge32"                                       -> gauge32_type
-             | "Unsigned32"                                    -> unsigned32_type
-             | "TimeTicks"                                     -> timeticks_type
+             | "Counter32"     [constraint]                    -> counter32_type
+             | "Counter64"     [constraint]                    -> counter64_type
+             | "Gauge32"       [constraint]                    -> gauge32_type
+             | "Unsigned32"    [constraint]                    -> unsigned32_type
+             | "TimeTicks"     [constraint]                    -> timeticks_type
              | "Opaque"        [size_constraint]               -> opaque_type
              | "Integer32"     [constraint]                    -> integer32_type
              | "NetworkAddress"                                -> network_address_type
 
-named_type : UPPER_ID [constraint]
+named_type : UPPER_ID [constraint | size_constraint]
 
 sequence_of_type : "SEQUENCE" "OF" UPPER_ID
 
@@ -243,7 +243,7 @@ choice_field : LOWER_ID syntax_type
 
 integer_enum : "{" enum_items "}"
 enum_items   : enum_item ("," enum_item)*
-enum_item    : LOWER_ID "(" NUMBER ")"
+enum_item    : LOWER_ID "(" SIGNED_NUMBER ")"
 
 constraint : "(" range_items ")"
            | integer_enum
@@ -252,7 +252,7 @@ range_items : range_item ("|" range_item)*
 range_item  : range_bound ".." range_bound  -> range
             | range_bound                    -> single_value
 
-range_bound : NUMBER | HEX_STRING | "MIN" | "MAX"
+range_bound : SIGNED_NUMBER | HEX_STRING | "MIN" | "MAX"
 
 size_constraint : "(" "SIZE" "(" range_items ")" ")"
 
@@ -275,6 +275,7 @@ oid_component : LOWER_ID "(" NUMBER ")"  -> named_arc
 UPPER_ID      : /[A-Z][A-Za-z0-9\-]*/
 LOWER_ID      : /[a-z][A-Za-z0-9\-]*/
 NUMBER        : /[0-9]+/
+SIGNED_NUMBER : /-?[0-9]+/
 HEX_STRING    : /\'[0-9A-Fa-f]*\'H/
 BIN_STRING    : /\'[01]*\'B/
 

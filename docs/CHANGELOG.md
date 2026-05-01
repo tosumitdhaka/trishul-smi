@@ -6,6 +6,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.1] — 2026-05-01
+
+### Fixed
+
+- Grammar now parses `named_type` with SIZE constraints (e.g., `DisplayString (SIZE (0..255))`).
+  This was blocking `IF-MIB` from compiling on the first `pip install` run.
+- Grammar now parses range constraints on all numeric builtin types (`Unsigned32`, `Gauge32`,
+  `Counter32`, `Counter64`, `TimeTicks`), not just `INTEGER` and `Integer32`.
+  This was blocking `IP-MIB` (`Unsigned32 (0..65535)`).
+- Grammar now accepts negative values in `INTEGER` enumeration items and range bounds
+  (e.g., `INTEGER { reserved(-2), low(-1), medium(0) }`).
+  This was blocking `IP-MIB` on the pysnmp.com source.
+
+[0.1.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.1.1
+
+---
+
 ## [0.1.0] — 2026-05-01
 
 First public release.
