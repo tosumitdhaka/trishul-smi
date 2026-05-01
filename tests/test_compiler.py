@@ -201,7 +201,7 @@ class TestPysnmpFormatter:
             notifications={"linkDown": notif},
         )
         src = PysnmpFormatter().format(m)
-        export_block = src[src.index("exportSymbols"):]
+        export_block = src[src.index("exportSymbols") :]
         assert "linkDown" in export_block
 
     def test_spaced_syntax_emits_valid_python(self):

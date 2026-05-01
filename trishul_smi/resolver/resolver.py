@@ -24,6 +24,7 @@ Error handling
   fails to fetch or parse, A's imports are never queued. Callers should
   not assume all reachable dependencies will appear in ResolveResult.errors.
 """
+
 from __future__ import annotations
 
 import asyncio

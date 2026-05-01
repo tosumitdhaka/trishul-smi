@@ -95,7 +95,7 @@ def _resolve_oid(components: list[Any]) -> tuple[str, list[int]]:
 # ---------------------------------------------------------------------------
 
 
-class MibTransformer(Transformer[MibModule]):
+class MibTransformer(Transformer[Token, MibModule]):
     """Walks the Lark parse tree and builds a MibModule."""
 
     def start(self, children: list[Any]) -> MibModule:
@@ -467,7 +467,7 @@ class MibTransformer(Transformer[MibModule]):
     def _oid(self, children: list[Any]) -> list[Any]:
         for child in children:
             if isinstance(child, list) and child and isinstance(child[0], Tree):
-                return child  # type: ignore[return-value]
+                return child
         return []
 
     def _syntax(self, children: list[Any]) -> str | None:

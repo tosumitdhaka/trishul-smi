@@ -59,5 +59,6 @@ class CompilerConfig:
         unknown = set(self.formats) - VALID_FORMATS
         if unknown:
             raise ValueError(
-                f"Unknown output format(s): {sorted(unknown)}. Valid formats: {sorted(VALID_FORMATS)}"
+                f"Unknown output format(s): {sorted(unknown)}. "
+                f"Valid formats: {sorted(VALID_FORMATS)}"
             )

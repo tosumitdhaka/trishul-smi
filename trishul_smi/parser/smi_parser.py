@@ -20,7 +20,7 @@ Usage::
 from __future__ import annotations
 
 import importlib.resources
-from typing import ClassVar, Literal, cast
+from typing import ClassVar, Literal
 
 from lark import Lark, UnexpectedInput
 
@@ -87,7 +87,7 @@ class SmiParser:
 
         try:
             tree = self._get_parser(dialect, earley=False).parse(text)
-            return cast(MibModule, transformer.transform(tree))
+            return transformer.transform(tree)
         except UnexpectedInput:
             pass
         except Exception as exc:
@@ -95,7 +95,7 @@ class SmiParser:
 
         try:
             tree = self._get_parser(dialect, earley=True).parse(text)
-            return cast(MibModule, transformer.transform(tree))
+            return transformer.transform(tree)
         except UnexpectedInput as exc:
             context = getattr(exc, "get_context", lambda t: "")(text)
             raise ParseError(
