@@ -54,9 +54,6 @@ Issues = "https://github.com/tosumitdhaka/trishul-smi/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["trishul_smi"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"trishul_smi/parser/grammar" = "trishul_smi/parser/grammar"
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
