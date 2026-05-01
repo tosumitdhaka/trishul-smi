@@ -17,3 +17,4 @@ class CompileResult:
     output_paths: list[Path] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    is_dependency: bool = False

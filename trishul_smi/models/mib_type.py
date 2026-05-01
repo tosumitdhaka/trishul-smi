@@ -12,3 +12,5 @@ class MibType:
     base_type: str  # "OCTET STRING", "Integer32", "DisplayString", ...
     constraints: dict[str, Any] | None = None  # range / size / enum constraints
     description: str | None = None
+    display_hint: str | None = None
+    status: str | None = None

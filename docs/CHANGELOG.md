@@ -6,6 +6,77 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.0] — 2026-05-01
+
+### Added
+
+- **Full OID resolution** (`resolver/oid_resolver.py`): all `MibObject.oid` / `oid_path`
+  fields are rewritten to absolute numeric paths after the dependency graph is resolved.
+  Seeds well-known SNMP roots (`mib-2`, `enterprises`, `snmpTraps`, etc.).
+- **`MibTableColumn` detection**: two-pass OID tree walk in `PysnmpFormatter` correctly
+  classifies table columns as `MibTableColumn` instead of `MibScalar`.
+- **`setIndexNames` / AUGMENTS**: `INDEX { ... }` emits `setIndexNames()`; `AUGMENTS { row }`
+  emits `setIndexNames(*row.getIndexNames())`.
+- **`ModuleIdentity.setRevisions()`**: revision dates extracted from the transformer and
+  emitted in pysnmp output.
+- **`setOrganization` / `setDescription` on MODULE-IDENTITY**: previously omitted.
+- **`setDescription` on OBJECT-GROUP, NOTIFICATION-GROUP, MODULE-COMPLIANCE,
+  AGENT-CAPABILITIES**: `_simple_oid_object` now extracts status and description.
+- **`setDescription` on NOTIFICATION-TYPE**: emitted in pysnmp output.
+- **Full TEXTUAL-CONVENTION class generation**: proper Python subclasses with
+  `subtypeSpec`, `displayHint`, `status`, `description`. Constraint expressions for
+  `size`, `range`, `enum`, `bits`, and `union` kinds including multi-range
+  `ConstraintsUnion`.
+- **Per-OBJECT-TYPE inline constraint wrappers**: objects with inline SYNTAX constraints
+  (e.g. `Integer32 (0..65535)`, `DisplayString (SIZE (0..255))`) emit a
+  `class _Name_Type(Base): subtypeSpec = ...` wrapper, matching pysmi output exactly.
+- **Constraints on all constrainable builtin types**: `Counter32`, `Counter64`, `Gauge32`,
+  `Unsigned32`, `TimeTicks`, `Opaque`, `Integer32` now carry their constraint through
+  the parser alongside `INTEGER` and `OCTET STRING`.
+- **`exportSymbols` single-dict format**: one `exportSymbols()` call with all objects,
+  notifications, and TCs merged into a single `**{...}` dict.
+- **`--no-texts` flag**: suppresses `setDescription`, `setOrganization`, `setRevisions`,
+  and TC `description =` for leaner output modules.
+- **`is_dependency` flag on `CompileResult`**: requested MIBs vs transitive deps are now
+  distinguished; dependency rows shown dimmed in CLI output.
+- **`tsmi convert FILE.py`**: reverse-converts a compiled pysmi `.py` module to JSON
+  using Python `ast` — no SMI grammar required.
+- **Directory compile mode**: `tsmi compile -d /path/to/mibs` without explicit MIB names
+  auto-discovers and compiles every MIB file in the directory.
+- **SNMPv2-CONF symbol name mapping**: `OBJECT-GROUP` → `ObjectGroup`,
+  `MODULE-COMPLIANCE` → `ModuleCompliance`, etc. — correctly maps SMI macro keyword
+  names to the Python class names exported by pysnmp's `SNMPv2-CONF`. Scoped to
+  `SNMPv2-CONF` imports only; all other modules pass through unchanged.
+
+### Fixed
+
+- **Union constraint sub-items** stored as `_ConstraintInfo` objects instead of dicts
+  caused `AttributeError: '_ConstraintInfo' object has no attribute 'get'` when
+  rendering TCs with multi-range constraints (e.g. `DateAndTime` in `SNMPv2-TC`).
+  Fixed via `_ConstraintInfo.to_dict()` which recursively serialises nested constraints.
+- **Lowercase hex range bounds** (`'ffffffff'h`): grammar regex only accepted uppercase
+  `H`; now accepts `[Hh]`. Fixes `UDP-MIB` parse failure.
+- **`BASE_MIBS` not skipped on direct request**: `SNMPv2-SMI` and friends were already
+  skipped as transitive dependencies but failed with a parse error when explicitly
+  requested (e.g. auto-discovered from a directory). Now filtered at the start of
+  `resolve()`.
+- **`SNMPv2-SMI-v1` / `SNMPv2-TC-v1`** added to `BASE_MIBS`; these V1SMI shim names
+  appeared as unresolvable dependencies in vendor MIBs.
+- **OID resolution idempotency**: `oid_parent` is cleared after successful resolution so
+  warm-cache re-runs do not double-prepend the parent path.
+- **`snmpTraps` OID** added to `WELL_KNOWN_OIDS` so `linkDown`/`linkUp`
+  NOTIFICATION-TYPEs resolve correctly without `SNMPv2-MIB` in the compile set.
+
+### Changed
+
+- `tests/tmp/` excluded from ruff linting (generated output files).
+- `trishul_smi/output/pysnmp_fmt.py` excluded from ruff E501 (Jinja2 template strings
+  cannot be wrapped).
+
+[0.2.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.2.0
+
+---
+
 ## [0.1.2] — 2026-05-01
 
 ### Added

@@ -500,3 +500,392 @@ class TestPysnmpSyntaxEdgeCases:
         src = PysnmpFormatter().format(m)
         assert "MibTable(" in src
         assert "MibTableRow(" in src
+
+
+class TestMibTableColumnDetection:
+    """MibTableColumn requires resolved absolute OID paths."""
+
+    def _build_module(self) -> MibModule:
+        from trishul_smi.models.mib_type import MibType
+
+        row_type = MibType(name="IfEntry", base_type="SEQUENCE { ifIndex Integer32 }")
+        table = MibObject(
+            name="ifTable",
+            oid="1.3.6.1.2.1.2.2",
+            oid_path=[1, 3, 6, 1, 2, 1, 2, 2],
+            object_type="OBJECT-TYPE",
+            syntax="SEQUENCE OF IfEntry",
+        )
+        entry = MibObject(
+            name="ifEntry",
+            oid="1.3.6.1.2.1.2.2.1",
+            oid_path=[1, 3, 6, 1, 2, 1, 2, 2, 1],
+            object_type="OBJECT-TYPE",
+            syntax="IfEntry",
+        )
+        col = MibObject(
+            name="ifIndex",
+            oid="1.3.6.1.2.1.2.2.1.1",
+            oid_path=[1, 3, 6, 1, 2, 1, 2, 2, 1, 1],
+            object_type="OBJECT-TYPE",
+            syntax="Integer32",
+        )
+        return MibModule(
+            name="IF-MIB",
+            language="SMIv2",
+            objects={"ifTable": table, "ifEntry": entry, "ifIndex": col},
+            types={"IfEntry": row_type},
+        )
+
+    def test_column_class_detected(self):
+        m = self._build_module()
+        oid_to_class: dict[tuple[int, ...], str] = {}
+        for obj in m.objects.values():
+            if obj.object_type == "OBJECT-TYPE" and obj.oid_path:
+                oid_to_class[tuple(obj.oid_path)] = _pysnmp_obj_class(obj, m)
+        col = m.objects["ifIndex"]
+        assert _pysnmp_obj_class(col, m, oid_to_class) == "MibTableColumn"
+
+    def test_formatter_emits_mib_table_column(self):
+        src = PysnmpFormatter().format(self._build_module())
+        assert "MibTableColumn(" in src
+
+
+class TestSetIndexNamesOutput:
+    def _module_with_index(self, index: list[str]) -> MibModule:
+        obj = MibObject(
+            name="myEntry",
+            oid="1.1",
+            oid_path=[1, 1],
+            object_type="OBJECT-TYPE",
+            syntax="INTEGER",
+            index=index,
+        )
+        return MibModule(name="IDX-MIB", language="SMIv2", objects={"myEntry": obj})
+
+    def test_set_index_names_emitted(self):
+        src = PysnmpFormatter().format(self._module_with_index(["myIndex"]))
+        assert "setIndexNames(" in src
+        assert "'myIndex'" in src
+
+    def test_module_name_in_index_tuple(self):
+        src = PysnmpFormatter().format(self._module_with_index(["k"]))
+        assert "'IDX-MIB'" in src
+
+    def test_multiple_indexes(self):
+        src = PysnmpFormatter().format(self._module_with_index(["keyA", "keyB"]))
+        assert "'keyA'" in src
+        assert "'keyB'" in src
+
+    def test_no_index_no_set_index_names(self):
+        obj = MibObject(name="plain", oid="1.1", oid_path=[1, 1], object_type="OBJECT-TYPE")
+        m = MibModule(name="X", language="SMIv2", objects={"plain": obj})
+        assert "setIndexNames" not in PysnmpFormatter().format(m)
+
+    def test_augments_emits_get_index_names(self):
+        obj = MibObject(
+            name="extEntry",
+            oid="1.2",
+            oid_path=[1, 2],
+            object_type="OBJECT-TYPE",
+            augments="baseEntry",
+        )
+        m = MibModule(name="X", language="SMIv2", objects={"extEntry": obj})
+        src = PysnmpFormatter().format(m)
+        assert "getIndexNames()" in src
+        assert "baseEntry" in src
+
+
+class TestSetOrganizationOutput:
+    def _module(self, org: str | None) -> MibModule:
+        from trishul_smi.models.mib_module import MibModule
+
+        return MibModule(name="X", language="SMIv2", organization=org)
+
+    def test_set_organization_emitted(self):
+        mi = MibObject(
+            name="xMIB",
+            oid="1.99",
+            oid_path=[1, 99],
+            object_type="MODULE-IDENTITY",
+        )
+        m = MibModule(name="X", language="SMIv2", objects={"xMIB": mi}, organization="My Org")
+        src = PysnmpFormatter().format(m)
+        assert "setOrganization(" in src
+        assert "My Org" in src
+
+    def test_no_organization_no_set_organization(self):
+        m = MibModule(name="X", language="SMIv2")
+        assert "setOrganization" not in PysnmpFormatter().format(m)
+
+    def test_no_texts_suppresses_organization(self):
+        mi = MibObject(
+            name="xMIB",
+            oid="1.99",
+            oid_path=[1, 99],
+            object_type="MODULE-IDENTITY",
+        )
+        m = MibModule(name="X", language="SMIv2", objects={"xMIB": mi}, organization="My Org")
+        assert "setOrganization" not in PysnmpFormatter(no_texts=True).format(m)
+
+
+class TestSetRevisionsOutput:
+    def _module_with_revisions(self) -> MibModule:
+        mi = MibObject(
+            name="xMIB",
+            oid="1.99",
+            oid_path=[1, 99],
+            object_type="MODULE-IDENTITY",
+        )
+        return MibModule(
+            name="X",
+            language="SMIv2",
+            objects={"xMIB": mi},
+            revisions=[
+                {"date": "200301010000Z", "description": "Second."},
+                {"date": "200101010000Z", "description": "Initial."},
+            ],
+        )
+
+    def test_set_revisions_emitted(self):
+        src = PysnmpFormatter().format(self._module_with_revisions())
+        assert "setRevisions(" in src
+
+    def test_revision_dates_in_output(self):
+        src = PysnmpFormatter().format(self._module_with_revisions())
+        assert "200301010000Z" in src
+        assert "200101010000Z" in src
+
+    def test_no_texts_suppresses_revisions(self):
+        src = PysnmpFormatter(no_texts=True).format(self._module_with_revisions())
+        assert "setRevisions" not in src
+
+    def test_no_revisions_no_set_revisions(self):
+        m = MibModule(name="X", language="SMIv2")
+        assert "setRevisions" not in PysnmpFormatter().format(m)
+
+
+class TestNoTextsFlag:
+    def _module(self) -> MibModule:
+        obj = MibObject(
+            name="aScalar",
+            oid="1.1",
+            oid_path=[1, 1],
+            object_type="OBJECT-TYPE",
+            syntax="Integer32",
+            status="current",
+            description="Scalar description.",
+        )
+        return MibModule(name="X", language="SMIv2", objects={"aScalar": obj})
+
+    def test_description_present_by_default(self):
+        assert "setDescription(" in PysnmpFormatter().format(self._module())
+
+    def test_description_absent_with_no_texts(self):
+        assert "setDescription(" not in PysnmpFormatter(no_texts=True).format(self._module())
+
+    def test_status_present_by_default(self):
+        assert "setStatus(" in PysnmpFormatter().format(self._module())
+
+    def test_status_absent_with_no_texts(self):
+        assert "setStatus(" not in PysnmpFormatter(no_texts=True).format(self._module())
+
+
+class TestExportSymbolsFormat:
+    def test_single_export_call(self):
+        obj = MibObject(name="sysDescr", oid="1.1", oid_path=[1, 1], object_type="OBJECT-TYPE")
+        m = MibModule(name="SYS-MIB", language="SMIv2", objects={"sysDescr": obj})
+        src = PysnmpFormatter().format(m)
+        assert src.count("exportSymbols") == 1
+        assert "**{" in src
+
+    def test_objects_and_notifications_in_one_dict(self):
+        obj = MibObject(name="aObj", oid="1.1", oid_path=[1, 1], object_type="OBJECT-TYPE")
+        notif = MibObject(
+            name="aNotif", oid="1.2", oid_path=[1, 2], object_type="NOTIFICATION-TYPE"
+        )
+        m = MibModule(
+            name="X",
+            language="SMIv2",
+            objects={"aObj": obj},
+            notifications={"aNotif": notif},
+        )
+        src = PysnmpFormatter().format(m)
+        export_block = src[src.index("exportSymbols") :]
+        assert "'aObj'" in export_block
+        assert "'aNotif'" in export_block
+
+
+class TestTCClassGeneration:
+    def test_tc_class_with_display_hint(self):
+        from trishul_smi.models.mib_type import MibType
+
+        tc = MibType(
+            name="OwnerString",
+            base_type="OCTET STRING",
+            display_hint="255a",
+            status="current",
+            description="A string.",
+            constraints={"kind": "size", "data": [[0, 255]]},
+        )
+        m = MibModule(name="X", language="SMIv2", types={"OwnerString": tc})
+        src = PysnmpFormatter().format(m)
+        assert "class OwnerString(TextualConvention, OctetString):" in src
+        assert 'displayHint = "255a"' in src
+        assert "subtypeSpec" in src
+        assert "ValueSizeConstraint" in src
+
+    def test_tc_class_no_texts_suppresses_description(self):
+        from trishul_smi.models.mib_type import MibType
+
+        tc = MibType(name="MyStr", base_type="OCTET STRING", description="Should disappear.")
+        m = MibModule(name="X", language="SMIv2", types={"MyStr": tc})
+        assert "Should disappear" not in PysnmpFormatter(no_texts=True).format(m)
+
+    def test_tc_subtypespec_size(self):
+        from trishul_smi.output.pysnmp_fmt import _tc_subtypespec
+
+        assert (
+            _tc_subtypespec({"kind": "size", "data": [[0, 255]]}) == "ValueSizeConstraint(0, 255)"
+        )
+
+    def test_tc_subtypespec_range(self):
+        from trishul_smi.output.pysnmp_fmt import _tc_subtypespec
+
+        assert (
+            _tc_subtypespec({"kind": "range", "data": [[1, 100]]}) == "ValueRangeConstraint(1, 100)"
+        )
+
+    def test_tc_subtypespec_enum(self):
+        from trishul_smi.output.pysnmp_fmt import _tc_subtypespec
+
+        result = _tc_subtypespec({"kind": "enum", "data": [["up", 1], ["down", 2]]})
+        assert result == "SingleValueConstraint(1, 2)"
+
+    def test_tc_subtypespec_multi_range_union(self):
+        from trishul_smi.output.pysnmp_fmt import _tc_subtypespec
+
+        result = _tc_subtypespec({"kind": "size", "data": [[0, 10], [20, 30]]})
+        assert "ConstraintsUnion" in result
+
+    def test_pysnmp_syntax_class_octet_string(self):
+        from trishul_smi.output.pysnmp_fmt import _pysnmp_syntax_class
+
+        assert _pysnmp_syntax_class("OCTET STRING") == "OctetString"
+
+    def test_pysnmp_syntax_class_integer(self):
+        from trishul_smi.output.pysnmp_fmt import _pysnmp_syntax_class
+
+        assert _pysnmp_syntax_class("INTEGER") == "Integer32"
+
+    def test_pysnmp_syntax_class_unknown_spaced(self):
+        from trishul_smi.output.pysnmp_fmt import _pysnmp_syntax_class
+
+        assert _pysnmp_syntax_class("SOME THING") == "OctetString"
+
+    def test_tc_subtypespec_union_kind(self):
+        from trishul_smi.output.pysnmp_fmt import _tc_subtypespec
+
+        result = _tc_subtypespec(
+            {
+                "kind": "union",
+                "data": [
+                    {"kind": "range", "data": [[0, 10]]},
+                    {"kind": "range", "data": [[20, 30]]},
+                ],
+            }
+        )
+        assert result.startswith("ConstraintsUnion(")
+        assert "ValueRangeConstraint(0, 10)" in result
+        assert "ValueRangeConstraint(20, 30)" in result
+
+    def test_tc_subtypespec_unknown_kind_fallback(self):
+        from trishul_smi.output.pysnmp_fmt import _tc_subtypespec
+
+        result = _tc_subtypespec({"kind": "bogus", "data": []})
+        assert result == "ValueRangeConstraint(0, 2147483647)"
+
+    def test_range_expr_empty_ranges(self):
+        from trishul_smi.output.pysnmp_fmt import _range_expr
+
+        assert _range_expr([], "ValueSizeConstraint") == "ValueSizeConstraint(0, 2147483647)"
+
+    def test_bound_str_min(self):
+        from trishul_smi.output.pysnmp_fmt import _bound_str
+
+        assert _bound_str("MIN") == "0"
+
+    def test_bound_str_max(self):
+        from trishul_smi.output.pysnmp_fmt import _bound_str
+
+        assert _bound_str("MAX") == "2147483647"
+
+    def test_range_expr_min_max_in_range(self):
+        from trishul_smi.output.pysnmp_fmt import _tc_subtypespec
+
+        result = _tc_subtypespec({"kind": "range", "data": [["MIN", "MAX"]]})
+        assert result == "ValueRangeConstraint(0, 2147483647)"
+
+
+class TestIsDependency:
+    @pytest.mark.asyncio
+    async def test_requested_mib_not_dependency(self, tmp_path):
+        from tests.helpers import MockReader
+        from trishul_smi.compiler import MibCompiler
+        from trishul_smi.config import CompilerConfig
+
+        mib_text = """
+REQD-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY FROM SNMPv2-SMI ;
+reqdMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Requested MIB."
+    ::= { 1 400 }
+END
+"""
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"REQD-MIB": mib_text}))
+        results = await compiler.compile("REQD-MIB")
+        r = next(x for x in results if x.name == "REQD-MIB")
+        assert r.is_dependency is False
+
+    @pytest.mark.asyncio
+    async def test_transitive_dep_is_dependency(self, tmp_path):
+        from tests.helpers import MockReader
+        from trishul_smi.compiler import MibCompiler
+        from trishul_smi.config import CompilerConfig
+
+        base_text = """
+BASE-DEP-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY FROM SNMPv2-SMI ;
+baseMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Base."
+    ::= { 1 401 }
+END
+"""
+        child_text = """
+CHILD-DEP-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY FROM SNMPv2-SMI
+        baseMIB FROM BASE-DEP-MIB ;
+childMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Child."
+    ::= { 1 402 }
+END
+"""
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(
+            MockReader({"BASE-DEP-MIB": base_text, "CHILD-DEP-MIB": child_text})
+        )
+        results = await compiler.compile("CHILD-DEP-MIB")
+        base = next((x for x in results if x.name == "BASE-DEP-MIB"), None)
+        child = next((x for x in results if x.name == "CHILD-DEP-MIB"), None)
+        assert child is not None and child.is_dependency is False
+        assert base is not None and base.is_dependency is True

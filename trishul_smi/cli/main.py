@@ -97,9 +97,12 @@ def version() -> None:
 @app.command()
 def compile(  # noqa: A001
     mib_names: Annotated[
-        list[str],
-        typer.Argument(help="One or more MIB names to compile (e.g. IF-MIB IP-MIB)."),
-    ],
+        list[str] | None,
+        typer.Argument(
+            help="MIB names to compile (e.g. IF-MIB IP-MIB). "
+            "Omit to compile every MIB found in --mib-dir directories."
+        ),
+    ] = None,
     output_dir: Annotated[
         Path,
         typer.Option("--output-dir", "-o", help="Directory for output files."),
@@ -160,6 +163,14 @@ def compile(  # noqa: A001
         int,
         typer.Option("--retries", help="Number of HTTP retries on transient failure."),
     ] = 3,
+    no_texts: Annotated[
+        bool,
+        typer.Option(
+            "--no-texts",
+            help="Suppress setDescription/setOrganization/setRevisions and TC description "
+            "in pysnmp output for leaner modules.",
+        ),
+    ] = False,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show per-module output paths."),
@@ -182,6 +193,7 @@ def compile(  # noqa: A001
             max_mib_size=max_mib_size,
             http_timeout=http_timeout,
             http_retries=http_retries,
+            no_texts=no_texts,
             **extra,
         )
         compiler = MibCompiler(config)
@@ -203,13 +215,38 @@ def compile(  # noqa: A001
         if not d.is_dir():
             err.print(f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping.")
 
+    # Auto-discover MIB names from --mib-dir when none are specified explicitly.
+    resolved_names: list[str] = list(mib_names) if mib_names else []
+    if not resolved_names:
+        if not mib_dirs:
+            err.print(
+                "[bold red]Error:[/bold red] No MIB names given and no --mib-dir to discover from."
+            )
+            raise typer.Exit(2)
+        seen: set[str] = set()
+        for d in mib_dirs:
+            if not d.is_dir():
+                continue
+            for f in sorted(d.iterdir()):
+                if f.is_file() and f.suffix.lower() in {"", ".mib", ".my", ".txt"}:
+                    name = f.stem
+                    if name not in seen:
+                        seen.add(name)
+                        resolved_names.append(name)
+        if not resolved_names:
+            err.print(
+                "[bold red]Error:[/bold red] No MIB files found in the given --mib-dir directories."  # noqa: E501
+            )
+            raise typer.Exit(2)
+        console.print(f"[dim]Discovered {len(resolved_names)} MIBs from --mib-dir[/dim]")
+
     console.print(
-        f"[bold]Compiling[/bold] {', '.join(mib_names)} → "
+        f"[bold]Compiling[/bold] {', '.join(resolved_names)} → "
         f"{output_dir} [dim]({', '.join(config.formats)})[/dim]"
     )
     try:
         results = asyncio.run(
-            _compile_async(compiler, config, mib_dirs or [], mib_names, use_http=use_http)
+            _compile_async(compiler, config, mib_dirs or [], resolved_names, use_http=use_http)
         )
     except KeyboardInterrupt:
         err.print("\n[yellow]Interrupted.[/yellow]")
@@ -283,10 +320,12 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
                 detail = "  ".join(str(p) for p in r.output_paths)
             else:
                 detail = ""
+            name_cell = f"[dim]{r.name}[/dim]" if r.is_dependency and not verbose else r.name
         else:
             icon = "[red]❌[/red]"
             detail = f"[red]{r.error}[/red]"
-        tbl.add_row(icon, r.name, detail)
+            name_cell = r.name
+        tbl.add_row(icon, name_cell, detail)
 
     console.print(tbl)
 
@@ -296,3 +335,48 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     if warned:
         parts.append(f"[yellow]{len(warned)} with warnings[/yellow]")
     console.print("  ".join(parts))
+
+
+# ---------------------------------------------------------------------------
+# convert
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def convert(
+    input_file: Annotated[
+        Path,
+        typer.Argument(help="Compiled PySNMP .py MIB file to convert to JSON."),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", "-o", help="Directory for JSON output."),
+    ] = Path("./mibs-output"),
+) -> None:
+    """Convert a compiled PySNMP .py MIB module to JSON."""
+    from trishul_smi.convert import PySNMPReader
+    from trishul_smi.output.json_fmt import JsonFormatter
+
+    if not input_file.is_file():
+        err.print(f"[bold red]Error:[/bold red] {input_file} is not a file.")
+        raise typer.Exit(2)
+
+    try:
+        module = PySNMPReader().read(input_file)
+    except Exception as exc:  # noqa: BLE001
+        err.print(f"[bold red]Parse error:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"{module.name}.json"
+        content = JsonFormatter().format(module)
+        if isinstance(content, bytes):
+            out_path.write_bytes(content)
+        else:
+            out_path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        err.print(f"[bold red]Write error:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]✅[/green] {module.name} → {out_path}")

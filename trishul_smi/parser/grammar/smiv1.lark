@@ -1,12 +1,7 @@
 // smiv1.lark — SMIv1 grammar (RFC 1155, RFC 1212, RFC 1215)
 // Standalone: NOT inherited from smiv2.lark.
 //
-// TODO (issue #8): bits_type is technically an SMIv2 extension, but some
-//   vendor MIBs declare it in otherwise-SMIv1 files. Add:
-//     bits_type : "BITS" "{" named_bits "}"
-//     named_bits : named_bit ("," named_bit)*
-//     named_bit  : LOWER_ID "(" NUMBER ")"
-//   and add bits_type to the syntax_type alternatives if vendor compat needed.
+// bits_type: SMIv2 extension accepted in vendor SMIv1 files (Cisco, NET-SNMP).
 //
 // QUOTED_STRING: same multiline fix as smiv2.lark (see note there).
 
@@ -25,7 +20,7 @@ module_name : UPPER_ID
 // IMPORTS
 // ---------------------------------------------------------------------------
 
-imports : "IMPORTS" import_clause+ ";"
+imports : "IMPORTS" import_clause+ ";"?
 
 import_clause : symbol_list "FROM" module_ref
 
@@ -56,7 +51,7 @@ description_clause : "DESCRIPTION" QUOTED_STRING
 
 index_clause : index_part | augments_part
 index_part   : "INDEX" "{" index_list "}"
-index_list   : index_item ("," index_item)*
+index_list   : index_item ("," index_item)* [","]
 index_item   : ["IMPLIED"] LOWER_ID
 augments_part: "AUGMENTS" "{" LOWER_ID "}"
 
@@ -105,6 +100,7 @@ syntax_type : builtin_type
             | named_type
             | sequence_of_type
             | sequence_type
+            | bits_type
 
 builtin_type : "INTEGER"          [integer_enum]              -> integer_type
              | "OCTET" "STRING"   [size_constraint]           -> octet_string_type
@@ -121,6 +117,9 @@ named_type      : UPPER_ID [constraint | size_constraint]
 sequence_of_type: "SEQUENCE" "OF" UPPER_ID
 sequence_type   : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
 sequence_field  : LOWER_ID syntax_type
+bits_type       : "BITS" "{" named_bits "}"
+named_bits      : named_bit ("," named_bit)* [","]
+named_bit       : LOWER_ID "(" NUMBER ")"
 
 integer_enum : "{" enum_items "}"
 enum_items   : enum_item ("," enum_item)*

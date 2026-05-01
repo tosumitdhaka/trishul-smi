@@ -933,3 +933,606 @@ END
         mib = _parser.parse(mib_text)
         assert "testAgent" in mib.objects
         assert mib.objects["testAgent"].object_type == "AGENT-CAPABILITIES"
+
+
+# ---------------------------------------------------------------------------
+# Organization and revisions on MODULE-IDENTITY
+# ---------------------------------------------------------------------------
+
+
+class TestModuleOrganization:
+    MIB = """
+ORG-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+orgMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "My Test Organization"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Org test MIB."
+    ::= { 1 300 }
+
+END
+"""
+
+    def test_organization_stored(self):
+        m = _parse(self.MIB)
+        assert m.organization == "My Test Organization"
+
+    def test_missing_organization_is_none(self):
+        from trishul_smi.models.mib_module import MibModule
+
+        assert MibModule(name="X", language="SMIv2").organization is None
+
+
+class TestModuleRevisions:
+    MIB = """
+REV-MIB2 DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+revMIB2 MODULE-IDENTITY
+    LAST-UPDATED "200301010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "MIB with two revisions."
+    REVISION     "200301010000Z"
+    DESCRIPTION  "Second."
+    REVISION     "200101010000Z"
+    DESCRIPTION  "Initial."
+    ::= { 1 301 }
+
+END
+"""
+
+    def test_two_revisions_stored(self):
+        m = _parse(self.MIB)
+        assert len(m.revisions) == 2
+
+    def test_revision_dates(self):
+        m = _parse(self.MIB)
+        dates = {r["date"] for r in m.revisions}
+        assert "200301010000Z" in dates
+        assert "200101010000Z" in dates
+
+    def test_revision_descriptions(self):
+        m = _parse(self.MIB)
+        descs = [r["description"] for r in m.revisions]
+        assert any("Second" in d for d in descs)
+
+    def test_no_revisions_is_empty_list(self):
+        mib_text = """
+NOREV-MIB2 DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+noRevMIB2 MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "No revisions."
+    ::= { 1 302 }
+END
+"""
+        m = _parse(mib_text)
+        assert m.revisions == []
+
+
+# ---------------------------------------------------------------------------
+# TEXTUAL-CONVENTION constraints and display_hint
+# ---------------------------------------------------------------------------
+
+
+class TestTCDisplayHint:
+    MIB = """
+DH2-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+dh2MIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Display hint MIB."
+    ::= { 1 310 }
+
+OwnerString ::= TEXTUAL-CONVENTION
+    DISPLAY-HINT "255a"
+    STATUS       current
+    DESCRIPTION  "A string."
+    SYNTAX       OCTET STRING (SIZE (0..255))
+
+END
+"""
+
+    def test_display_hint_stored(self):
+        m = _parse(self.MIB)
+        assert m.types["OwnerString"].display_hint == "255a"
+
+    def test_status_stored(self):
+        m = _parse(self.MIB)
+        assert m.types["OwnerString"].status == "current"
+
+    def test_size_constraint_stored(self):
+        m = _parse(self.MIB)
+        tc = m.types["OwnerString"]
+        assert tc.constraints is not None
+        assert tc.constraints["kind"] == "size"
+        assert tc.constraints["data"][0] == [0, 255]
+
+    def test_no_display_hint_is_none(self):
+        mib_text = """
+NODH-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+noDhMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "No display hint."
+    ::= { 1 311 }
+Plain ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Plain."
+    SYNTAX  INTEGER
+END
+"""
+        m = _parse(mib_text)
+        assert m.types["Plain"].display_hint is None
+
+
+class TestTCEnumConstraint:
+    MIB = """
+ENUM-TC-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+enumTcMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Enum TC MIB."
+    ::= { 1 312 }
+
+TruthValue ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Boolean."
+    SYNTAX  INTEGER { true(1), false(2) }
+
+END
+"""
+
+    def test_enum_constraint_kind(self):
+        m = _parse(self.MIB)
+        assert m.types["TruthValue"].constraints["kind"] == "enum"
+
+    def test_enum_values(self):
+        m = _parse(self.MIB)
+        data = m.types["TruthValue"].constraints["data"]
+        names = [item[0] for item in data]
+        assert "true" in names
+        assert "false" in names
+
+
+class TestTCRangeConstraint:
+    MIB = """
+RANGE-TC-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+rangeTcMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Range TC MIB."
+    ::= { 1 313 }
+
+InterfaceIndex ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Interface index."
+    SYNTAX  INTEGER (1..2147483647)
+
+END
+"""
+
+    def test_range_constraint_kind(self):
+        m = _parse(self.MIB)
+        assert m.types["InterfaceIndex"].constraints["kind"] == "range"
+
+    def test_range_bounds(self):
+        m = _parse(self.MIB)
+        data = m.types["InterfaceIndex"].constraints["data"]
+        assert data[0][0] == 1
+        assert data[0][1] == 2147483647
+
+
+# ---------------------------------------------------------------------------
+# oid_parent stored by transformer
+# ---------------------------------------------------------------------------
+
+
+class TestOidParentTransformer:
+    MIB = """
+OIDPAR-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+
+oidParMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "OID parent test MIB."
+    ::= { 1 320 }
+
+aScalar OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Child of oidParMIB."
+    ::= { oidParMIB 1 }
+
+END
+"""
+
+    def test_oid_parent_set_on_named_arc(self):
+        m = _parse(self.MIB)
+        obj = m.objects["aScalar"]
+        assert obj.oid_parent == "oidParMIB"
+
+    def test_oid_path_contains_only_local_arcs_before_resolution(self):
+        m = _parse(self.MIB)
+        obj = m.objects["aScalar"]
+        assert obj.oid_path == [1]
+
+    def test_module_identity_has_no_parent_for_absolute_oid(self):
+        """{ 1 320 } has only number arcs — oid_parent should be None."""
+        m = _parse(self.MIB)
+        mi = m.objects["oidParMIB"]
+        assert mi.oid_parent is None
+
+
+# ---------------------------------------------------------------------------
+# Vendor dialect quirks
+# ---------------------------------------------------------------------------
+
+
+class TestVendorDialectQuirks:
+    def test_imports_without_semicolon(self):
+        mib_text = """
+NOSEMI-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+
+noSemiMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "No semicolon after IMPORTS."
+    ::= { 1 330 }
+
+END
+"""
+        m = _parse(mib_text)
+        assert m.name == "NOSEMI-MIB"
+
+    def test_index_trailing_comma(self):
+        mib_text = """
+TRAIL-IDX-MIB2 DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+
+trailIdxMIB2 MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Trailing comma in INDEX."
+    ::= { 1 331 }
+
+myEntry2 OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Row."
+    INDEX { myIdx2, }
+    ::= { trailIdxMIB2 1 }
+
+myIdx2 OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Index."
+    ::= { trailIdxMIB2 2 }
+
+END
+"""
+        m = _parse(mib_text)
+        assert m.objects["myEntry2"].index == ["myIdx2"]
+
+    def test_bits_trailing_comma_smiv2(self):
+        mib_text = """
+BITS-TRAIL2-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE FROM SNMPv2-SMI ;
+
+bitsTrail2MIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "BITS trailing comma SMIv2."
+    ::= { 1 332 }
+
+flags2 OBJECT-TYPE
+    SYNTAX      BITS { up(0), down(1), }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Flags."
+    ::= { bitsTrail2MIB 1 }
+
+END
+"""
+        m = _parse(mib_text)
+        assert "flags2" in m.objects
+
+    def test_smiv1_bits_type(self):
+        mib_text = """
+BITS-V1-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    OBJECT-TYPE FROM RFC-1212 ;
+
+flags OBJECT-TYPE
+    SYNTAX  BITS { a(0), b(1) }
+    ACCESS  read-only
+    STATUS  mandatory
+    ::= { 1 1 1 }
+
+END
+"""
+        parser = SmiParser(dialect="smiv1")
+        m = parser.parse(mib_text)
+        assert m.objects["flags"].syntax == "BITS"
+
+
+# ---------------------------------------------------------------------------
+# Constraint handlers — multi-range union, single_value, hex bound
+# ---------------------------------------------------------------------------
+
+
+class TestConstraintHandlers:
+    def test_multi_range_integer_constraint_stored(self):
+        """INTEGER (0..10 | 20..30) → union constraint with two ranges."""
+        mib_text = """
+MULTI-RANGE-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+mrMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Multi-range TC."
+    ::= { 1 340 }
+
+MultiRange ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Multi-range integer."
+    SYNTAX  INTEGER (0..10 | 20..30)
+
+END
+"""
+        m = _parse(mib_text)
+        tc = m.types["MultiRange"]
+        assert tc.constraints is not None
+        assert tc.constraints["kind"] == "union"
+
+    def test_multi_range_size_constraint_stored(self):
+        """OCTET STRING (SIZE (0..10 | 20..30)) → union size constraint."""
+        mib_text = """
+MULTI-SIZE-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+msMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Multi-size TC."
+    ::= { 1 341 }
+
+MultiSize ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Multi-size string."
+    SYNTAX  OCTET STRING (SIZE (0..10 | 20..30))
+
+END
+"""
+        m = _parse(mib_text)
+        tc = m.types["MultiSize"]
+        assert tc.constraints is not None
+        assert tc.constraints["kind"] == "union"
+
+    def test_single_value_range_bound(self):
+        """INTEGER (42) — single_value rule → [42, 42] pair."""
+        mib_text = """
+SINGLE-VAL-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+svMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Single value constraint."
+    ::= { 1 342 }
+
+SingleVal ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Fixed value."
+    SYNTAX  INTEGER (42)
+
+END
+"""
+        m = _parse(mib_text)
+        tc = m.types["SingleVal"]
+        assert tc.constraints is not None
+        assert tc.constraints["data"][0][0] == 42
+        assert tc.constraints["data"][0][1] == 42
+
+    def test_hex_range_bound_parsed(self):
+        """INTEGER ('00'H..'FF'H) — hex range bounds parsed as integers."""
+        mib_text = """
+HEX-RANGE-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+hexMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Hex range MIB."
+    ::= { 1 343 }
+
+HexByte ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "A hex-bounded integer."
+    SYNTAX  INTEGER ('00'H..'FF'H)
+
+END
+"""
+        m = _parse(mib_text)
+        tc = m.types["HexByte"]
+        assert tc.constraints is not None
+        ranges = tc.constraints["data"]
+        assert ranges[0][0] == 0x00
+        assert ranges[0][1] == 0xFF
+
+    def test_min_max_range_bounds_parse(self):
+        """INTEGER (MIN..MAX) — MIN/MAX bounds preserved as strings."""
+        mib_text = """
+MINMAX-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+mmMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "MIN/MAX bounds MIB."
+    ::= { 1 344 }
+
+AnyInt ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Unconstrained."
+    SYNTAX  INTEGER (MIN..MAX)
+
+END
+"""
+        m = _parse(mib_text)
+        tc = m.types["AnyInt"]
+        assert tc.constraints is not None
+        ranges = tc.constraints["data"]
+        assert ranges[0][0] == "MIN"
+        assert ranges[0][1] == "MAX"
+
+
+# ---------------------------------------------------------------------------
+# AGENT-CAPABILITIES variation clauses (write_syntax, access, creation_requires)
+# ---------------------------------------------------------------------------
+
+
+class TestModuleComplianceSubclauses:
+    MIB = """
+COMP-SUB-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI
+    OBJECT-GROUP, MODULE-COMPLIANCE FROM SNMPv2-CONF ;
+
+compSubMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Compliance sub-clauses MIB."
+    ::= { 1 360 }
+
+aScalar OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "A scalar."
+    ::= { compSubMIB 1 }
+
+aGroup OBJECT-GROUP
+    OBJECTS { aScalar }
+    STATUS  current
+    DESCRIPTION "A group."
+    ::= { compSubMIB 2 }
+
+compSpec MODULE-COMPLIANCE
+    STATUS  current
+    DESCRIPTION "Full compliance spec."
+    MODULE
+        MANDATORY-GROUPS { aGroup }
+        GROUP aGroup
+            DESCRIPTION "The group."
+        OBJECT aScalar
+            SYNTAX      Integer32
+            WRITE-SYNTAX Integer32
+            MIN-ACCESS  read-only
+            DESCRIPTION "Scalar constraint."
+    ::= { compSubMIB 3 }
+
+END
+"""
+
+    def test_compliance_with_group_and_object_subclauses_parses(self):
+        m = _parse(self.MIB)
+        assert "compSpec" in m.objects
+
+    def test_compliance_object_min_access_parses(self):
+        m = _parse(self.MIB)
+        assert m.objects["compSpec"].object_type == "MODULE-COMPLIANCE"
+
+
+class TestAgentCapabilitiesVariations:
+    MIB = """
+AGCAP-VAR-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    AGENT-CAPABILITIES FROM SNMPv2-CONF ;
+
+agCapVarMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Agent caps with variation clauses."
+    ::= { 1 350 }
+
+testAgent AGENT-CAPABILITIES
+    PRODUCT-RELEASE "Test Agent 1.0"
+    STATUS          current
+    DESCRIPTION     "Test."
+    SUPPORTS        SNMPv2-SMI
+    INCLUDES        { ifGroup }
+    VARIATION       ifIndex
+        SYNTAX          INTEGER
+        WRITE-SYNTAX    INTEGER
+        ACCESS          read-only
+        CREATION-REQUIRES { ifDescr }
+        DESCRIPTION "Variation desc."
+    ::= { agCapVarMIB 1 }
+
+END
+"""
+
+    def test_agent_caps_with_variations_parses(self):
+        m = _parse(self.MIB)
+        assert "testAgent" in m.objects
+        assert m.objects["testAgent"].object_type == "AGENT-CAPABILITIES"

@@ -260,3 +260,57 @@ class TestPackageIntegrity:
 
         grammar = files("trishul_smi.parser.grammar").joinpath("smiv2.lark")
         assert grammar.is_file(), "smiv2.lark missing from installed package"
+
+
+# ---------------------------------------------------------------------------
+# convert command
+# ---------------------------------------------------------------------------
+
+
+class TestConvertCommand:
+    _PYSNMP_SRC = (
+        "ifMIB = ModuleIdentity((1, 3, 6, 1, 2, 1, 31,))\n"
+        "ifDescr = MibScalar((1, 3, 6, 1, 2, 1, 2, 2, 1, 2,), DisplayString())\n"
+        "mibBuilder.exportSymbols('IF-MIB', **{'ifMIB': ifMIB, 'ifDescr': ifDescr})\n"
+    )
+
+    def test_convert_produces_json(self, tmp_path: Path):
+        import json
+
+        py_file = tmp_path / "IF_MIB.py"
+        py_file.write_text(self._PYSNMP_SRC, encoding="utf-8")
+        out_dir = tmp_path / "out"
+        result = _invoke(["convert", str(py_file), "-o", str(out_dir)])
+        assert result.exit_code == 0, result.output
+        json_file = out_dir / "IF-MIB.json"
+        assert json_file.exists()
+        data = json.loads(json_file.read_text())
+        assert data["module"] == "IF-MIB"
+        assert "ifDescr" in data["objects"]
+
+    def test_convert_exit_0_on_success(self, tmp_path: Path):
+        py_file = tmp_path / "test.py"
+        py_file.write_text(
+            "foo = MibScalar((1,), Integer32())\n"
+            "mibBuilder.exportSymbols('TEST-MIB', **{'foo': foo})\n",
+            encoding="utf-8",
+        )
+        result = _invoke(["convert", str(py_file), "-o", str(tmp_path / "out")])
+        assert result.exit_code == 0
+
+    def test_convert_nonexistent_file_exits_2(self, tmp_path: Path):
+        result = _invoke(["convert", str(tmp_path / "no-such-file.py")])
+        assert result.exit_code == 2
+
+    def test_convert_bad_python_exits_1(self, tmp_path: Path):
+        py_file = tmp_path / "bad.py"
+        py_file.write_text("def (broken\n", encoding="utf-8")
+        result = _invoke(["convert", str(py_file)])
+        assert result.exit_code == 1
+
+    def test_convert_output_path_shown_in_stdout(self, tmp_path: Path):
+        py_file = tmp_path / "IF_MIB.py"
+        py_file.write_text(self._PYSNMP_SRC, encoding="utf-8")
+        out_dir = tmp_path / "out"
+        result = _invoke(["convert", str(py_file), "-o", str(out_dir)])
+        assert "IF-MIB" in result.output

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -17,3 +18,5 @@ class MibObject:
     description: str | None = None
     index: list[str] | None = None  # columnar objects: INDEX { ... }
     augments: str | None = None  # columnar objects: AUGMENTS { <row> }
+    oid_parent: str | None = None  # leading name arc before numeric arcs, e.g. "ifMIB"
+    constraints: dict[str, Any] | None = None  # inline SYNTAX constraint (range/size/enum/bits)

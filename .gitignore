@@ -103,6 +103,9 @@ CLAUDE.md
 # Default MIB output directory
 mibs-output/
 
+# Test scratch area (downloaded MIBs, pysmi comparison output)
+tests/tmp/
+
 # Compiled MIB cache
 ~/.cache/trishul-smi/
 

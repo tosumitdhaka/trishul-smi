@@ -26,6 +26,7 @@ from trishul_smi.parser._constants import SMIv2_MARKERS
 @dataclass
 class _SyntaxInfo:
     value: str
+    constraint: _ConstraintInfo | None = None
 
 
 @dataclass
@@ -53,6 +54,36 @@ class _AugmentsInfo:
     row: str
 
 
+@dataclass
+class _OrganizationInfo:
+    value: str
+
+
+@dataclass
+class _RevisionInfo:
+    date: str
+    description: str
+
+
+@dataclass
+class _ConstraintInfo:
+    kind: str  # "size" | "range" | "enum" | "bits" | "union"
+    data: Any  # list of [low,high] pairs, list of [name,int] pairs, or list of _ConstraintInfo
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.kind == "union":
+            return {
+                "kind": "union",
+                "data": [m.to_dict() if isinstance(m, _ConstraintInfo) else m for m in self.data],
+            }
+        return {"kind": self.kind, "data": self.data}
+
+
+@dataclass
+class _DisplayHintInfo:
+    value: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -65,15 +96,16 @@ def _unquote(token: Token | str) -> str:
     return s
 
 
-def _resolve_oid(components: list[Any]) -> tuple[str, list[int]]:
-    """Convert oid_component list → (dotted_string, int_path).
+def _resolve_oid(components: list[Any]) -> tuple[str, list[int], str | None]:
+    """Convert oid_component list → (dotted_string, local_int_arcs, parent_name).
 
-    Named arcs without a number (e.g. 'mib-2') are kept in the dotted
-    string but skipped in int_path — full numeric resolution happens later
-    in resolver/ once all modules are loaded.
+    parent_name is the first name_arc (e.g. 'mib-2' in { mib-2 1 }) — used by
+    oid_resolver.py to look up the absolute prefix from already-resolved modules.
+    named_arc (e.g. iso(1)) is self-contained and has no separate parent.
     """
     parts_str: list[str] = []
     parts_int: list[int] = []
+    parent_name: str | None = None
     for comp in components:
         if not isinstance(comp, Tree):
             continue
@@ -82,12 +114,15 @@ def _resolve_oid(components: list[Any]) -> tuple[str, list[int]]:
             parts_str.append(str(num))
             parts_int.append(num)
         elif comp.data == "name_arc":
-            parts_str.append(str(comp.children[0]))
+            name = str(comp.children[0])
+            parts_str.append(name)
+            if parent_name is None:
+                parent_name = name  # capture only the first name arc
         elif comp.data == "number_arc":
             num = int(str(comp.children[0]))
             parts_str.append(str(num))
             parts_int.append(num)
-    return ".".join(parts_str), parts_int
+    return ".".join(parts_str), parts_int, parent_name
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +142,15 @@ class MibTransformer(Transformer[Token, MibModule]):
         objects: dict[str, MibObject] = {}
         types: dict[str, MibType] = {}
         notifications: dict[str, MibObject] = {}
+        organization: str | None = None
+        revisions: list[dict[str, str]] = []
 
-        for child in children:
-            if isinstance(child, str):
+        def _process_child(child: Any) -> None:
+            nonlocal module_name, imports, organization
+            if isinstance(child, list):
+                for item in child:
+                    _process_child(item)
+            elif isinstance(child, str):
                 module_name = child
             elif isinstance(child, dict) and "__imports__" in child:
                 imports = child["__imports__"]
@@ -120,6 +161,13 @@ class MibTransformer(Transformer[Token, MibModule]):
                     objects[child.name] = child
             elif isinstance(child, MibType):
                 types[child.name] = child
+            elif isinstance(child, _OrganizationInfo):
+                organization = child.value
+            elif isinstance(child, _RevisionInfo):
+                revisions.append({"date": child.date, "description": child.description})
+
+        for child in children:
+            _process_child(child)
 
         language = "SMIv2" if any(m in imports for m in SMIv2_MARKERS) else "SMIv1"
 
@@ -130,6 +178,8 @@ class MibTransformer(Transformer[Token, MibModule]):
             objects=objects,
             types=types,
             notifications=notifications,
+            organization=organization,
+            revisions=revisions,
         )
 
     def module_name(self, children: list[Any]) -> str:
@@ -162,10 +212,28 @@ class MibTransformer(Transformer[Token, MibModule]):
     # MODULE-IDENTITY
     # ------------------------------------------------------------------
 
-    def module_identity_assignment(self, children: list[Any]) -> MibObject:
+    def module_identity_assignment(self, children: list[Any]) -> list[Any]:
         name = str(children[0])
-        oid_str, oid_path = _resolve_oid(self._oid(children))
-        return MibObject(name=name, oid=oid_str, oid_path=oid_path, object_type="MODULE-IDENTITY")
+        oid_str, oid_path, oid_parent = _resolve_oid(self._oid(children))
+        # QUOTED_STRING positional order: LAST-UPDATED[0], ORGANIZATION[1],
+        # CONTACT-INFO[2], DESCRIPTION[3]
+        quoted = [c for c in children if isinstance(c, Token) and c.type == "QUOTED_STRING"]
+        description = _unquote(quoted[3]) if len(quoted) > 3 else None
+        obj = MibObject(
+            name=name,
+            oid=oid_str,
+            oid_path=oid_path,
+            object_type="MODULE-IDENTITY",
+            oid_parent=oid_parent,
+            description=description,
+        )
+        org = _OrganizationInfo(_unquote(quoted[1])) if len(quoted) > 1 else None
+        revisions = [c for c in children if isinstance(c, _RevisionInfo)]
+        result: list[Any] = [obj]
+        if org is not None:
+            result.append(org)
+        result.extend(revisions)
+        return result
 
     # ------------------------------------------------------------------
     # OBJECT-IDENTITY
@@ -173,7 +241,7 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def object_identity_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
-        oid_str, oid_path = _resolve_oid(self._oid(children))
+        oid_str, oid_path, oid_parent = _resolve_oid(self._oid(children))
         return MibObject(
             name=name,
             oid=oid_str,
@@ -181,6 +249,7 @@ class MibTransformer(Transformer[Token, MibModule]):
             object_type="OBJECT-IDENTITY",
             status=self._status(children),
             description=self._description(children),
+            oid_parent=oid_parent,
         )
 
     # ------------------------------------------------------------------
@@ -189,9 +258,11 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def object_type_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
-        oid_str, oid_path = _resolve_oid(self._oid(children))
+        oid_str, oid_path, oid_parent = _resolve_oid(self._oid(children))
         index_info = next((c for c in children if isinstance(c, _IndexInfo)), None)
         augments_info = next((c for c in children if isinstance(c, _AugmentsInfo)), None)
+        syntax_info = next((c for c in children if isinstance(c, _SyntaxInfo)), None)
+        constraint = syntax_info.constraint if syntax_info else None
         return MibObject(
             name=name,
             oid=oid_str,
@@ -203,6 +274,8 @@ class MibTransformer(Transformer[Token, MibModule]):
             description=self._description(children),
             index=index_info.columns if index_info else None,
             augments=augments_info.row if augments_info else None,
+            oid_parent=oid_parent,
+            constraints=constraint.to_dict() if constraint else None,
         )
 
     # ------------------------------------------------------------------
@@ -211,7 +284,7 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def notification_type_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
-        oid_str, oid_path = _resolve_oid(self._oid(children))
+        oid_str, oid_path, oid_parent = _resolve_oid(self._oid(children))
         return MibObject(
             name=name,
             oid=oid_str,
@@ -219,6 +292,7 @@ class MibTransformer(Transformer[Token, MibModule]):
             object_type="NOTIFICATION-TYPE",
             status=self._status(children),
             description=self._description(children),
+            oid_parent=oid_parent,
         )
 
     # ------------------------------------------------------------------
@@ -227,10 +301,23 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def textual_convention_assignment(self, children: list[Any]) -> MibType:
         name = str(children[0])
+        display_hint = next((c.value for c in children if isinstance(c, _DisplayHintInfo)), None)
+        # Constraint may be a direct child (integer_enum via constraint rule) or
+        # embedded in _SyntaxInfo (size_constraint on OCTET STRING / named_type).
+        constraint: _ConstraintInfo | None = next(
+            (c for c in children if isinstance(c, _ConstraintInfo)), None
+        )
+        if constraint is None:
+            syntax_node = next((c for c in children if isinstance(c, _SyntaxInfo)), None)
+            if syntax_node is not None:
+                constraint = syntax_node.constraint
         return MibType(
             name=name,
             base_type=self._syntax(children) or "",
             description=self._description(children),
+            display_hint=display_hint,
+            status=self._status(children),
+            constraints=constraint.to_dict() if constraint else None,
         )
 
     # ------------------------------------------------------------------
@@ -245,9 +332,13 @@ class MibTransformer(Transformer[Token, MibModule]):
         name = str(children[0])
         oid_list = self._oid(children)
         if oid_list:
-            oid_str, oid_path = _resolve_oid(oid_list)
+            oid_str, oid_path, oid_parent = _resolve_oid(oid_list)
             return MibObject(
-                name=name, oid=oid_str, oid_path=oid_path, object_type="OBJECT IDENTIFIER"
+                name=name,
+                oid=oid_str,
+                oid_path=oid_path,
+                object_type="OBJECT IDENTIFIER",
+                oid_parent=oid_parent,
             )
         return None
 
@@ -304,8 +395,11 @@ class MibTransformer(Transformer[Token, MibModule]):
     def augments_part(self, children: list[Any]) -> _AugmentsInfo:
         return _AugmentsInfo(str(children[0]))
 
-    def revision(self, _: list[Any]) -> None:
-        return None
+    def revision(self, children: list[Any]) -> _RevisionInfo:
+        quoted = [c for c in children if isinstance(c, Token) and c.type == "QUOTED_STRING"]
+        date = _unquote(quoted[0]) if quoted else ""
+        desc = _unquote(quoted[1]) if len(quoted) > 1 else ""
+        return _RevisionInfo(date=date, description=desc)
 
     def compliance_module(self, _: list[Any]) -> None:
         return None
@@ -337,8 +431,8 @@ class MibTransformer(Transformer[Token, MibModule]):
     def reference_clause(self, _: list[Any]) -> None:
         return None
 
-    def display_hint_clause(self, _: list[Any]) -> None:
-        return None
+    def display_hint_clause(self, children: list[Any]) -> _DisplayHintInfo:
+        return _DisplayHintInfo(_unquote(children[0]))
 
     def defval_clause(self, _: list[Any]) -> None:
         return None
@@ -388,11 +482,13 @@ class MibTransformer(Transformer[Token, MibModule]):
         val = children[0] if children else ""
         return val if isinstance(val, _SyntaxInfo) else _SyntaxInfo(str(val))
 
-    def integer_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("INTEGER")
+    def integer_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("INTEGER", constraint=c)
 
-    def octet_string_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("OCTET STRING")
+    def octet_string_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("OCTET STRING", constraint=c)
 
     def oid_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("OBJECT IDENTIFIER")
@@ -403,26 +499,33 @@ class MibTransformer(Transformer[Token, MibModule]):
     def ip_address_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("IpAddress")
 
-    def counter32_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("Counter32")
+    def counter32_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("Counter32", constraint=c)
 
-    def counter64_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("Counter64")
+    def counter64_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("Counter64", constraint=c)
 
-    def gauge32_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("Gauge32")
+    def gauge32_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("Gauge32", constraint=c)
 
-    def unsigned32_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("Unsigned32")
+    def unsigned32_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("Unsigned32", constraint=c)
 
-    def timeticks_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("TimeTicks")
+    def timeticks_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("TimeTicks", constraint=c)
 
-    def opaque_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("Opaque")
+    def opaque_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("Opaque", constraint=c)
 
-    def integer32_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("Integer32")
+    def integer32_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("Integer32", constraint=c)
 
     def network_address_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("NetworkAddress")
@@ -443,7 +546,8 @@ class MibTransformer(Transformer[Token, MibModule]):
         return _SyntaxInfo("CHOICE")
 
     def named_type(self, children: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo(str(children[0]))
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo(str(children[0]), constraint=c)
 
     def sequence_of_type(self, children: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo(f"SEQUENCE OF {children[0]}")
@@ -459,6 +563,73 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def syntax_clause(self, children: list[Any]) -> _SyntaxInfo | None:
         return next((c for c in children if isinstance(c, _SyntaxInfo)), None)
+
+    # ------------------------------------------------------------------
+    # Constraint handlers
+    # ------------------------------------------------------------------
+
+    def constraint(self, children: list[Any]) -> _ConstraintInfo:
+        # child is either a list-of-ranges (from range_items) or _ConstraintInfo (from integer_enum)
+        for child in children:
+            if isinstance(child, _ConstraintInfo):
+                return child
+            if isinstance(child, list):
+                # list of [low, high] pairs from range_items
+                if len(child) == 1:
+                    return _ConstraintInfo(kind="range", data=child)
+                return _ConstraintInfo(
+                    kind="union", data=[_ConstraintInfo(kind="range", data=[r]) for r in child]
+                )
+        return _ConstraintInfo(kind="range", data=[])
+
+    def size_constraint(self, children: list[Any]) -> _ConstraintInfo:
+        for child in children:
+            if isinstance(child, list):
+                if len(child) == 1:
+                    return _ConstraintInfo(kind="size", data=child)
+                return _ConstraintInfo(
+                    kind="union", data=[_ConstraintInfo(kind="size", data=[r]) for r in child]
+                )
+        return _ConstraintInfo(kind="size", data=[])
+
+    def range_items(self, children: list[Any]) -> list[list[int | str]]:
+        return [c for c in children if isinstance(c, list)]
+
+    def range(self, children: list[Any]) -> list[int | str]:
+        # range_bound ".." range_bound → [low, high]
+        return [children[0], children[1]]
+
+    def single_value(self, children: list[Any]) -> list[int | str]:
+        # single range_bound → [val, val]
+        return [children[0], children[0]]
+
+    def range_bound(self, children: list[Any]) -> int | str:
+        val = str(children[0])
+        if val in ("MIN", "MAX"):
+            return val
+        if val.startswith("'") and val[-1:].upper() == "H":
+            return int(val[1:-2], 16)
+        try:
+            return int(val)
+        except ValueError:
+            return val
+
+    def integer_enum(self, children: list[Any]) -> _ConstraintInfo:
+        items = next((c for c in children if isinstance(c, list)), [])
+        return _ConstraintInfo(kind="enum", data=items)
+
+    def enum_items(self, children: list[Any]) -> list[list[Any]]:
+        return [c for c in children if isinstance(c, list)]
+
+    def enum_item(self, children: list[Any]) -> list[Any]:
+        return [str(children[0]), int(str(children[1]))]
+
+    def named_bits(self, children: list[Any]) -> _ConstraintInfo:
+        items = [c for c in children if isinstance(c, list)]
+        return _ConstraintInfo(kind="bits", data=items)
+
+    def named_bit(self, children: list[Any]) -> list[Any]:
+        return [str(children[0]), int(str(children[1]))]
 
     # ------------------------------------------------------------------
     # Private typed extractors
@@ -488,5 +659,13 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def _simple_oid_object(self, children: list[Any], object_type: str) -> MibObject:
         name = str(children[0])
-        oid_str, oid_path = _resolve_oid(self._oid(children))
-        return MibObject(name=name, oid=oid_str, oid_path=oid_path, object_type=object_type)
+        oid_str, oid_path, oid_parent = _resolve_oid(self._oid(children))
+        return MibObject(
+            name=name,
+            oid=oid_str,
+            oid_path=oid_path,
+            object_type=object_type,
+            oid_parent=oid_parent,
+            status=self._status(children),
+            description=self._description(children),
+        )

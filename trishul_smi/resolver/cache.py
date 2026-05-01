@@ -39,6 +39,7 @@ def _module_to_bytes(module: MibModule) -> bytes:
             "name": o.name,
             "oid": o.oid,
             "oid_path": o.oid_path,
+            "oid_parent": o.oid_parent,
             "object_type": o.object_type,
             "syntax": o.syntax,
             "max_access": o.max_access,
@@ -46,6 +47,7 @@ def _module_to_bytes(module: MibModule) -> bytes:
             "description": o.description,
             "index": o.index,
             "augments": o.augments,
+            "constraints": o.constraints,
         }
 
     def _typ(t: MibType) -> dict[str, Any]:
@@ -54,6 +56,8 @@ def _module_to_bytes(module: MibModule) -> bytes:
             "base_type": t.base_type,
             "constraints": t.constraints,
             "description": t.description,
+            "display_hint": t.display_hint,
+            "status": t.status,
         }
 
     payload: dict[str, Any] = {
@@ -63,6 +67,8 @@ def _module_to_bytes(module: MibModule) -> bytes:
         "objects": {k: _obj(v) for k, v in module.objects.items()},
         "types": {k: _typ(v) for k, v in module.types.items()},
         "notifications": {k: _obj(v) for k, v in module.notifications.items()},
+        "organization": module.organization,
+        "revisions": module.revisions,
     }
     return orjson.dumps(payload, option=orjson.OPT_INDENT_2)
 
@@ -75,6 +81,7 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
             name=o["name"],
             oid=o["oid"],
             oid_path=o.get("oid_path") or [],
+            oid_parent=o.get("oid_parent"),
             object_type=o.get("object_type", ""),
             syntax=o.get("syntax"),
             max_access=o.get("max_access"),
@@ -82,6 +89,7 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
             description=o.get("description"),
             index=o.get("index"),
             augments=o.get("augments"),
+            constraints=o.get("constraints"),
         )
 
     def _typ(t: dict[str, Any]) -> MibType:
@@ -90,6 +98,8 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
             base_type=t.get("base_type", ""),
             constraints=t.get("constraints"),
             description=t.get("description"),
+            display_hint=t.get("display_hint"),
+            status=t.get("status"),
         )
 
     return MibModule(
@@ -99,6 +109,8 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
         objects={k: _obj(v) for k, v in d.get("objects", {}).items()},
         types={k: _typ(v) for k, v in d.get("types", {}).items()},
         notifications={k: _obj(v) for k, v in d.get("notifications", {}).items()},
+        organization=d.get("organization"),
+        revisions=d.get("revisions") or [],
     )
 
 

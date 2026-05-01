@@ -34,6 +34,7 @@ from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import FetchProtocol
 from trishul_smi.reader.chain import ReaderChain
 from trishul_smi.resolver.cache import MibCache
+from trishul_smi.resolver.oid_resolver import resolve_oids
 from trishul_smi.resolver.resolver import MibResolver
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,12 @@ _FORMATTER_CLASSES: dict[str, type[FormatterProtocol]] = {
     "json": JsonFormatter,
     "pysnmp": PysnmpFormatter,
 }
+
+
+def _make_formatter(fmt: str, config: CompilerConfig) -> FormatterProtocol:
+    if fmt == "pysnmp":
+        return PysnmpFormatter(no_texts=config.no_texts)
+    return _FORMATTER_CLASSES[fmt]()
 
 
 class MibCompiler:
@@ -83,7 +90,7 @@ class MibCompiler:
         # Formatter instances keyed by format name — typed against FormatterProtocol
         # so mypy can verify FILE_SUFFIX and format() calls in compile().
         self._formatters: dict[str, FormatterProtocol] = {
-            fmt: _FORMATTER_CLASSES[fmt]() for fmt in self._config.formats
+            fmt: _make_formatter(fmt, self._config) for fmt in self._config.formats
         }
 
     # ------------------------------------------------------------------
@@ -128,6 +135,8 @@ class MibCompiler:
         chain = ReaderChain(*self._readers)
         resolver = MibResolver(chain, self._parser, self._cache)
         resolve_result = await resolver.resolve(list(mib_names))
+        resolve_oids(resolve_result.modules)
+        requested_set = set(mib_names)
 
         results: list[CompileResult] = []
         out_dir = self._config.output_dir
@@ -165,6 +174,7 @@ class MibCompiler:
                     status="compiled",
                     output_paths=output_paths,
                     warnings=warnings,
+                    is_dependency=module.name not in requested_set,
                 )
             )
 

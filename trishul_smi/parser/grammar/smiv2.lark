@@ -33,7 +33,7 @@ module_name : UPPER_ID
 // IMPORTS
 // ---------------------------------------------------------------------------
 
-imports : "IMPORTS" import_clause+ ";"
+imports : "IMPORTS" import_clause+ ";"?
 
 import_clause : symbol_list "FROM" module_ref
 
@@ -92,7 +92,7 @@ units_clause : "UNITS" QUOTED_STRING
 index_clause : index_part | augments_part
 
 index_part : "INDEX" "{" index_list "}"
-index_list : index_item ("," index_item)*
+index_list : index_item ("," index_item)* [","]
 index_item : ["IMPLIED"] LOWER_ID
 
 augments_part : "AUGMENTS" "{" LOWER_ID "}"
@@ -235,7 +235,7 @@ sequence_type : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
 sequence_field : LOWER_ID syntax_type
 
 bits_type : "BITS" "{" named_bits "}"
-named_bits : named_bit ("," named_bit)*
+named_bits : named_bit ("," named_bit)* [","]
 named_bit  : LOWER_ID "(" NUMBER ")"
 
 choice_type : "CHOICE" "{" choice_field ("," choice_field)* "}"
@@ -252,7 +252,9 @@ range_items : range_item ("|" range_item)*
 range_item  : range_bound ".." range_bound  -> range
             | range_bound                    -> single_value
 
-range_bound : SIGNED_NUMBER | HEX_STRING | "MIN" | "MAX"
+RANGE_MIN : "MIN"
+RANGE_MAX : "MAX"
+range_bound : SIGNED_NUMBER | HEX_STRING | RANGE_MIN | RANGE_MAX
 
 size_constraint : "(" "SIZE" "(" range_items ")" ")"
 
@@ -276,8 +278,8 @@ UPPER_ID      : /[A-Z][A-Za-z0-9\-]*/
 LOWER_ID      : /[a-z][A-Za-z0-9\-]*/
 NUMBER        : /[0-9]+/
 SIGNED_NUMBER : /-?[0-9]+/
-HEX_STRING    : /\'[0-9A-Fa-f]*\'H/
-BIN_STRING    : /\'[01]*\'B/
+HEX_STRING    : /\'[0-9A-Fa-f]*\'[Hh]/
+BIN_STRING    : /\'[01]*\'[Bb]/
 
 // QUOTED_STRING: allows literal newlines (common in DESCRIPTION fields) and
 // backslash-escape sequences including backslash-newline (\\\n).

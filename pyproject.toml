@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trishul-smi"
-version = "0.1.2"
+version = "0.2.0"
 description = "A clean, modern SMI/MIB compiler"
 readme = "README.md"
 license = { text = "MIT" }
@@ -80,6 +80,10 @@ warn_return_any = true
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = ["tests/tmp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N"]
+
+[tool.ruff.lint.per-file-ignores]
+"trishul_smi/output/pysnmp_fmt.py" = ["E501"]  # Jinja2 template strings cannot be line-wrapped

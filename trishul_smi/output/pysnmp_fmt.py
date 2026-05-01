@@ -32,6 +32,8 @@ Output file: {output_dir}/{ModuleName}.py
 
 from __future__ import annotations
 
+from typing import Any
+
 from jinja2 import BaseLoader, Environment
 
 from trishul_smi.models.mib_module import MibModule
@@ -42,15 +44,19 @@ from trishul_smi.models.mib_object import MibObject
 # ---------------------------------------------------------------------------
 
 
-def _pysnmp_obj_class(obj: MibObject, module: MibModule) -> str:
+def _pysnmp_obj_class(
+    obj: MibObject,
+    module: MibModule,
+    oid_to_class: dict[tuple[int, ...], str] | None = None,
+) -> str:
     """Return the correct pysnmp constructor class name for *obj*.
 
     Resolution order (first match wins):
     1. syntax starts with ``SEQUENCE OF`` → MibTable (the table object itself)
     2. syntax is a named type that resolves to SEQUENCE in this module's types
        → MibTableRow (the row object)
-    3. Everything else → MibScalar
-       (MibTableColumn needs OID-tree resolution — see module docstring)
+    3. parent OID in oid_to_class resolves to MibTableRow → MibTableColumn
+    4. Everything else → MibScalar
     """
     syntax = (obj.syntax or "").strip()
     if syntax.upper().startswith("SEQUENCE OF"):
@@ -59,6 +65,10 @@ def _pysnmp_obj_class(obj: MibObject, module: MibModule) -> str:
         base = (module.types[syntax].base_type or "").upper()
         if base.startswith("SEQUENCE"):
             return "MibTableRow"
+    if oid_to_class is not None and obj.oid_path:
+        parent_key = tuple(obj.oid_path[:-1])
+        if oid_to_class.get(parent_key) == "MibTableRow":
+            return "MibTableColumn"
     return "MibScalar"
 
 
@@ -98,37 +108,71 @@ mibBuilder = MibBuilder()
 # It lives in the 'ASN1' module — distinct from MibIdentifier (SNMPv2-SMI)
 # which is used for OID *nodes* in the MIB tree, not SYNTAX value types.
 ( ObjectIdentifier, ) = mibBuilder.importSymbols('ASN1', 'ObjectIdentifier')
+( ValueSizeConstraint, ValueRangeConstraint, SingleValueConstraint,
+  ConstraintsUnion, ) = mibBuilder.importSymbols(
+    'ASN1-REFINEMENT',
+    'ValueSizeConstraint', 'ValueRangeConstraint', 'SingleValueConstraint',
+    'ConstraintsUnion',
+)
 
 # --- MIB-specific imports ----------------------------------------------
 {% for from_module, symbols in module.imports.items() %}
 {{ symbols | map_pysnmp_assign(from_module) }}
 {% endfor %}
 
-# --- MODULE-IDENTITY / OBJECT-IDENTITY --------------------------------
+# --- MODULE-IDENTITY / OBJECT-IDENTITY / MIB STRUCTURE ---------------
 {% for name, obj in module.objects.items() if obj.object_type in (
-       'MODULE-IDENTITY', 'OBJECT-IDENTITY', 'OBJECT IDENTIFIER') %}
+       'MODULE-IDENTITY', 'OBJECT-IDENTITY', 'OBJECT IDENTIFIER',
+       'OBJECT-GROUP', 'NOTIFICATION-GROUP', 'MODULE-COMPLIANCE', 'AGENT-CAPABILITIES') %}
 {{ name | pyid }} = {{ obj.object_type | pysnmp_class_for_type }}(
     {{ obj.oid_path | oid_tuple }}
 )
-{% if obj.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ obj.status }}')
+{% if not no_texts and obj.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ obj.status }}')
 {% endif %}
-{% if obj.description %}if mibBuilder.loadTexts: {{ name | pyid }}.setDescription(
+{% if not no_texts and obj.description %}if mibBuilder.loadTexts: {{ name | pyid }}.setDescription(
     \"\"\"{{ obj.description | indent(4) }}\"\"\"
 )
 {% endif %}
+{% if not no_texts and obj.object_type == 'MODULE-IDENTITY' and module.organization %}if mibBuilder.loadTexts: {{ name | pyid }}.setOrganization(
+    \"\"\"{{ module.organization | indent(4) }}\"\"\"
+)
+{% endif %}
+{% if not no_texts and obj.object_type == 'MODULE-IDENTITY' and module.revisions %}if mibBuilder.loadTexts: {{ name | pyid }}.setRevisions(
+    ({% for r in module.revisions %}'{{ r.date }}', {% endfor %})
+)
+{% endif %}
+{% endfor %}
+
+# --- OBJECT-TYPE syntax wrappers (constrained inline types) -----------
+{% for name, obj, cls in objects_with_class if obj.constraints %}
+class _{{ name | pyid }}_Type({{ obj.syntax | pysnmp_syntax_class }}):
+    subtypeSpec = {{ obj.syntax | pysnmp_syntax_class }}.subtypeSpec
+    subtypeSpec += ConstraintsUnion(
+        {{ obj.constraints | tc_subtypespec }},
+    )
+
+_{{ name | pyid }}_Type.__name__ = "{{ obj.syntax }}"
 {% endfor %}
 
 # --- OBJECT-TYPE ------------------------------------------------------
 {% for name, obj, cls in objects_with_class %}
 {{ name | pyid }} = {{ cls }}(
     {{ obj.oid_path | oid_tuple }},
-    {{ obj.syntax | pysnmp_syntax }}
+    {% if obj.constraints %}_{{ name | pyid }}_Type(){% else %}{{ obj.syntax | pysnmp_syntax }}{% endif %}
 ).setMaxAccess('{{ obj.max_access or 'read-only' }}')
-{% if obj.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ obj.status }}')
+{% if not no_texts and obj.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ obj.status }}')
 {% endif %}
-{% if obj.description %}if mibBuilder.loadTexts: {{ name | pyid }}.setDescription(
+{% if not no_texts and obj.description %}if mibBuilder.loadTexts: {{ name | pyid }}.setDescription(
     \"\"\"{{ obj.description | indent(4) }}\"\"\"
 )
+{% endif %}
+{% if obj.index %}{{ name | pyid }}.setIndexNames(
+{%- for idx in obj.index %}
+    (0, '{{ module.name }}', '{{ idx }}'),
+{%- endfor %}
+)
+{% endif %}
+{% if obj.augments %}{{ name | pyid }}.setIndexNames(*{{ obj.augments | pyid }}.getIndexNames())
 {% endif %}
 {% endfor %}
 
@@ -137,25 +181,46 @@ mibBuilder = MibBuilder()
 {{ name | pyid }} = NotificationType(
     {{ notif.oid_path | oid_tuple }}
 )  # TODO: add .setObjects() from OBJECTS clause
-{% if notif.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ notif.status }}')
+{% if not no_texts and notif.status %}if mibBuilder.loadTexts: {{ name | pyid }}.setStatus('{{ notif.status }}')
+{% endif %}
+{% if not no_texts and notif.description %}if mibBuilder.loadTexts: {{ name | pyid }}.setDescription(
+    \"\"\"{{ notif.description | indent(4) }}\"\"\"
+)
 {% endif %}
 {% endfor %}
 
 # --- TEXTUAL-CONVENTION -----------------------------------------------
-{% for name, tc in module.types.items() %}
-{{ name }} = TextualConvention  # base: {{ tc.base_type }}
-# TODO: emit full TC definition (DisplayHint, constraints)
+{% for name, tc in module.types.items() if not tc.base_type.upper().startswith('SEQUENCE') and not tc.base_type.upper().startswith('CHOICE') %}
+class {{ name }}(TextualConvention, {{ tc.base_type | pysnmp_syntax_class }}):
+{% if tc.display_hint %}    displayHint = "{{ tc.display_hint }}"
+{% endif %}
+{% if tc.status %}    status = '{{ tc.status }}'
+{% endif %}
+{% if not no_texts and tc.description %}    description = \"\"\"{{ tc.description | indent(4) }}\"\"\"
+{% endif %}
+{% if tc.constraints %}    subtypeSpec = {{ tc.base_type | pysnmp_syntax_class }}.subtypeSpec
+    subtypeSpec += ConstraintsUnion(
+        {{ tc.constraints | tc_subtypespec }},
+    )
+{% endif %}
+{% if not tc.display_hint and not tc.status and not tc.description and not tc.constraints %}    pass
+{% endif %}
 {% endfor %}
 
 # --- Export -----------------------------------------------------------
 mibBuilder.exportSymbols(
     '{{ module.name }}',
-{% for name in module.objects %}    **{'{{ name }}': {{ name | pyid }}},
-{% endfor %}
-{% for name in module.notifications %}    **{'{{ name }}': {{ name | pyid }}},
-{% endfor %}
-{% for name in module.types %}    **{'{{ name }}': {{ name }}},
-{% endfor %}
+    **{
+{%- for name in module.objects %}
+        '{{ name }}': {{ name | pyid }},
+{%- endfor %}
+{%- for name in module.notifications %}
+        '{{ name }}': {{ name | pyid }},
+{%- endfor %}
+{%- for name, tc in module.types.items() if not tc.base_type.upper().startswith('SEQUENCE') and not tc.base_type.upper().startswith('CHOICE') %}
+        '{{ name }}': {{ name }},
+{%- endfor %}
+    }
 )
 """
 
@@ -163,12 +228,26 @@ mibBuilder.exportSymbols(
 # Jinja2 filters
 # ---------------------------------------------------------------------------
 
+# Maps SMI macro keyword → pysnmp constructor class name.
 _PYSNMP_CLASS_FOR_TYPE = {
     "MODULE-IDENTITY": "ModuleIdentity",
     "OBJECT-IDENTITY": "ObjectIdentity",
     "OBJECT IDENTIFIER": "MibIdentifier",
     "NOTIFICATION-TYPE": "NotificationType",
     "TRAP-TYPE": "NotificationType",
+    "OBJECT-GROUP": "ObjectGroup",
+    "NOTIFICATION-GROUP": "NotificationGroup",
+    "MODULE-COMPLIANCE": "ModuleCompliance",
+    "AGENT-CAPABILITIES": "AgentCapabilities",
+}
+
+# SMIv2-CONF symbols: MIB source name → pysnmp exported Python name.
+# pysnmp's SNMPv2-CONF exports class names, not the hyphenated macro keywords.
+_SNMPV2_CONF_NAME_MAP: dict[str, str] = {
+    "OBJECT-GROUP": "ObjectGroup",
+    "NOTIFICATION-GROUP": "NotificationGroup",
+    "MODULE-COMPLIANCE": "ModuleCompliance",
+    "AGENT-CAPABILITIES": "AgentCapabilities",
 }
 
 _PYSNMP_SYNTAX = {
@@ -230,9 +309,83 @@ def _map_pysnmp_assign(symbols: list[str], from_module: str) -> str:
     """Render: ( Sym1, Sym2, ) = mibBuilder.importSymbols('MOD', 'Sym1', 'Sym2')"""
     if not symbols:
         return ""
-    sym_py = ", ".join(_pyid(s) for s in symbols)
-    sym_str = ", ".join(f"'{s}'" for s in symbols)
+    # SNMPv2-CONF is the only module where the SMI macro keyword names differ from
+    # what pysnmp actually exports (e.g. MIB source says OBJECT-GROUP, but pysnmp's
+    # SNMPv2-CONF exports ObjectGroup).  All other modules export exactly what the
+    # MIB source names in its IMPORTS clause, so _pyid (hyphen → underscore) is enough.
+    name_map = _SNMPV2_CONF_NAME_MAP if from_module == "SNMPv2-CONF" else {}
+    py_names = [name_map.get(s, _pyid(s)) for s in symbols]
+    export_names = [name_map.get(s, s) for s in symbols]
+    sym_py = ", ".join(py_names)
+    sym_str = ", ".join(f"'{n}'" for n in export_names)
     return f"( {sym_py}, ) = mibBuilder.importSymbols('{from_module}', {sym_str})"
+
+
+# Maps MIB base_type strings to the pysnmp class name used as a TC mixin.
+_SYNTAX_TO_CLASS: dict[str, str] = {
+    "INTEGER": "Integer32",
+    "Integer32": "Integer32",
+    "OCTET STRING": "OctetString",
+    "OBJECT IDENTIFIER": "ObjectIdentifier",
+    "IpAddress": "IpAddress",
+    "Counter32": "Counter32",
+    "Counter64": "Counter64",
+    "Gauge32": "Gauge32",
+    "Unsigned32": "Unsigned32",
+    "TimeTicks": "TimeTicks",
+    "Opaque": "OctetString",
+    "BITS": "Bits",
+    "NetworkAddress": "OctetString",
+}
+
+
+def _pysnmp_syntax_class(base_type: str) -> str:
+    """Map a MIB base_type to the pysnmp class used in a TC class definition."""
+    mapped = _SYNTAX_TO_CLASS.get(base_type)
+    if mapped:
+        return mapped
+    safe = base_type.replace("-", "_")
+    if " " in safe or not safe.isidentifier():
+        return "OctetString"
+    return safe
+
+
+def _tc_subtypespec(constraints: dict[str, Any]) -> str:
+    """Convert a constraints dict to a pysnmp subtypeSpec expression."""
+    kind = constraints.get("kind", "")
+    data = constraints.get("data", [])
+
+    if kind == "size":
+        return _range_expr(data, "ValueSizeConstraint")
+    if kind == "range":
+        return _range_expr(data, "ValueRangeConstraint")
+    if kind in ("enum", "bits"):
+        values = [str(item[1]) for item in data if isinstance(item, list)]
+        return f"SingleValueConstraint({', '.join(values)})"
+    if kind == "union":
+        parts = [_tc_subtypespec(m) for m in data]
+        return f"ConstraintsUnion({', '.join(parts)})"
+    return "ValueRangeConstraint(0, 2147483647)"
+
+
+def _range_expr(ranges: list[Any], constructor: str) -> str:
+    if not ranges:
+        return f"{constructor}(0, 2147483647)"
+    if len(ranges) == 1:
+        pair = ranges[0]
+        lo = _bound_str(pair[0])
+        hi = _bound_str(pair[1])
+        return f"{constructor}({lo}, {hi})"
+    parts = [f"{constructor}({_bound_str(r[0])}, {_bound_str(r[1])})" for r in ranges]
+    return f"ConstraintsUnion({', '.join(parts)})"
+
+
+def _bound_str(val: Any) -> str:
+    if val == "MIN":
+        return "0"
+    if val == "MAX":
+        return "2147483647"
+    return str(val)
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +400,8 @@ def _make_env() -> Environment:
     env.filters["pysnmp_class_for_type"] = _pysnmp_class_for_type
     env.filters["pysnmp_syntax"] = _pysnmp_syntax
     env.filters["map_pysnmp_assign"] = _map_pysnmp_assign
+    env.filters["pysnmp_syntax_class"] = _pysnmp_syntax_class
+    env.filters["tc_subtypespec"] = _tc_subtypespec
     return env
 
 
@@ -255,14 +410,27 @@ class PysnmpFormatter:
 
     FILE_SUFFIX = ".py"
 
-    def __init__(self) -> None:
+    def __init__(self, no_texts: bool = False) -> None:
         self._env = _make_env()
         self._tmpl = self._env.from_string(_TEMPLATE)
+        self._no_texts = no_texts
 
     def format(self, module: MibModule) -> str:  # noqa: A003
+        # First pass: build MibTable / MibTableRow map keyed by absolute OID path.
+        oid_to_class: dict[tuple[int, ...], str] = {}
+        for obj in module.objects.values():
+            if obj.object_type == "OBJECT-TYPE" and obj.oid_path:
+                cls = _pysnmp_obj_class(obj, module)
+                oid_to_class[tuple(obj.oid_path)] = cls
+
+        # Second pass: full classification including MibTableColumn.
         objects_with_class = [
-            (name, obj, _pysnmp_obj_class(obj, module))
+            (name, obj, _pysnmp_obj_class(obj, module, oid_to_class))
             for name, obj in module.objects.items()
             if obj.object_type == "OBJECT-TYPE"
         ]
-        return self._tmpl.render(module=module, objects_with_class=objects_with_class)
+        return self._tmpl.render(
+            module=module,
+            objects_with_class=objects_with_class,
+            no_texts=self._no_texts,
+        )

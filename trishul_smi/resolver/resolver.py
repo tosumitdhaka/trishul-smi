@@ -86,7 +86,10 @@ class MibResolver:
         """
         fetched: dict[str, MibModule] = {}
         errors: dict[str, Exception] = {}
-        pending: set[str] = set(mib_names)
+        # Silently skip BASE_MIBs even when explicitly requested — they are
+        # pysnmp builtins that don't need compilation and may not parse cleanly
+        # (e.g. SNMPv2-SMI contains MACRO definitions).
+        pending: set[str] = {n for n in mib_names if n not in BASE_MIBS}
 
         while pending:
             # --- Cache check (synchronous, cheap) ---

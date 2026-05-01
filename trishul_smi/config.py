@@ -41,6 +41,9 @@ class CompilerConfig:
     # Size guard — enforced by FileReader and HttpReader
     max_mib_size: int = 10 * 1024 * 1024  # 10 MB
 
+    # Output content flags
+    no_texts: bool = False  # suppress setDescription/setOrganization/setRevisions/TC description
+
     def __post_init__(self) -> None:
         if self.max_mib_size <= 0:
             raise ValueError(f"max_mib_size must be > 0, got {self.max_mib_size}")

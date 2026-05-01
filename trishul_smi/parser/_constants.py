@@ -29,6 +29,9 @@ BASE_MIBS: frozenset[str] = frozenset(
         "SNMPv2-TC",
         "SNMPv2-CONF",
         "SNMPv2-MIB",
+        # SMIv1 compatibility shims used by some vendor MIB converters
+        "SNMPv2-SMI-v1",
+        "SNMPv2-TC-v1",
         "RFC1155-SMI",
         "RFC1213-MIB",
         "RFC-1212",

@@ -19,6 +19,8 @@ class MibModule:
     objects: dict[str, MibObject] = field(default_factory=dict)
     types: dict[str, MibType] = field(default_factory=dict)
     notifications: dict[str, MibObject] = field(default_factory=dict)
+    organization: str | None = None
+    revisions: list[dict[str, str]] = field(default_factory=list)
     source_text: str | None = None  # original raw ASN.1, kept for debugging
 
     def all_imports(self) -> list[str]:

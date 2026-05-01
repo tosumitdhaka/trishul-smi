@@ -9,18 +9,18 @@ Status: `planned` | `in progress` | `done` | `deferred`
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | Full OID resolution to absolute numeric paths | planned | OIDs currently store only the local arc (`oid_path=[1]`). Need to walk the full chain across all loaded modules to emit absolute paths e.g. `(1, 3, 6, 1, 2, 1, 2, 2, 1, 1)`. Blocks items 2 and 3. |
-| 2 | `MibTableColumn` detection in `PysnmpFormatter` | planned | Blocked on item 1. Currently all table columns are emitted as `MibScalar`. |
-| 3 | `setIndexNames` / `setAugmentation` in pysnmp output | planned | Blocked on item 1. pysmi emits `ifEntry.setIndexNames((0, "IF-MIB", "ifIndex"))` and `ifXEntry.setIndexNames(*ifEntry.getIndexNames())`. tsmi emits nothing. |
-| 4 | `ModuleIdentity.setRevisions()` in pysnmp output | planned | pysmi emits full revision history. tsmi omits it entirely. |
-| 5 | Full TEXTUAL-CONVENTION class generation | planned | pysmi emits proper subclasses with `subtypeSpec`, `displayHint`, `ValueSizeConstraint`. tsmi emits `OwnerString = TextualConvention  # TODO` stubs. |
-| 6 | Write all compiled dependencies to disk | planned | tsmi resolves and parses transitive dependencies but only writes the explicitly requested MIBs. pysmi writes all compiled modules (e.g. `IANAifType-MIB.py`, `SNMPv2-MIB.py`). |
-| 7 | `exportSymbols` single-dict format | planned | pysmi emits one `exportSymbols()` call with all symbols in a single dict. tsmi emits one `**{name: obj}` per symbol — valid but non-standard. |
-| 8 | TC description as class attribute in pysnmp output | planned | pysmi puts description inside the TC class body (`description = "..."`). tsmi uses `setDescription` outside the class. |
-| 9 | `setOrganization` on MODULE-IDENTITY in pysnmp output | planned | pysmi emits `ifMIB.setOrganization("...")`. tsmi omits it. |
-| 10 | `--no-texts` flag to suppress descriptions | planned | Skip all `setDescription` / `setOrganization` / `setRevisions` calls for lean output. Mirrors pysmi's default (no `--generate-mib-texts`) behaviour. |
-| 11 | Vendor dialect quirks (Cisco, HP, NET-SNMP) | planned | Grammar covers common cases; edge cases driven by real-world MIB failures. |
-| 12 | PySNMP `.py` → JSON reverse conversion | planned | `tsmi convert IF_MIB.py`. Uses Python `ast` module, not the SMI grammar parser. |
+| 1 | Full OID resolution to absolute numeric paths | done | `oid_resolver.py` walks the full chain across all loaded modules in topological order. |
+| 2 | `MibTableColumn` detection in `PysnmpFormatter` | done | Two-pass OID tree walk; parent OID → row class lookup. |
+| 3 | `setIndexNames` / `setAugmentation` in pysnmp output | done | `INDEX` → `setIndexNames`; `AUGMENTS` → `getIndexNames()`. |
+| 4 | `ModuleIdentity.setRevisions()` in pysnmp output | done | Revision date + description extracted from transformer and stored on `MibModule`. |
+| 5 | Full TEXTUAL-CONVENTION class generation | done | Proper subclasses with `subtypeSpec`, `displayHint`, `status`, `description`. Constraint expressions for size/range/enum/bits/union. |
+| 6 | Write all compiled dependencies to disk | done | All transitively compiled modules written to output directory. |
+| 7 | `exportSymbols` single-dict format | done | Single `exportSymbols()` call with all symbols in one merged dict. |
+| 8 | TC description as class attribute in pysnmp output | done | `description = """..."""` inside TC class body. |
+| 9 | `setOrganization` on MODULE-IDENTITY in pysnmp output | done | `setOrganization` and `setDescription` emitted for MODULE-IDENTITY. |
+| 10 | `--no-texts` flag to suppress descriptions | done | Suppresses `setDescription`/`setOrganization`/`setRevisions` and TC description. |
+| 11 | Vendor dialect quirks (Cisco, HP, NET-SNMP) | done | Hex range bounds case-insensitive (`'ff'h`); GROUP/COMPLIANCE status+description; SNMPv2-CONF symbol name mapping. |
+| 12 | PySNMP `.py` → JSON reverse conversion | done | `tsmi convert FILE.py` — ast-based reader, no grammar required. |
 
 ---
 
