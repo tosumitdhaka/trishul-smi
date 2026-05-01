@@ -40,7 +40,7 @@ Follow this checklist for every release. Steps must be completed in order.
   - `### Known Limitations` if any deferred issues remain
   - Add a reference link at the bottom: `[x.y.z]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/vx.y.z`
 - [ ] Update `docs/architecture.md` `Last updated` date if the architecture changed
-- [ ] Update `docs/plan.md` status header if applicable
+- [ ] Update `docs/roadmap.md` to mark shipped items as `done`
 
 ---
 
@@ -54,17 +54,32 @@ Follow this checklist for every release. Steps must be completed in order.
   mypy trishul_smi
   pytest --cov=trishul_smi
   ```
-- [ ] Smoke-test the CLI end-to-end:
+- [ ] Smoke-test the CLI end-to-end **from a clean venv** (not the dev install):
   ```bash
-  trishul-smi compile IF-MIB -f json -f pysnmp --verbose
+  python -m venv /tmp/trishul-release-test
+  /tmp/trishul-release-test/bin/pip install dist/trishul_smi-x.y.z-py3-none-any.whl
+  /tmp/trishul-release-test/bin/trishul-smi version
+  /tmp/trishul-release-test/bin/trishul-smi compile IF-MIB IP-MIB -f json -f pysnmp --online --verbose
   ```
-- [ ] Verify the built package installs and runs correctly:
+  Both MIBs must show ✅. This catches grammar gaps that unit tests can miss because
+  test fixtures are hand-written and may not exercise real-world MIB syntax.
+
+- [ ] Verify wheel has no duplicate entries (caused `0.1.0` PyPI rejection):
   ```bash
-  hatch build
-  pip install dist/trishul_smi-x.y.z-py3-none-any.whl
-  trishul-smi version
-  trishul-smi compile IF-MIB
+  python -c "
+  import zipfile, collections
+  z = zipfile.ZipFile('dist/trishul_smi-x.y.z-py3-none-any.whl')
+  dupes = [n for n, c in collections.Counter(z.namelist()).items() if c > 1]
+  print('DUPLICATES:', dupes or 'none')
+  "
   ```
+
+- [ ] If `~/test/mibs/` (or any local MIB corpus) is available, compile all of them:
+  ```bash
+  trishul-smi compile $(ls ~/test/mibs/*.mib ~/test/mibs/*.my 2>/dev/null | xargs -n1 basename | sed 's/\..*//' | sort -u | tr '\n' ' ') \
+    --mib-dir ~/test/mibs -f json -f pysnmp --verbose
+  ```
+  Every MIB in the corpus must show ✅ before tagging.
 
 ---
 

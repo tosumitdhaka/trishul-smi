@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.2] — 2026-05-01
+
+### Added
+
+- `tsmi` command alias — shorter alternative to `trishul-smi` installed alongside it.
+
+[0.1.2]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.1.2
+
+---
+
 ## [0.1.1] — 2026-05-01
 
 ### Changed
@@ -121,9 +131,6 @@ First public release.
 
 ### Known Limitations
 
-- `MibTableColumn` detection in `PysnmpFormatter` requires full OID-tree resolution
-  (not yet available at format time). Columns are emitted as `MibScalar`. Planned for v0.2.0.
-- TEXTUAL-CONVENTION constraints (DisplayHint, range, enumerations) are partially emitted
-  in pysnmp output. Full TC support planned for v0.2.0.
+See [roadmap.md](roadmap.md) for the full list of planned v0.2.0 improvements.
 
 [0.1.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.1.0

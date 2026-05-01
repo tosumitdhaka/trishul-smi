@@ -8,7 +8,6 @@
 git clone https://github.com/tosumitdhaka/trishul-smi
 cd trishul-smi
 pip install -e ".[dev]"
-pre-commit install
 ```
 
 ---
@@ -40,16 +39,6 @@ ruff format trishul_smi tests
 
 ---
 
-## Pre-commit
-
-Pre-commit runs `ruff` (lint + format) automatically on every commit once installed. To run manually:
-
-```bash
-pre-commit run --all-files
-```
-
----
-
 ## Project conventions
 
 - **Type annotations** — all public APIs must be fully annotated; `mypy --strict` must pass with zero errors.
@@ -66,7 +55,8 @@ pre-commit run --all-files
 
 ```bash
 # After pip install -e ".[dev]"
-trishul-smi compile IF-MIB --verbose
+tsmi compile IF-MIB --mib-dir /usr/share/snmp/mibs
+tsmi compile IF-MIB --online --verbose
 ```
 
 ---

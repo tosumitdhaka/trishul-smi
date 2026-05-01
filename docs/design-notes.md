@@ -1,4 +1,4 @@
-# trishul-smi — Project Plan
+# trishul-smi — Design Notes
 
 > **Status:** v0.4 — implementation complete; v0.1.0 shipped 2026-05-01  
 > **Author:** GhaatakJi  
