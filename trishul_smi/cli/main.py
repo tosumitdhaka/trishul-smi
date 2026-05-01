@@ -178,6 +178,10 @@ def compile(  # noqa: A001
         err.print(f"[bold red]Configuration error:[/bold red] {exc}")
         raise typer.Exit(2) from exc
 
+    for d in mib_dirs or []:
+        if not d.is_dir():
+            err.print(f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping.")
+
     console.print(
         f"[bold]Compiling[/bold] {', '.join(mib_names)} → "
         f"{output_dir} [dim]({', '.join(config.formats)})[/dim]"
@@ -217,10 +221,8 @@ async def _compile_async(
     from trishul_smi.reader.localfile import FileReader
 
     for d in mib_dirs:
-        if not d.is_dir():
-            err.print(f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping.")
-            continue
-        compiler.add_reader(FileReader(d))
+        if d.is_dir():
+            compiler.add_reader(FileReader(d))
 
     # HttpReader takes *url_templates (varargs), not a list — unpack with *.
     async with HttpReader(*config.sources) as http:

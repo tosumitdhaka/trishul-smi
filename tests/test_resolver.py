@@ -176,6 +176,17 @@ class TestMibCache:
         tmp = tmp_path / "compiled" / "IF-MIB.tmp"
         assert not tmp.exists()
 
+    def test_put_oserror_raises_mib_cache_error(self, tmp_path: Path):
+        """OSError during put() must be wrapped in MibCacheError, not leak raw."""
+        from unittest.mock import patch
+
+        from trishul_smi.errors import MibCacheError
+
+        cache = MibCache(tmp_path, ttl_days=7)
+        with patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")):
+            with pytest.raises(MibCacheError, match="disk full"):
+                cache.put("IF-MIB", _make_module("IF-MIB"))
+
 
 # ---------------------------------------------------------------------------
 # Topological sort
@@ -323,6 +334,24 @@ END
         assert "DEP-MIB" in names
         # DEP-MIB (the dependency) must appear before MIB-A
         assert names.index("DEP-MIB") < names.index("MIB-A")
+
+    @pytest.mark.asyncio
+    async def test_base_exception_propagates_not_collected(self):
+        """BaseException subclasses from asyncio.gather must propagate, not be stored in errors.
+        Uses a custom BaseException subclass instead of KeyboardInterrupt to avoid
+        confusing pytest's own interrupt handling.
+        """
+
+        class _FakeInterrupt(BaseException):
+            pass
+
+        class InterruptReader(AbstractReader):
+            async def fetch(self, mib_name: str) -> str:
+                raise _FakeInterrupt("simulated interrupt")
+
+        resolver = MibResolver(InterruptReader(), SmiParser())
+        with pytest.raises(_FakeInterrupt):
+            await resolver.resolve(["ANY-MIB"])
 
     @pytest.mark.asyncio
     async def test_size_limit_propagates_immediately(self):

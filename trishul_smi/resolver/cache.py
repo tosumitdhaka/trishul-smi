@@ -171,8 +171,12 @@ class MibCache:
         """
         path = self._path(mib_name)
         tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(_module_to_bytes(module))
-        tmp.replace(path)  # atomic on POSIX
+        try:
+            tmp.write_bytes(_module_to_bytes(module))
+            tmp.replace(path)  # atomic on POSIX
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            raise MibCacheError(f"Cannot write cache for {mib_name}: {exc}") from exc
 
     def invalidate(self, mib_name: str) -> None:
         """Remove a single cached entry."""

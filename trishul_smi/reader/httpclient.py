@@ -148,9 +148,10 @@ class HttpReader(AbstractReader):
             cached = self._read_cache(url)
             if cached is not None:
                 return cached
-            # Cache miss despite 304: clear stale ETag, fall back to unconditional GET.
+            # Cache miss despite 304: clear stale ETag, retry through the full
+            # retry wrapper so transient errors are handled by the retry policy.
             self._etags.pop(url, None)
-            response = await client.get(url)  # unconditional GET, no If-None-Match
+            return await self._fetch_url_with_retry(url)
 
         if response.status_code == 404:
             raise MibNotFoundError(f"HTTP 404: {url}")

@@ -124,9 +124,10 @@ class TestHttpReaderETag:
             text=_MINIMAL,
             headers={"etag": '"abc123"'},
         )
-        # Second fetch: HEAD + GET 304 + unconditional GET fallback
+        # Second fetch: HEAD + GET 304 + retry (HEAD + unconditional GET)
         httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
         httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=304)
+        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
         httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text=_MINIMAL)
 
         async with HttpReader(_TEMPLATE, cache_ttl_days=0) as reader:  # no cache_dir

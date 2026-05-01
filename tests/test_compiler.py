@@ -184,6 +184,26 @@ class TestPysnmpFormatter:
         assert "importSymbols" in src
         assert "SNMPv2-SMI" in src
 
+    def test_notifications_exported(self):
+        """Notifications must appear in mibBuilder.exportSymbols(), not just be defined."""
+        from trishul_smi.models.mib_object import MibObject
+
+        notif = MibObject(
+            name="linkDown",
+            oid="1.3.6.1.6.3.1.1.5.3",
+            oid_path=[1, 3, 6, 1, 6, 3, 1, 1, 5, 3],
+            object_type="NOTIFICATION-TYPE",
+            status="current",
+        )
+        m = MibModule(
+            name="IF-MIB",
+            language="SMIv2",
+            notifications={"linkDown": notif},
+        )
+        src = PysnmpFormatter().format(m)
+        export_block = src[src.index("exportSymbols"):]
+        assert "linkDown" in export_block
+
     def test_spaced_syntax_emits_valid_python(self):
         """'OCTET STRING' and 'SEQUENCE OF X' must not emit broken Python."""
         obj_octet = MibObject(

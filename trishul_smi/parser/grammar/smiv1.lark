@@ -16,10 +16,7 @@
 
 start : module_definition
 
-module_definition : module_name "DEFINITIONS" "::=" "BEGIN"
-                    imports?
-                    assignment*
-                    "END"
+module_definition : module_name "DEFINITIONS" "::=" "BEGIN" [imports] assignment* "END"
 
 module_name : UPPER_ID
 
@@ -53,22 +50,14 @@ assignment : object_type_assignment
 // OBJECT-TYPE (RFC 1212)
 // ---------------------------------------------------------------------------
 
-object_type_assignment : LOWER_ID "OBJECT-TYPE"
-    "SYNTAX"      syntax_type
-    "ACCESS"      access_value
-    "STATUS"      smiv1_status_value
-    description_clause?
-    reference_clause?
-    index_clause?
-    defval_clause?
-    "::=" oid_value
+object_type_assignment : LOWER_ID "OBJECT-TYPE" "SYNTAX" syntax_type "ACCESS" access_value "STATUS" smiv1_status_value [description_clause] [reference_clause] [index_clause] [defval_clause] "::=" oid_value
 
 description_clause : "DESCRIPTION" QUOTED_STRING
 
 index_clause : index_part | augments_part
 index_part   : "INDEX" "{" index_list "}"
 index_list   : index_item ("," index_item)*
-index_item   : "IMPLIED"? LOWER_ID
+index_item   : ["IMPLIED"] LOWER_ID
 augments_part: "AUGMENTS" "{" LOWER_ID "}"
 
 defval_clause : "DEFVAL" "{" defval_value "}"
@@ -79,12 +68,7 @@ defval_value  : LOWER_ID | NUMBER | QUOTED_STRING | HEX_STRING | BIN_STRING
 // TRAP-TYPE (RFC 1215)
 // ---------------------------------------------------------------------------
 
-trap_type_assignment : UPPER_ID "TRAP-TYPE"
-    "ENTERPRISE"  LOWER_ID
-    trap_variables_clause?
-    description_clause?
-    reference_clause?
-    "::=" NUMBER
+trap_type_assignment : UPPER_ID "TRAP-TYPE" "ENTERPRISE" LOWER_ID [trap_variables_clause] [description_clause] [reference_clause] "::=" NUMBER
 
 trap_variables_clause : "VARIABLES" "{" object_list "}"
 object_list           : LOWER_ID ("," LOWER_ID)*
@@ -108,9 +92,9 @@ scalar_value : NUMBER | QUOTED_STRING | LOWER_ID
 
 reference_clause : "REFERENCE" QUOTED_STRING
 
-smiv1_status_value : "mandatory" | "optional" | "obsolete" | "deprecated"
+!smiv1_status_value : "mandatory" | "optional" | "obsolete" | "deprecated"
 
-access_value : "read-only" | "read-write" | "write-only" | "not-accessible"
+!access_value : "read-only" | "read-write" | "write-only" | "not-accessible"
 
 
 // ---------------------------------------------------------------------------
@@ -122,18 +106,18 @@ syntax_type : builtin_type
             | sequence_of_type
             | sequence_type
 
-builtin_type : "INTEGER"          integer_enum?              -> integer_type
-             | "OCTET" "STRING"   size_constraint?           -> octet_string_type
-             | "OBJECT" "IDENTIFIER"                         -> oid_type
-             | "NULL"                                        -> null_type
-             | "NetworkAddress"                              -> network_address_type
-             | "IpAddress"                                   -> ip_address_type
-             | "Counter"                                     -> counter_type
-             | "Gauge"                                       -> gauge_type
-             | "TimeTicks"                                   -> timeticks_type
-             | "Opaque"                                      -> opaque_type
+builtin_type : "INTEGER"          [integer_enum]              -> integer_type
+             | "OCTET" "STRING"   [size_constraint]           -> octet_string_type
+             | "OBJECT" "IDENTIFIER"                          -> oid_type
+             | "NULL"                                         -> null_type
+             | "NetworkAddress"                               -> network_address_type
+             | "IpAddress"                                    -> ip_address_type
+             | "Counter"                                      -> counter_type
+             | "Gauge"                                        -> gauge_type
+             | "TimeTicks"                                    -> timeticks_type
+             | "Opaque"                                       -> opaque_type
 
-named_type      : UPPER_ID constraint?
+named_type      : UPPER_ID [constraint]
 sequence_of_type: "SEQUENCE" "OF" UPPER_ID
 sequence_type   : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
 sequence_field  : LOWER_ID syntax_type

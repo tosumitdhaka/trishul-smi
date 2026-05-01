@@ -24,10 +24,7 @@
 
 start : module_definition
 
-module_definition : module_name "DEFINITIONS" "::=" "BEGIN"
-                    imports?
-                    assignment*
-                    "END"
+module_definition : module_name "DEFINITIONS" "::=" "BEGIN" [imports] assignment* "END"
 
 module_name : UPPER_ID
 
@@ -69,13 +66,7 @@ assignment : object_type_assignment
 // MODULE-IDENTITY
 // ---------------------------------------------------------------------------
 
-module_identity_assignment : LOWER_ID "MODULE-IDENTITY"
-    "LAST-UPDATED" QUOTED_STRING
-    "ORGANIZATION" QUOTED_STRING
-    "CONTACT-INFO" QUOTED_STRING
-    "DESCRIPTION"  QUOTED_STRING
-    revision*
-    "::=" oid_value
+module_identity_assignment : LOWER_ID "MODULE-IDENTITY" "LAST-UPDATED" QUOTED_STRING "ORGANIZATION" QUOTED_STRING "CONTACT-INFO" QUOTED_STRING "DESCRIPTION" QUOTED_STRING revision* "::=" oid_value
 
 revision : "REVISION" QUOTED_STRING "DESCRIPTION" QUOTED_STRING
 
@@ -84,27 +75,14 @@ revision : "REVISION" QUOTED_STRING "DESCRIPTION" QUOTED_STRING
 // OBJECT-IDENTITY
 // ---------------------------------------------------------------------------
 
-object_identity_assignment : LOWER_ID "OBJECT-IDENTITY"
-    "STATUS" status_value
-    "DESCRIPTION" QUOTED_STRING
-    reference_clause?
-    "::=" oid_value
+object_identity_assignment : LOWER_ID "OBJECT-IDENTITY" "STATUS" status_value "DESCRIPTION" QUOTED_STRING [reference_clause] "::=" oid_value
 
 
 // ---------------------------------------------------------------------------
 // OBJECT-TYPE
 // ---------------------------------------------------------------------------
 
-object_type_assignment : LOWER_ID "OBJECT-TYPE"
-    "SYNTAX" syntax_type
-    units_clause?
-    max_access_clause
-    "STATUS" status_value
-    description_clause
-    reference_clause?
-    index_clause?
-    defval_clause?
-    "::=" oid_value
+object_type_assignment : LOWER_ID "OBJECT-TYPE" "SYNTAX" syntax_type [units_clause] max_access_clause "STATUS" status_value description_clause [reference_clause] [index_clause] [defval_clause] "::=" oid_value
 
 max_access_clause : "MAX-ACCESS" access_value
                   | "ACCESS" access_value
@@ -115,7 +93,7 @@ index_clause : index_part | augments_part
 
 index_part : "INDEX" "{" index_list "}"
 index_list : index_item ("," index_item)*
-index_item : "IMPLIED"? LOWER_ID
+index_item : ["IMPLIED"] LOWER_ID
 
 augments_part : "AUGMENTS" "{" LOWER_ID "}"
 
@@ -129,12 +107,7 @@ bits_value    : LOWER_ID
 // NOTIFICATION-TYPE
 // ---------------------------------------------------------------------------
 
-notification_type_assignment : LOWER_ID "NOTIFICATION-TYPE"
-    objects_clause?
-    "STATUS" status_value
-    description_clause
-    reference_clause?
-    "::=" oid_value
+notification_type_assignment : LOWER_ID "NOTIFICATION-TYPE" [objects_clause] "STATUS" status_value description_clause [reference_clause] "::=" oid_value
 
 objects_clause : "OBJECTS" "{" object_list "}"
 object_list    : LOWER_ID ("," LOWER_ID)*
@@ -144,12 +117,7 @@ object_list    : LOWER_ID ("," LOWER_ID)*
 // TEXTUAL-CONVENTION
 // ---------------------------------------------------------------------------
 
-textual_convention_assignment : UPPER_ID "::=" "TEXTUAL-CONVENTION"
-    display_hint_clause?
-    "STATUS" status_value
-    description_clause
-    reference_clause?
-    "SYNTAX" syntax_type
+textual_convention_assignment : UPPER_ID "::=" "TEXTUAL-CONVENTION" [display_hint_clause] "STATUS" status_value description_clause [reference_clause] "SYNTAX" syntax_type
 
 display_hint_clause : "DISPLAY-HINT" QUOTED_STRING
 
@@ -170,35 +138,18 @@ scalar_value : NUMBER | QUOTED_STRING | LOWER_ID
 // OBJECT-GROUP / NOTIFICATION-GROUP
 // ---------------------------------------------------------------------------
 
-object_group_assignment : LOWER_ID "OBJECT-GROUP"
-    "OBJECTS" "{" object_list "}"
-    "STATUS" status_value
-    description_clause
-    reference_clause?
-    "::=" oid_value
+object_group_assignment : LOWER_ID "OBJECT-GROUP" "OBJECTS" "{" object_list "}" "STATUS" status_value description_clause [reference_clause] "::=" oid_value
 
-notification_group_assignment : LOWER_ID "NOTIFICATION-GROUP"
-    "NOTIFICATIONS" "{" object_list "}"
-    "STATUS" status_value
-    description_clause
-    reference_clause?
-    "::=" oid_value
+notification_group_assignment : LOWER_ID "NOTIFICATION-GROUP" "NOTIFICATIONS" "{" object_list "}" "STATUS" status_value description_clause [reference_clause] "::=" oid_value
 
 
 // ---------------------------------------------------------------------------
 // MODULE-COMPLIANCE
 // ---------------------------------------------------------------------------
 
-module_compliance_assignment : LOWER_ID "MODULE-COMPLIANCE"
-    "STATUS" status_value
-    description_clause
-    reference_clause?
-    compliance_module*
-    "::=" oid_value
+module_compliance_assignment : LOWER_ID "MODULE-COMPLIANCE" "STATUS" status_value description_clause [reference_clause] compliance_module* "::=" oid_value
 
-compliance_module : "MODULE" module_ref?
-    mandatory_groups?
-    compliance_item*
+compliance_module : "MODULE" [module_ref] [mandatory_groups] compliance_item*
 
 mandatory_groups : "MANDATORY-GROUPS" "{" object_list "}"
 
@@ -206,11 +157,7 @@ compliance_item : compliance_group | compliance_object
 
 compliance_group : "GROUP" LOWER_ID description_clause
 
-compliance_object : "OBJECT" LOWER_ID
-    syntax_clause?
-    write_syntax_clause?
-    min_access_clause?
-    description_clause
+compliance_object : "OBJECT" LOWER_ID [syntax_clause] [write_syntax_clause] [min_access_clause] description_clause
 
 syntax_clause       : "SYNTAX" syntax_type
 write_syntax_clause : "WRITE-SYNTAX" syntax_type
@@ -221,25 +168,11 @@ min_access_clause   : "MIN-ACCESS" access_value
 // AGENT-CAPABILITIES
 // ---------------------------------------------------------------------------
 
-agent_capabilities_assignment : LOWER_ID "AGENT-CAPABILITIES"
-    "PRODUCT-RELEASE" QUOTED_STRING
-    "STATUS"          status_value
-    description_clause
-    reference_clause?
-    capabilities_module*
-    "::=" oid_value
+agent_capabilities_assignment : LOWER_ID "AGENT-CAPABILITIES" "PRODUCT-RELEASE" QUOTED_STRING "STATUS" status_value description_clause [reference_clause] capabilities_module* "::=" oid_value
 
-capabilities_module : "SUPPORTS" module_ref
-    "INCLUDES" "{" object_list "}"
-    variation*
+capabilities_module : "SUPPORTS" module_ref "INCLUDES" "{" object_list "}" variation*
 
-variation : "VARIATION" LOWER_ID
-    syntax_clause?
-    write_syntax_clause?
-    access_clause?
-    creation_requires_clause?
-    defval_clause?
-    description_clause
+variation : "VARIATION" LOWER_ID [syntax_clause] [write_syntax_clause] [access_clause] [creation_requires_clause] [defval_clause] description_clause
 
 access_clause            : "ACCESS" access_value
 creation_requires_clause : "CREATION-REQUIRES" "{" object_list "}"
@@ -249,12 +182,7 @@ creation_requires_clause : "CREATION-REQUIRES" "{" object_list "}"
 // TRAP-TYPE (SMIv1 compat)
 // ---------------------------------------------------------------------------
 
-trap_type_assignment : UPPER_ID "TRAP-TYPE"
-    "ENTERPRISE" LOWER_ID
-    trap_variables_clause?
-    description_clause?
-    reference_clause?
-    "::=" NUMBER
+trap_type_assignment : UPPER_ID "TRAP-TYPE" "ENTERPRISE" LOWER_ID [trap_variables_clause] [description_clause] [reference_clause] "::=" NUMBER
 
 trap_variables_clause : "VARIABLES" "{" object_list "}"
 
@@ -267,11 +195,11 @@ description_clause : "DESCRIPTION" QUOTED_STRING
 
 reference_clause : "REFERENCE" QUOTED_STRING
 
-status_value : "current" | "deprecated" | "obsolete" | "mandatory" | "optional"
+!status_value : "current" | "deprecated" | "obsolete" | "mandatory" | "optional"
 
-access_value : "read-only" | "read-write" | "read-create"
-             | "not-accessible" | "accessible-for-notify"
-             | "write-only"
+!access_value : "read-only" | "read-write" | "read-create"
+              | "not-accessible" | "accessible-for-notify"
+              | "write-only"
 
 
 // ---------------------------------------------------------------------------
@@ -285,21 +213,21 @@ syntax_type : builtin_type
             | bits_type
             | choice_type
 
-builtin_type : "INTEGER"       constraint?                    -> integer_type
-             | "OCTET" "STRING" size_constraint?              -> octet_string_type
-             | "OBJECT" "IDENTIFIER"                          -> oid_type
-             | "NULL"                                         -> null_type
-             | "IpAddress"                                    -> ip_address_type
-             | "Counter32"                                    -> counter32_type
-             | "Counter64"                                    -> counter64_type
-             | "Gauge32"                                      -> gauge32_type
-             | "Unsigned32"                                   -> unsigned32_type
-             | "TimeTicks"                                    -> timeticks_type
-             | "Opaque"        size_constraint?               -> opaque_type
-             | "Integer32"     constraint?                    -> integer32_type
-             | "NetworkAddress"                               -> network_address_type
+builtin_type : "INTEGER"       [constraint]                    -> integer_type
+             | "OCTET" "STRING" [size_constraint]              -> octet_string_type
+             | "OBJECT" "IDENTIFIER"                           -> oid_type
+             | "NULL"                                          -> null_type
+             | "IpAddress"                                     -> ip_address_type
+             | "Counter32"                                     -> counter32_type
+             | "Counter64"                                     -> counter64_type
+             | "Gauge32"                                       -> gauge32_type
+             | "Unsigned32"                                    -> unsigned32_type
+             | "TimeTicks"                                     -> timeticks_type
+             | "Opaque"        [size_constraint]               -> opaque_type
+             | "Integer32"     [constraint]                    -> integer32_type
+             | "NetworkAddress"                                -> network_address_type
 
-named_type : UPPER_ID constraint?
+named_type : UPPER_ID [constraint]
 
 sequence_of_type : "SEQUENCE" "OF" UPPER_ID
 

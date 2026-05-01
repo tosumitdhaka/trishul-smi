@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Single source of truth for valid output format names.
+# compiler.py imports this to build _FORMATTER_CLASSES — add new formats here.
+VALID_FORMATS: frozenset[str] = frozenset({"json", "pysnmp"})
+
 
 @dataclass
 class CompilerConfig:
@@ -23,9 +27,7 @@ class CompilerConfig:
     # Output
     output_dir: Path = field(default_factory=lambda: Path("./mibs-output"))
     # list[str] rather than list[Literal[...]] so that adding a new formatter
-    # to compiler._FORMATTER_CLASSES does not require updating this annotation.
-    # Runtime validation below mirrors _VALID_FORMATS in compiler.py — keep
-    # the two sets in sync when adding a new output format.
+    # only requires updating VALID_FORMATS above and compiler._FORMATTER_CLASSES.
     formats: list[str] = field(default_factory=lambda: ["json"])
 
     # HTTP
@@ -54,12 +56,8 @@ class CompilerConfig:
             raise ValueError("sources must not be empty")
         if not self.formats:
             raise ValueError("formats must not be empty")
-        # Format names are validated here (early, before any I/O) and again
-        # in MibCompiler.__init__ against the live _FORMATTER_CLASSES registry.
-        # Both guards must agree — keep this set in sync with compiler.py.
-        _known_formats = {"json", "pysnmp"}
-        unknown = set(self.formats) - _known_formats
+        unknown = set(self.formats) - VALID_FORMATS
         if unknown:
             raise ValueError(
-                f"Unknown format(s): {sorted(unknown)}. Valid formats: {sorted(_known_formats)}"
+                f"Unknown output format(s): {sorted(unknown)}. Valid formats: {sorted(VALID_FORMATS)}"
             )

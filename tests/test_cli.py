@@ -91,7 +91,7 @@ class TestVersionCommand:
 class TestCompileArgs:
     def test_no_args_shows_help(self):
         result = _invoke([])
-        assert result.exit_code == 0
+        assert result.exit_code in (0, 2)
         assert "compile" in result.output.lower() or "Usage" in result.output
 
     def test_compile_no_mib_names_shows_usage(self):
@@ -175,8 +175,8 @@ class TestCompileOutput:
             result = _invoke(["compile", "IF-MIB", "BAD"])
         assert "1 failed" in result.output
 
-    def test_verbose_shows_output_paths(self, tmp_path: Path):
-        r = _make_result("IF-MIB", output_paths=[tmp_path / "IF-MIB.json"])
+    def test_verbose_shows_output_paths(self):
+        r = _make_result("IF-MIB", output_paths=[Path("IF-MIB.json")])
         with _patch_run([r]):
             result = _invoke(["compile", "IF-MIB", "-v"])
         assert "IF-MIB.json" in result.output

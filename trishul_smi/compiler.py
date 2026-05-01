@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from trishul_smi.config import CompilerConfig
+from trishul_smi.config import VALID_FORMATS, CompilerConfig
 from trishul_smi.models import CompileResult
 from trishul_smi.output.base import FormatterProtocol
 from trishul_smi.output.json_fmt import JsonFormatter
@@ -41,8 +41,6 @@ _FORMATTER_CLASSES: dict[str, type[FormatterProtocol]] = {
     "json": JsonFormatter,
     "pysnmp": PysnmpFormatter,
 }
-
-_VALID_FORMATS = frozenset(_FORMATTER_CLASSES)
 
 
 class MibCompiler:
@@ -65,11 +63,11 @@ class MibCompiler:
 
         # Validate formats eagerly — a KeyError in compile() deep inside an
         # async gather would be opaque. Surface it here instead.
-        unknown = set(self._config.formats) - _VALID_FORMATS
+        unknown = set(self._config.formats) - VALID_FORMATS
         if unknown:
             raise ValueError(
                 f"Unknown output format(s): {sorted(unknown)}. "
-                f"Valid formats: {sorted(_VALID_FORMATS)}"
+                f"Valid formats: {sorted(VALID_FORMATS)}"
             )
 
         self._readers: list[FetchProtocol] = []

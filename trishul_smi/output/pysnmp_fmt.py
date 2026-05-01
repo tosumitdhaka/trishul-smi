@@ -152,6 +152,8 @@ mibBuilder.exportSymbols(
     '{{ module.name }}',
 {% for name in module.objects %}    **{'{{ name }}': {{ name | pyid }}},
 {% endfor %}
+{% for name in module.notifications %}    **{'{{ name }}': {{ name | pyid }}},
+{% endfor %}
 {% for name in module.types %}    **{'{{ name }}': {{ name }}},
 {% endfor %}
 )

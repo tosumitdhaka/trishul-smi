@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from trishul_smi.errors import MibSizeLimitError
 from trishul_smi.models.mib_module import MibModule
+from trishul_smi.parser._constants import BASE_MIBS
 from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import FetchProtocol
 from trishul_smi.resolver.cache import MibCache
@@ -120,11 +121,12 @@ class MibResolver:
                     # exception — bare `raise` would hit RuntimeError:
                     # "No active exception to re-raise".
                     raise result
-                elif isinstance(result, BaseException):
-                    # BaseException (not just Exception) so mypy can narrow
-                    # the else branch to MibModule cleanly. Covers KeyboardInterrupt
-                    # and SystemExit that gather may also return as values.
+                elif isinstance(result, Exception):
                     errors[name] = result
+                elif isinstance(result, BaseException):
+                    # KeyboardInterrupt / SystemExit must not be silently
+                    # collected — re-raise so the process can exit cleanly.
+                    raise result
                 else:
                     # mypy now knows: not BaseException → must be MibModule
                     module: MibModule = result
@@ -137,7 +139,7 @@ class MibResolver:
             pending = set()
             for name in newly_fetched:
                 for dep in fetched[name].all_imports():
-                    if dep not in fetched and dep not in errors:
+                    if dep not in fetched and dep not in errors and dep not in BASE_MIBS:
                         pending.add(dep)
 
         # Raises CircularDependencyError on cycle — propagates uncaught.
