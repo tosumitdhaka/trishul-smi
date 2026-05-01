@@ -96,6 +96,9 @@ $RECYCLE.BIN/
 # Linux
 .directory
 
+# ── Claude Code ──────────────────────────────────────────────────────────────
+CLAUDE.md
+
 # ── Project-specific ─────────────────────────────────────────────────────────
 # Default MIB output directory
 mibs-output/

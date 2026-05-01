@@ -1,8 +1,8 @@
 # trishul-smi — Project Plan
 
-> **Status:** v0.4 — final, locked for implementation  
+> **Status:** v0.4 — implementation complete; v0.1.0 shipped 2026-05-01  
 > **Author:** GhaatakJi  
-> **Last updated:** 2026-04-30
+> **Last updated:** 2026-05-01
 
 ---
 
