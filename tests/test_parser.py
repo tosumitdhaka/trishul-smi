@@ -144,3 +144,60 @@ class TestAutoDetect:
         from trishul_smi.parser.smi_parser import _detect_dialect
 
         assert _detect_dialect(MINIMAL_V1) == "smiv1"
+
+
+class TestParserErrorPaths:
+    def test_lalr_unexpected_error_raises_parse_error(self):
+        """Non-UnexpectedInput exceptions from LALR must surface as ParseError."""
+        from unittest.mock import patch
+
+        from trishul_smi.errors import ParseError
+
+        parser = SmiParser()
+        with patch(
+            "trishul_smi.parser.transformer.MibTransformer.transform",
+            side_effect=RuntimeError("unexpected transformer crash"),
+        ):
+            with pytest.raises(ParseError, match="Unexpected error in LALR parse"):
+                parser.parse(MINIMAL_V2)
+
+    def test_earley_unexpected_error_raises_parse_error(self):
+        """Non-UnexpectedInput exceptions from Earley must surface as ParseError."""
+        from unittest.mock import patch
+
+        from lark import UnexpectedInput
+
+        from trishul_smi.errors import ParseError
+
+        parser = SmiParser()
+
+        call_count = 0
+
+        def _fail_second(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise UnexpectedInput()
+            raise RuntimeError("earley transformer crash")
+
+        with patch(
+            "trishul_smi.parser.transformer.MibTransformer.transform",
+            side_effect=_fail_second,
+        ):
+            with pytest.raises(ParseError, match="Unexpected error in Earley parse"):
+                parser.parse(MINIMAL_V2)
+
+
+class TestMainModule:
+    def test_main_module_entrypoint(self):
+        """python -m trishul_smi --help must exit 0 and print usage."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "trishul_smi", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "compile" in result.stdout.lower() or "usage" in result.stdout.lower()

@@ -7,8 +7,26 @@ Follow this checklist for every release. Steps must be completed in order.
 ## 1. Pre-release verification
 
 - [ ] All CI checks green on `main` (lint, typecheck, tests — Python 3.10–3.13)
-- [ ] `mypy trishul_smi` passes with zero errors
-- [ ] `ruff check trishul_smi tests` passes with zero warnings
+- [ ] Lint passes with zero warnings:
+  ```bash
+  ruff check trishul_smi tests
+  ```
+- [ ] Formatting is clean:
+  ```bash
+  ruff format trishul_smi tests --check
+  ```
+- [ ] Type checking passes with zero errors:
+  ```bash
+  mypy trishul_smi
+  ```
+- [ ] Full test suite passes:
+  ```bash
+  pytest
+  ```
+- [ ] Coverage meets the project threshold (≥ 95%):
+  ```bash
+  pytest --cov=trishul_smi --cov-report=term-missing
+  ```
 - [ ] No open issues tagged for this milestone that are not resolved
 
 ---
@@ -28,10 +46,13 @@ Follow this checklist for every release. Steps must be completed in order.
 
 ## 3. Final checks
 
-- [ ] Run the full test suite one last time on a clean install:
+- [ ] Run the full quality gate on a clean install:
   ```bash
   pip install -e ".[dev]"
-  pytest
+  ruff check trishul_smi tests
+  ruff format trishul_smi tests --check
+  mypy trishul_smi
+  pytest --cov=trishul_smi
   ```
 - [ ] Smoke-test the CLI end-to-end:
   ```bash

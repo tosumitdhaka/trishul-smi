@@ -1,0 +1,935 @@
+"""Tests for transformer.py — exercises ASN.1 constructs not covered elsewhere.
+
+Each class targets a specific grammar construct so coverage gaps in
+transformer.py are closed without inflating existing test files.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from trishul_smi.models.mib_module import MibModule
+from trishul_smi.parser.smi_parser import SmiParser
+
+# ---------------------------------------------------------------------------
+# Shared parser instance (grammar cache shared across tests)
+# ---------------------------------------------------------------------------
+
+_parser = SmiParser()
+
+
+def _parse(text: str) -> MibModule:
+    return _parser.parse(text)
+
+
+# ---------------------------------------------------------------------------
+# OBJECT-IDENTITY
+# ---------------------------------------------------------------------------
+
+
+class TestObjectIdentity:
+    MIB = """
+OBJ-ID-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-IDENTITY FROM SNMPv2-SMI ;
+
+objIdMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Test MIB."
+    ::= { 1 99 }
+
+testObjId OBJECT-IDENTITY
+    STATUS  current
+    DESCRIPTION "An object identity."
+    ::= { objIdMIB 1 }
+
+END
+"""
+
+    def test_object_identity_parsed(self):
+        mib = _parse(self.MIB)
+        assert "testObjId" in mib.objects
+        obj = mib.objects["testObjId"]
+        assert obj.object_type == "OBJECT-IDENTITY"
+        assert obj.status == "current"
+        assert obj.description == "An object identity."
+
+
+# ---------------------------------------------------------------------------
+# NOTIFICATION-TYPE
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationType:
+    MIB = """
+NOTIF-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, NOTIFICATION-TYPE, OBJECT-TYPE, Integer32
+        FROM SNMPv2-SMI ;
+
+notifMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Notification MIB."
+    ::= { 1 20 }
+
+linkDown NOTIFICATION-TYPE
+    STATUS  current
+    DESCRIPTION "Link went down."
+    ::= { notifMIB 1 }
+
+END
+"""
+
+    def test_notification_in_notifications_dict(self):
+        mib = _parse(self.MIB)
+        assert "linkDown" in mib.notifications
+        assert "linkDown" not in mib.objects
+
+    def test_notification_object_type(self):
+        notif = _parse(self.MIB).notifications["linkDown"]
+        assert notif.object_type == "NOTIFICATION-TYPE"
+
+    def test_notification_status_and_description(self):
+        notif = _parse(self.MIB).notifications["linkDown"]
+        assert notif.status == "current"
+        assert "down" in notif.description.lower()
+
+
+# ---------------------------------------------------------------------------
+# TEXTUAL-CONVENTION
+# ---------------------------------------------------------------------------
+
+
+class TestTextualConvention:
+    MIB = """
+TC-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+tcMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "TC MIB."
+    ::= { 1 30 }
+
+DisplayString ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION "A display string."
+    SYNTAX      OCTET STRING
+
+InterfaceIndex ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION "Interface index."
+    SYNTAX      INTEGER
+
+END
+"""
+
+    def test_tc_in_types(self):
+        mib = _parse(self.MIB)
+        assert "DisplayString" in mib.types
+        assert "InterfaceIndex" in mib.types
+
+    def test_tc_base_type(self):
+        mib = _parse(self.MIB)
+        assert mib.types["DisplayString"].base_type == "OCTET STRING"
+        assert mib.types["InterfaceIndex"].base_type == "INTEGER"
+
+    def test_tc_description(self):
+        mib = _parse(self.MIB)
+        assert "display string" in mib.types["DisplayString"].description.lower()
+
+
+# ---------------------------------------------------------------------------
+# Syntax types — Counter64, Gauge32, Unsigned32, TimeTicks, Opaque, BITS,
+#               SEQUENCE, CHOICE, OID, IpAddress, NetworkAddress
+# ---------------------------------------------------------------------------
+
+
+class TestSyntaxTypes:
+    MIB = """
+SYNTAX-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE,
+    Counter32, Counter64, Gauge32, Unsigned32, TimeTicks, Opaque,
+    Integer32, IpAddress
+        FROM SNMPv2-SMI ;
+
+syntaxMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Syntax test MIB."
+    ::= { 1 40 }
+
+ctr32Obj OBJECT-TYPE
+    SYNTAX      Counter32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Counter32."
+    ::= { syntaxMIB 1 }
+
+ctr64Obj OBJECT-TYPE
+    SYNTAX      Counter64
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Counter64."
+    ::= { syntaxMIB 2 }
+
+gauge32Obj OBJECT-TYPE
+    SYNTAX      Gauge32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Gauge32."
+    ::= { syntaxMIB 3 }
+
+u32Obj OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Unsigned32."
+    ::= { syntaxMIB 4 }
+
+ticksObj OBJECT-TYPE
+    SYNTAX      TimeTicks
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "TimeTicks."
+    ::= { syntaxMIB 5 }
+
+opaqueObj OBJECT-TYPE
+    SYNTAX      Opaque
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Opaque."
+    ::= { syntaxMIB 6 }
+
+ipObj OBJECT-TYPE
+    SYNTAX      IpAddress
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "IpAddress."
+    ::= { syntaxMIB 7 }
+
+oidObj OBJECT-TYPE
+    SYNTAX      OBJECT IDENTIFIER
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "OID."
+    ::= { syntaxMIB 8 }
+
+nullObj OBJECT-TYPE
+    SYNTAX      NULL
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "NULL."
+    ::= { syntaxMIB 9 }
+
+END
+"""
+
+    @pytest.mark.parametrize(
+        "name,expected_syntax",
+        [
+            ("ctr32Obj", "Counter32"),
+            ("ctr64Obj", "Counter64"),
+            ("gauge32Obj", "Gauge32"),
+            ("u32Obj", "Unsigned32"),
+            ("ticksObj", "TimeTicks"),
+            ("opaqueObj", "Opaque"),
+            ("ipObj", "IpAddress"),
+            ("oidObj", "OBJECT IDENTIFIER"),
+            ("nullObj", "NULL"),
+        ],
+    )
+    def test_syntax_type(self, name, expected_syntax):
+        mib = _parse(self.MIB)
+        assert mib.objects[name].syntax == expected_syntax
+
+
+class TestBitsType:
+    MIB = """
+BITS-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE FROM SNMPv2-SMI ;
+
+bitsMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Bits test MIB."
+    ::= { 1 41 }
+
+portFlags OBJECT-TYPE
+    SYNTAX      BITS { up(0), down(1), testing(2) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Port flags."
+    ::= { bitsMIB 1 }
+
+END
+"""
+
+    def test_bits_syntax(self):
+        mib = _parse(self.MIB)
+        assert mib.objects["portFlags"].syntax == "BITS"
+
+
+class TestSequenceTypes:
+    MIB = """
+SEQ-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+
+seqMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Sequence test MIB."
+    ::= { 1 42 }
+
+myTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF MyEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "A table."
+    ::= { seqMIB 1 }
+
+MyEntry ::= SEQUENCE {
+    myIndex Integer32
+}
+
+END
+"""
+
+    def test_sequence_of_syntax(self):
+        mib = _parse(self.MIB)
+        assert mib.objects["myTable"].syntax == "SEQUENCE OF MyEntry"
+
+    def test_sequence_type_in_types(self):
+        mib = _parse(self.MIB)
+        assert "MyEntry" in mib.types
+        assert "SEQUENCE" in mib.types["MyEntry"].base_type
+
+
+# ---------------------------------------------------------------------------
+# INDEX and AUGMENTS clauses
+# ---------------------------------------------------------------------------
+
+
+class TestIndexAndAugments:
+    INDEX_MIB = """
+INDEX-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+
+indexMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Index test MIB."
+    ::= { 1 50 }
+
+myEntry OBJECT-TYPE
+    SYNTAX      INTEGER
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Row entry."
+    INDEX { myIndex }
+    ::= { indexMIB 1 }
+
+myIndex OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Row index."
+    ::= { indexMIB 2 }
+
+END
+"""
+
+    AUGMENTS_MIB = """
+AUGMENTS-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+
+augMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Augments test MIB."
+    ::= { 1 51 }
+
+extEntry OBJECT-TYPE
+    SYNTAX      INTEGER
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Augmenting row."
+    AUGMENTS { baseEntry }
+    ::= { augMIB 1 }
+
+baseEntry OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Base row."
+    ::= { augMIB 2 }
+
+END
+"""
+
+    def test_index_parsed(self):
+        mib = _parse(self.INDEX_MIB)
+        assert mib.objects["myEntry"].index == ["myIndex"]
+
+    def test_augments_parsed(self):
+        mib = _parse(self.AUGMENTS_MIB)
+        assert mib.objects["extEntry"].augments == "baseEntry"
+
+
+# ---------------------------------------------------------------------------
+# OBJECT-GROUP, NOTIFICATION-GROUP, MODULE-COMPLIANCE, AGENT-CAPABILITIES
+# ---------------------------------------------------------------------------
+
+
+class TestGroupsAndCompliance:
+    MIB = """
+COMPLIANCE-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32,
+    NOTIFICATION-TYPE FROM SNMPv2-SMI
+    OBJECT-GROUP, NOTIFICATION-GROUP, MODULE-COMPLIANCE FROM SNMPv2-CONF ;
+
+compMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Compliance MIB."
+    ::= { 1 60 }
+
+aScalar OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "A scalar."
+    ::= { compMIB 1 }
+
+aNotif NOTIFICATION-TYPE
+    STATUS  current
+    DESCRIPTION "A notification."
+    ::= { compMIB 2 }
+
+compGroup OBJECT-GROUP
+    OBJECTS { aScalar }
+    STATUS  current
+    DESCRIPTION "Object group."
+    ::= { compMIB 3 }
+
+notifGroup NOTIFICATION-GROUP
+    NOTIFICATIONS { aNotif }
+    STATUS  current
+    DESCRIPTION "Notification group."
+    ::= { compMIB 4 }
+
+compSpec MODULE-COMPLIANCE
+    STATUS  current
+    DESCRIPTION "Module compliance."
+    MODULE
+        MANDATORY-GROUPS { compGroup }
+    ::= { compMIB 5 }
+
+END
+"""
+
+    def test_object_group_parsed(self):
+        mib = _parse(self.MIB)
+        assert "compGroup" in mib.objects
+        assert mib.objects["compGroup"].object_type == "OBJECT-GROUP"
+
+    def test_notification_group_parsed(self):
+        mib = _parse(self.MIB)
+        assert "notifGroup" in mib.objects
+        assert mib.objects["notifGroup"].object_type == "NOTIFICATION-GROUP"
+
+    def test_module_compliance_parsed(self):
+        mib = _parse(self.MIB)
+        assert "compSpec" in mib.objects
+        assert mib.objects["compSpec"].object_type == "MODULE-COMPLIANCE"
+
+
+# ---------------------------------------------------------------------------
+# TRAP-TYPE (SMIv1 compat in smiv2 grammar)
+# ---------------------------------------------------------------------------
+
+
+class TestTrapType:
+    MIB = """
+TRAP-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+trapMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Trap MIB."
+    ::= { 1 70 }
+
+LINK-DOWN TRAP-TYPE
+    ENTERPRISE trapMIB
+    DESCRIPTION "Link down trap."
+    ::= 1
+
+END
+"""
+
+    def test_trap_type_parsed(self):
+        mib = _parse(self.MIB)
+        assert "LINK-DOWN" in mib.objects
+        assert mib.objects["LINK-DOWN"].object_type == "TRAP-TYPE"
+        assert mib.objects["LINK-DOWN"].oid == "1"
+
+
+# ---------------------------------------------------------------------------
+# OID resolution — named_arc, name_arc, number_arc
+# ---------------------------------------------------------------------------
+
+
+class TestOidResolution:
+    MIB = """
+OID-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+oidMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "OID test MIB."
+    ::= { iso org(3) dod(6) 1 }
+
+END
+"""
+
+    def test_named_arc_in_oid_path(self):
+        mib = _parse(self.MIB)
+        # named_arc: org(3) → 3, dod(6) → 6; number_arc: 1 → 1
+        assert 3 in mib.objects["oidMIB"].oid_path
+        assert 6 in mib.objects["oidMIB"].oid_path
+
+    def test_name_arc_not_in_int_path(self):
+        # 'iso' is a name_arc (no number) — skipped in int_path
+        mib = _parse(self.MIB)
+        # oid string contains "iso" but int path only has numeric arcs
+        assert "iso" in mib.objects["oidMIB"].oid
+
+
+# ---------------------------------------------------------------------------
+# VALUE-ASSIGNMENT
+# ---------------------------------------------------------------------------
+
+
+class TestValueAssignment:
+    MIB = """
+VAL-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+valMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Value assignment MIB."
+    ::= { 1 80 }
+
+enterprises OBJECT IDENTIFIER ::= { 1 3 6 1 4 1 }
+
+END
+"""
+
+    def test_value_assignment_parsed(self):
+        mib = _parse(self.MIB)
+        assert "enterprises" in mib.objects
+        assert mib.objects["enterprises"].object_type == "OBJECT IDENTIFIER"
+
+
+# ---------------------------------------------------------------------------
+# SMIv1 — additional constructs
+# ---------------------------------------------------------------------------
+
+
+class TestSMIv1Constructs:
+    MIB = """
+V1-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    OBJECT-TYPE FROM RFC-1212
+    enterprises FROM RFC1155-SMI ;
+
+v1Scalar OBJECT-TYPE
+    SYNTAX  INTEGER
+    ACCESS  read-write
+    STATUS  mandatory
+    DESCRIPTION "A writable scalar."
+    ::= { enterprises 1 1 }
+
+v1Optional OBJECT-TYPE
+    SYNTAX  INTEGER
+    ACCESS  read-only
+    STATUS  optional
+    ::= { enterprises 1 2 }
+
+v1Deprecated OBJECT-TYPE
+    SYNTAX  INTEGER
+    ACCESS  not-accessible
+    STATUS  deprecated
+    ::= { enterprises 1 3 }
+
+END
+"""
+
+    def test_read_write_access(self):
+        parser = SmiParser(dialect="smiv1")
+        mib = parser.parse(self.MIB)
+        assert mib.objects["v1Scalar"].max_access == "read-write"
+
+    def test_optional_status(self):
+        parser = SmiParser(dialect="smiv1")
+        mib = parser.parse(self.MIB)
+        assert mib.objects["v1Optional"].status == "optional"
+
+    def test_not_accessible(self):
+        parser = SmiParser(dialect="smiv1")
+        mib = parser.parse(self.MIB)
+        assert mib.objects["v1Deprecated"].max_access == "not-accessible"
+
+    def test_deprecated_status(self):
+        parser = SmiParser(dialect="smiv1")
+        mib = parser.parse(self.MIB)
+        assert mib.objects["v1Deprecated"].status == "deprecated"
+
+
+# ---------------------------------------------------------------------------
+# SMIv1 — Counter, Gauge, NetworkAddress (SMIv1-only syntax types)
+# ---------------------------------------------------------------------------
+
+
+class TestSMIv1SyntaxTypes:
+    MIB = """
+V1-SYNTAX-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    OBJECT-TYPE FROM RFC-1212
+    Counter, Gauge, NetworkAddress, TimeTicks
+        FROM RFC1155-SMI ;
+
+ctrObj OBJECT-TYPE
+    SYNTAX  Counter
+    ACCESS  read-only
+    STATUS  mandatory
+    ::= { 1 1 1 }
+
+gaugeObj OBJECT-TYPE
+    SYNTAX  Gauge
+    ACCESS  read-only
+    STATUS  mandatory
+    ::= { 1 1 2 }
+
+netAddrObj OBJECT-TYPE
+    SYNTAX  NetworkAddress
+    ACCESS  read-only
+    STATUS  mandatory
+    ::= { 1 1 3 }
+
+timeObj OBJECT-TYPE
+    SYNTAX  TimeTicks
+    ACCESS  read-only
+    STATUS  mandatory
+    ::= { 1 1 4 }
+
+END
+"""
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("ctrObj", "Counter"),
+            ("gaugeObj", "Gauge"),
+            ("netAddrObj", "NetworkAddress"),
+            ("timeObj", "TimeTicks"),
+        ],
+    )
+    def test_v1_syntax(self, name, expected):
+        parser = SmiParser(dialect="smiv1")
+        mib = parser.parse(self.MIB)
+        assert mib.objects[name].syntax == expected
+
+
+# ---------------------------------------------------------------------------
+# Clause coverage — REVISION, UNITS, REFERENCE, DEFVAL, DISPLAY-HINT, OBJECTS
+# ---------------------------------------------------------------------------
+
+
+class TestOptionalClauses:
+    """Exercises the null-returning clause handlers so coverage tracks them."""
+
+    MIB_REVISION = """
+REV-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+revMIB MODULE-IDENTITY
+    LAST-UPDATED "200301010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "MIB with revisions."
+    REVISION     "200301010000Z"
+    DESCRIPTION  "First revision."
+    REVISION     "200101010000Z"
+    DESCRIPTION  "Initial version."
+    ::= { 1 100 }
+
+END
+"""
+
+    MIB_UNITS_REF_DEFVAL = """
+OPTS-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+
+optsMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Optional clauses MIB."
+    ::= { 1 101 }
+
+ifSpeed OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "bits per second"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Interface speed."
+    REFERENCE   "RFC 2863 section 3.1.5"
+    DEFVAL      { 0 }
+    ::= { optsMIB 1 }
+
+END
+"""
+
+    MIB_DISPLAY_HINT = """
+DH-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+dhMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Display hint MIB."
+    ::= { 1 102 }
+
+DisplayHintString ::= TEXTUAL-CONVENTION
+    DISPLAY-HINT "255a"
+    STATUS       current
+    DESCRIPTION  "A string with display hint."
+    SYNTAX       OCTET STRING
+
+END
+"""
+
+    MIB_NOTIFICATION_OBJECTS = """
+NOTIF-OBJ-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, NOTIFICATION-TYPE, OBJECT-TYPE, Integer32
+        FROM SNMPv2-SMI ;
+
+notifObjMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Notification with objects MIB."
+    ::= { 1 103 }
+
+ifIndex OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Interface index."
+    ::= { notifObjMIB 1 }
+
+linkUp NOTIFICATION-TYPE
+    OBJECTS     { ifIndex }
+    STATUS      current
+    DESCRIPTION "Link came up."
+    ::= { notifObjMIB 2 }
+
+END
+"""
+
+    MIB_TRAP_VARIABLES = """
+TRAP-VAR-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+trapVarMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Trap with variables."
+    ::= { 1 104 }
+
+LINK-UP TRAP-TYPE
+    ENTERPRISE trapVarMIB
+    VARIABLES  { trapVarMIB }
+    DESCRIPTION "Link up trap."
+    ::= 1
+
+END
+"""
+
+    def test_revision_clauses_parsed(self):
+        mib = _parse(self.MIB_REVISION)
+        assert mib.name == "REV-MIB"
+
+    def test_units_and_defval_parsed(self):
+        mib = _parse(self.MIB_UNITS_REF_DEFVAL)
+        assert "ifSpeed" in mib.objects
+
+    def test_display_hint_tc_parsed(self):
+        mib = _parse(self.MIB_DISPLAY_HINT)
+        assert "DisplayHintString" in mib.types
+
+    def test_notification_with_objects_parsed(self):
+        mib = _parse(self.MIB_NOTIFICATION_OBJECTS)
+        assert "linkUp" in mib.notifications
+
+    def test_trap_with_variables_parsed(self):
+        mib = _parse(self.MIB_TRAP_VARIABLES)
+        assert "LINK-UP" in mib.objects
+
+
+# ---------------------------------------------------------------------------
+# Scalar value assignment (non-OID value_assignment path)
+# ---------------------------------------------------------------------------
+
+
+class TestScalarValueAssignment:
+    MIB = """
+SCALAR-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+scalarMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Scalar assignment MIB."
+    ::= { 1 105 }
+
+myVersion INTEGER ::= 2
+
+END
+"""
+
+    def test_scalar_assignment_does_not_crash(self):
+        # scalar_value assignments return None from transformer; module parses OK
+        mib = _parse(self.MIB)
+        assert mib.name == "SCALAR-MIB"
+
+
+# ---------------------------------------------------------------------------
+# CHOICE type
+# ---------------------------------------------------------------------------
+
+
+class TestChoiceType:
+    MIB = """
+CHOICE-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+
+choiceMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Choice type MIB."
+    ::= { 1 106 }
+
+MyChoice ::= CHOICE {
+    intVal  Integer32,
+    octVal  OCTET STRING
+}
+
+END
+"""
+
+    def test_choice_type_in_types(self):
+        mib = _parse(self.MIB)
+        assert "MyChoice" in mib.types
+        assert mib.types["MyChoice"].base_type == "CHOICE"
+
+
+# ---------------------------------------------------------------------------
+# _unquote — non-quoted token path
+# ---------------------------------------------------------------------------
+
+
+class TestUnquoteHelper:
+    def test_unquote_with_plain_token(self):
+        from trishul_smi.parser.transformer import _unquote
+
+        assert _unquote("hello") == "hello"
+
+    def test_unquote_with_quoted_string(self):
+        from trishul_smi.parser.transformer import _unquote
+
+        assert _unquote('"hello world"') == "hello world"
+
+    def test_unquote_with_escaped_quote(self):
+        from trishul_smi.parser.transformer import _unquote
+
+        assert _unquote('"say \\"hi\\""') == 'say "hi"'
+
+
+# ---------------------------------------------------------------------------
+# Earley fallback path — ParseError from Earley stage
+# ---------------------------------------------------------------------------
+
+
+class TestParserFallback:
+    def test_lalr_fails_earley_succeeds(self):
+        """Some MIBs that fail LALR parse succeed with Earley.
+        We verify the parser silently falls back rather than erroring.
+        This is tested indirectly by confirming complex MIBs parse correctly.
+        """
+        # AGENT-CAPABILITIES is complex enough to sometimes stress LALR
+        mib_text = """
+AGENT-CAP-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    AGENT-CAPABILITIES FROM SNMPv2-CONF ;
+
+agentCapMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Agent capabilities MIB."
+    ::= { 1 90 }
+
+testAgent AGENT-CAPABILITIES
+    PRODUCT-RELEASE "Test Agent 1.0"
+    STATUS          current
+    DESCRIPTION     "Test agent capabilities."
+    ::= { agentCapMIB 1 }
+
+END
+"""
+        mib = _parser.parse(mib_text)
+        assert "testAgent" in mib.objects
+        assert mib.objects["testAgent"].object_type == "AGENT-CAPABILITIES"

@@ -187,6 +187,51 @@ class TestMibCache:
             with pytest.raises(MibCacheError, match="disk full"):
                 cache.put("IF-MIB", _make_module("IF-MIB"))
 
+    def test_roundtrip_preserves_types(self, tmp_path: Path):
+        """MibType entries must survive a put/get round-trip through the cache."""
+        from trishul_smi.models.mib_type import MibType
+
+        tc = MibType(name="TruthValue", base_type="INTEGER", description="Boolean type")
+        m = MibModule(name="SNMPv2-TC", language="SMIv2", types={"TruthValue": tc})
+        cache = MibCache(tmp_path, ttl_days=7)
+        cache.put("SNMPv2-TC", m)
+        result = cache.get("SNMPv2-TC")
+        assert result is not None
+        assert "TruthValue" in result.types
+        assert result.types["TruthValue"].base_type == "INTEGER"
+        assert result.types["TruthValue"].description == "Boolean type"
+
+    def test_roundtrip_preserves_notifications(self, tmp_path: Path):
+        """Notifications must survive a put/get round-trip through the cache."""
+        notif = MibObject(
+            name="linkDown",
+            oid="1.3.6.1.6.3.1.1.5.3",
+            oid_path=[1, 3, 6, 1, 6, 3, 1, 1, 5, 3],
+            object_type="NOTIFICATION-TYPE",
+            status="current",
+        )
+        m = MibModule(
+            name="IF-MIB",
+            language="SMIv2",
+            notifications={"linkDown": notif},
+        )
+        cache = MibCache(tmp_path, ttl_days=7)
+        cache.put("IF-MIB", m)
+        result = cache.get("IF-MIB")
+        assert result is not None
+        assert "linkDown" in result.notifications
+        assert result.notifications["linkDown"].status == "current"
+
+    def test_init_oserror_raises_mib_cache_error(self, tmp_path: Path):
+        """OSError creating the cache directory must raise MibCacheError."""
+        from unittest.mock import patch
+
+        from trishul_smi.errors import MibCacheError
+
+        with patch("pathlib.Path.mkdir", side_effect=OSError("read-only fs")):
+            with pytest.raises(MibCacheError, match="read-only fs"):
+                MibCache(tmp_path, ttl_days=7)
+
 
 # ---------------------------------------------------------------------------
 # Topological sort

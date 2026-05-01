@@ -75,7 +75,7 @@ revision : "REVISION" QUOTED_STRING "DESCRIPTION" QUOTED_STRING
 // OBJECT-IDENTITY
 // ---------------------------------------------------------------------------
 
-object_identity_assignment : LOWER_ID "OBJECT-IDENTITY" "STATUS" status_value "DESCRIPTION" QUOTED_STRING [reference_clause] "::=" oid_value
+object_identity_assignment : LOWER_ID "OBJECT-IDENTITY" "STATUS" status_value description_clause [reference_clause] "::=" oid_value
 
 
 // ---------------------------------------------------------------------------

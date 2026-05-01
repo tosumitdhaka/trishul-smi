@@ -88,6 +88,7 @@ jobs:
             --cov=trishul_smi \
             --cov-report=term-missing:skip-covered \
             --cov-report=xml \
+            --cov-fail-under=95 \
             -q
 
       # Upload coverage XML so the 3.12 run can post to a coverage service

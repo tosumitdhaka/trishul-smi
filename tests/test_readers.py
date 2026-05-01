@@ -136,6 +136,15 @@ class TestZipReader:
             await reader.fetch("IF-MIB")
 
     @pytest.mark.asyncio
+    async def test_bad_zip_file_returns_not_found(self, tmp_path: Path):
+        """A corrupt ZIP file must raise MibNotFoundError, not an unhandled exception."""
+        bad_zip = tmp_path / "bad.zip"
+        bad_zip.write_bytes(b"this is not a zip file")
+        reader = ZipReader(bad_zip)
+        with pytest.raises(MibNotFoundError):
+            await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
     async def test_no_tmp_file_leftover_after_nested_fetch(self, tmp_path: Path, monkeypatch):
         """finally: unlink() in _search_zip must clean up temp files even
         when the fetch succeeds.

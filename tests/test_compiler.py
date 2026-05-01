@@ -267,6 +267,12 @@ class TestPysnmpObjClass:
 
 
 class TestMibCompiler:
+    def test_default_config_created_when_none_given(self):
+        """MibCompiler() with no args must create a default CompilerConfig."""
+        compiler = MibCompiler()
+        assert compiler._config is not None
+        assert "json" in compiler._config.formats
+
     def test_unknown_format_raises_at_construction(self):
         with pytest.raises(ValueError, match="Unknown output format"):
             MibCompiler(CompilerConfig(formats=["invalid-fmt"], cache_dir=None))
@@ -364,3 +370,133 @@ class TestMibCompiler:
         assert len(compiled.output_paths) == 0
         assert any("formatter error" in w for w in compiled.warnings)
         assert any("simulated crash" in w for w in compiled.warnings)
+
+    @pytest.mark.asyncio
+    async def test_writer_error_raised_on_unwritable_output_dir(self, tmp_path: Path):
+        """If the output directory cannot be created, WriterError is raised."""
+        from unittest.mock import patch
+
+        from trishul_smi.errors import WriterError
+
+        config = CompilerConfig(output_dir=tmp_path / "out", cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        with patch("pathlib.Path.mkdir", side_effect=OSError("permission denied")):
+            with pytest.raises(WriterError, match="permission denied"):
+                await compiler.compile("TEST-MIB")
+
+
+# ---------------------------------------------------------------------------
+# JsonFormatter — types and notifications serialisation
+# ---------------------------------------------------------------------------
+
+
+class TestJsonFormatterExtended:
+    def test_types_serialised(self):
+        from trishul_smi.models.mib_type import MibType
+
+        tc = MibType(name="DisplayString", base_type="OCTET STRING", description="A display string")
+        m = MibModule(name="TC-MIB", language="SMIv2", types={"DisplayString": tc})
+        import json
+
+        data = json.loads(JsonFormatter().format(m))
+        assert "DisplayString" in data["types"]
+        assert data["types"]["DisplayString"]["base_type"] == "OCTET STRING"
+        assert data["types"]["DisplayString"]["description"] == "A display string"
+
+    def test_notifications_serialised(self):
+        notif = MibObject(
+            name="linkDown",
+            oid="1.3.6.1.6.3.1.1.5.3",
+            oid_path=[1, 3, 6, 1, 6, 3, 1, 1, 5, 3],
+            object_type="NOTIFICATION-TYPE",
+            status="current",
+        )
+        m = MibModule(name="IF-MIB", language="SMIv2", notifications={"linkDown": notif})
+        import json
+
+        data = json.loads(JsonFormatter().format(m))
+        assert "linkDown" in data["notifications"]
+        assert data["notifications"]["linkDown"]["object_type"] == "NOTIFICATION-TYPE"
+
+
+# ---------------------------------------------------------------------------
+# PysnmpFormatter — syntax edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestPysnmpHelpers:
+    def test_oid_tuple_empty(self):
+        from trishul_smi.output.pysnmp_fmt import _oid_tuple
+
+        assert _oid_tuple([]) == "()"
+
+    def test_map_pysnmp_assign_empty_symbols(self):
+        from trishul_smi.output.pysnmp_fmt import _map_pysnmp_assign
+
+        assert _map_pysnmp_assign([], "SNMPv2-SMI") == ""
+
+
+class TestPysnmpSyntaxEdgeCases:
+    def _obj(self, name: str, syntax: str | None) -> MibObject:
+        return MibObject(
+            name=name, oid="1.3", oid_path=[1, 3], object_type="OBJECT-TYPE", syntax=syntax
+        )
+
+    def test_none_syntax_fallback(self):
+        m = MibModule(name="X", language="SMIv2", objects={"o": self._obj("o", None)})
+        src = PysnmpFormatter().format(m)
+        assert "OctetString()  # unknown syntax" in src
+
+    def test_spaced_syntax_fallback(self):
+        m = MibModule(
+            name="X", language="SMIv2", objects={"o": self._obj("o", "SEQUENCE OF Entry")}
+        )
+        src = PysnmpFormatter().format(m)
+        assert "TODO: map syntax" in src
+
+    def test_named_syntax_with_hyphen(self):
+        m = MibModule(name="X", language="SMIv2", objects={"o": self._obj("o", "Display-String")})
+        src = PysnmpFormatter().format(m)
+        assert "Display_String()" in src
+
+    def test_known_counter64_syntax(self):
+        m = MibModule(name="X", language="SMIv2", objects={"o": self._obj("o", "Counter64")})
+        src = PysnmpFormatter().format(m)
+        assert "Counter64()" in src
+
+    def test_textual_convention_rendered(self):
+        from trishul_smi.models.mib_type import MibType
+
+        tc = MibType(name="TruthValue", base_type="INTEGER")
+        m = MibModule(name="X", language="SMIv2", types={"TruthValue": tc})
+        src = PysnmpFormatter().format(m)
+        assert "TruthValue" in src
+        assert "TextualConvention" in src
+
+    def test_mib_table_row_class(self):
+        from trishul_smi.models.mib_type import MibType
+
+        row_type = MibType(name="IfEntry", base_type="SEQUENCE")
+        table_obj = MibObject(
+            name="ifTable",
+            oid="1.2",
+            oid_path=[1, 2],
+            object_type="OBJECT-TYPE",
+            syntax="SEQUENCE OF IfEntry",
+        )
+        row_obj = MibObject(
+            name="ifEntry",
+            oid="1.2.1",
+            oid_path=[1, 2, 1],
+            object_type="OBJECT-TYPE",
+            syntax="IfEntry",
+        )
+        m = MibModule(
+            name="IF-MIB",
+            language="SMIv2",
+            objects={"ifTable": table_obj, "ifEntry": row_obj},
+            types={"IfEntry": row_type},
+        )
+        src = PysnmpFormatter().format(m)
+        assert "MibTable(" in src
+        assert "MibTableRow(" in src
