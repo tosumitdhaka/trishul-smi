@@ -1,6 +1,6 @@
 # trishul-smi — Architecture
 
-> **Last updated:** 2026-05-01
+> **Last updated:** 2026-05-06
 
 ---
 
@@ -110,6 +110,10 @@ class MibModule:
     types: dict[str, MibType]
     notifications: dict[str, MibObject]
     source_text: str | None = None
+    lastupdated: str | None = None     # SMIv2 date string from MODULE-IDENTITY
+    organization: str | None = None
+    contactinfo: str | None = None
+    description: str | None = None
 
 @dataclass
 class MibObject:
@@ -125,6 +129,7 @@ class MibObject:
     augments: str | None = None
     oid_parent: str | None = None      # pre-resolution parent name arc
     constraints: dict[str, Any] | None = None  # inline SYNTAX constraint
+    members: list[str] | None = None   # OBJECTS/NOTIFICATIONS clause members
 
 @dataclass
 class MibType:
@@ -138,7 +143,7 @@ class MibType:
 @dataclass
 class CompileResult:
     name: str
-    status: Literal["compiled", "cached", "failed"]
+    status: Literal["compiled", "cached", "failed", "missing"]
     output_paths: list[Path]
     warnings: list[str] = field(default_factory=list)
     error: str | None = None

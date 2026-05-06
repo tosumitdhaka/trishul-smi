@@ -1,8 +1,8 @@
 # trishul-smi — Design Notes
 
-> **Status:** v0.2.0 — implementation complete; v0.2.0 shipped 2026-05-01  
+> **Status:** v0.3.0 — shipped 2026-05-06  
 > **Author:** GhaatakJi  
-> **Last updated:** 2026-05-01
+> **Last updated:** 2026-05-06
 
 ---
 
@@ -288,6 +288,7 @@ trishul_smi/
   "module": "IF-MIB",
   "language": "SMIv2",
   "generated_by": "trishul-smi",
+  "generated_at": "2026-05-06T12:00:00Z",
   "imports": {
     "SNMPv2-SMI": ["MODULE-IDENTITY", "OBJECT-TYPE", "Integer32"],
     "SNMPv2-TC": ["DisplayString", "PhysAddress", "TruthValue"]
@@ -297,16 +298,43 @@ trishul_smi/
       "oid": "1.3.6.1.2.1.2.2.1.2",
       "oid_path": [1, 3, 6, 1, 2, 1, 2, 2, 1, 2],
       "object_type": "OBJECT-TYPE",
+      "class": "objecttype",
+      "nodetype": "column",
       "syntax": "DisplayString",
       "max_access": "read-only",
       "status": "current",
-      "description": "A textual string containing information about the interface.",
-      "index": null,
-      "augments": null
+      "description": "A textual string containing information about the interface."
     }
   },
-  "types": {},
-  "notifications": {}
+  "types": {
+    "InterfaceIndex": {
+      "class": "textualconvention",
+      "base_type": "Integer32",
+      "display_hint": "d",
+      "status": "current",
+      "description": "..."
+    }
+  },
+  "notifications": {
+    "linkDown": {
+      "oid": "1.3.6.1.6.3.1.1.5.3",
+      "oid_path": [1, 3, 6, 1, 6, 3, 1, 1, 5, 3],
+      "object_type": "NOTIFICATION-TYPE",
+      "class": "notificationtype",
+      "members": [
+        {"module": "IF-MIB", "object": "ifIndex"},
+        {"module": "IF-MIB", "object": "ifAdminStatus"},
+        {"module": "IF-MIB", "object": "ifOperStatus"}
+      ]
+    }
+  },
+  "module_metadata": {
+    "lastupdated": "2000-06-14",
+    "revisions": [{"date": "2000-06-14", "description": "..."}],
+    "organization": "IETF Interfaces MIB Working Group",
+    "contactinfo": "...",
+    "description": "..."
+  }
 }
 ```
 

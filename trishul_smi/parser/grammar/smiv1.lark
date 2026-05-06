@@ -11,16 +11,27 @@
 
 start : module_definition
 
-module_definition : module_name "DEFINITIONS" "::=" "BEGIN" [imports] assignment* "END"
+module_definition : module_name "DEFINITIONS" "::=" "BEGIN" [exports] [imports] assignment* "END"
 
 module_name : UPPER_ID
+
+
+// ---------------------------------------------------------------------------
+// EXPORTS (RFC 1155 — ignored, present for parse compatibility)
+// ---------------------------------------------------------------------------
+
+exports : "EXPORTS" export_list ";"
+
+export_list : export_item ("," export_item)*
+
+export_item : UPPER_ID | LOWER_ID
 
 
 // ---------------------------------------------------------------------------
 // IMPORTS
 // ---------------------------------------------------------------------------
 
-imports : "IMPORTS" import_clause+ ";"?
+imports : "IMPORTS" import_clause+ ";"
 
 import_clause : symbol_list "FROM" module_ref
 
@@ -39,6 +50,10 @@ assignment : object_type_assignment
            | trap_type_assignment
            | type_assignment
            | value_assignment
+           | macro_assignment
+
+// MACRO body is stripped by the preprocessor in smi_parser.py before parsing.
+macro_assignment : UPPER_ID "MACRO" "::=" "BEGIN" "END"
 
 
 // ---------------------------------------------------------------------------
@@ -56,7 +71,10 @@ index_item   : ["IMPLIED"] LOWER_ID
 augments_part: "AUGMENTS" "{" LOWER_ID "}"
 
 defval_clause : "DEFVAL" "{" defval_value "}"
-defval_value  : LOWER_ID | NUMBER | QUOTED_STRING | HEX_STRING | BIN_STRING
+defval_value  : LOWER_ID | SIGNED_NUMBER | QUOTED_STRING | HEX_STRING | BIN_STRING
+              | "{" (bits_value ("," bits_value)*)? "}"
+              | "{" NUMBER+ "}"
+bits_value    : LOWER_ID
 
 
 // ---------------------------------------------------------------------------
@@ -101,25 +119,31 @@ syntax_type : builtin_type
             | sequence_of_type
             | sequence_type
             | bits_type
+            | choice_type
 
-builtin_type : "INTEGER"          [integer_enum]              -> integer_type
-             | "OCTET" "STRING"   [size_constraint]           -> octet_string_type
-             | "OBJECT" "IDENTIFIER"                          -> oid_type
-             | "NULL"                                         -> null_type
-             | "NetworkAddress"                               -> network_address_type
-             | "IpAddress"                                    -> ip_address_type
-             | "Counter"                                      -> counter_type
-             | "Gauge"                                        -> gauge_type
-             | "TimeTicks"                                    -> timeticks_type
-             | "Opaque"                                       -> opaque_type
+builtin_type : "INTEGER"          [integer_enum | constraint]  -> integer_type
+             | "OCTET" "STRING"   [size_constraint]            -> octet_string_type
+             | "OBJECT" "IDENTIFIER"                           -> oid_type
+             | "NULL"                                          -> null_type
+             | "NetworkAddress"                                -> network_address_type
+             | "IpAddress"                                     -> ip_address_type
+             | "Counter"                                       -> counter_type
+             | "Gauge"                                         -> gauge_type
+             | "TimeTicks"                                     -> timeticks_type
+             | "Opaque"                                        -> opaque_type
 
 named_type      : UPPER_ID [constraint | size_constraint]
 sequence_of_type: "SEQUENCE" "OF" UPPER_ID
 sequence_type   : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
 sequence_field  : LOWER_ID syntax_type
+               | LOWER_ID "BITS"   -> sequence_field_bits
 bits_type       : "BITS" "{" named_bits "}"
 named_bits      : named_bit ("," named_bit)* [","]
 named_bit       : LOWER_ID "(" NUMBER ")"
+
+// CHOICE body is discarded — used in legacy RFC type definitions only.
+choice_type     : "CHOICE" "{" choice_field ("," choice_field)* "}"
+choice_field    : LOWER_ID syntax_type
 
 integer_enum : "{" enum_items "}"
 enum_items   : enum_item ("," enum_item)*
@@ -152,8 +176,8 @@ UPPER_ID      : /[A-Z][A-Za-z0-9\-]*/
 LOWER_ID      : /[a-z][A-Za-z0-9\-]*/
 NUMBER        : /[0-9]+/
 SIGNED_NUMBER : /-?[0-9]+/
-HEX_STRING    : /\'[0-9A-Fa-f]*\'H/
-BIN_STRING    : /\'[01]*\'B/
+HEX_STRING    : /\'[0-9A-Fa-f]*\'[Hh]/
+BIN_STRING    : /\'[01]*\'[Bb]/
 QUOTED_STRING : /"(?:[^\\"]|\\[\s\S])*"/
 
 WS      : /[ \t\n\r]+/

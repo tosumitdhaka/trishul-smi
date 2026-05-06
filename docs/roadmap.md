@@ -24,27 +24,35 @@ Status: `planned` | `in progress` | `done` | `deferred`
 
 ---
 
-## v0.3.0
+## v0.3.0 — shipped 2026-05-06
 
-JSON output completeness and pysnmp output correctness.
+JSON output completeness, pysnmp correctness, grammar coverage.
 
 ### JSON output
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | NOTIFICATION-TYPE objects in JSON | planned | `linkDown`, `linkUp`, and all `NOTIFICATION-TYPE` definitions absent from `objects` dict. Need transformer coverage + JsonFormatter emission including bound OBJECTS list. |
-| 2 | `--no-texts` flag for JSON | planned | `JsonFormatter` currently ignores the flag — descriptions always written. SC1 and SC2 JSON output is byte-for-byte identical. Should suppress `description`, `organization`, `contactinfo`, `revisions` when set. |
-| 3 | Module-identity metadata in JSON | planned | `organization`, `contactinfo`, `lastupdated`, `revisions` not emitted. Transformer parses them (available on `MibModule`); `JsonFormatter` needs to surface them. |
-| 4 | TC `displayhint` and `status` in JSON | planned | Both fields parsed and stored on `MibType`; `JsonFormatter` not emitting them in the `types` section. |
-| 5 | Conformance group member lists in JSON | planned | `OBJECT-GROUP` and `NOTIFICATION-GROUP` entries emit only OID/status/description — member object list dropped. Transformer + JsonFormatter change. |
-| 6 | SNMPv2-MIB silently skipped | planned | In `BASE_MIBS` frozenset; never compiled even when explicitly requested. Should honour explicit requests regardless of base-MIB status. |
+| 1 | NOTIFICATION-TYPE `members` list in JSON | done | `OBJECTS` clause wired through transformer; resolved to `{module, object}` dicts. |
+| 2 | `--no-texts` flag for JSON | done | `JsonFormatter` honours the flag; suppresses description/organization/contactinfo/revision descriptions. |
+| 3 | Module-identity metadata in JSON | done | `module_metadata` block always emitted; `lastupdated` (ISO 8601), `revisions`, text fields conditional on `--no-texts`. |
+| 4 | TC `display_hint` and `status` in JSON | done | Both fields now emitted in the `types` section. |
+| 5 | Conformance group member lists in JSON | done | `OBJECT-GROUP`, `NOTIFICATION-GROUP`, `MODULE-COMPLIANCE` carry `members` as `{module, object}` dicts. |
+| 6 | `BASE_MIBS` explicit-request bypass | done | `pending = set(mib_names)` — explicit requests compile normally; filter only applies to transitive deps. |
 
 ### pysnmp output
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 7 | Standard `mibBuilder` injection | planned | Compiled `.py` modules create their own `MibBuilder()` instead of accepting the one injected by the runtime. Fix the Jinja2 template to use the standard `if 'mibBuilder' not in globals()` guard. |
-| 8 | `.setObjects()` on notifications | planned | Acknowledged `# TODO` in the Jinja2 template. Notifications carry no varbind definitions — need to wire the `OBJECTS` clause through the formatter and emit `.setObjects()`. |
+| 7 | Standard `mibBuilder` injection | done | Jinja2 template uses `if 'mibBuilder' not in globals()` guard. |
+| 8 | `.setObjects()` on notifications | done | `OBJECTS` clause wired through transformer → `MibObject.members` → template. |
+
+### Grammar and parser (bonus)
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 9 | MACRO body preprocessing | done | `_strip_macro_bodies()` keeps Lark in LALR for all tested MIBs; eliminates ~10× cold-parse slowdown. |
+| 10 | SMIv1 grammar gaps | done | EXPORTS clause, CHOICE type, BITS-in-SEQUENCE, DEFVAL variants, INTEGER range in type assignments. 35 → 6 corpus failures. |
+| 11 | `"missing"` compile status | done | `MibNotFoundError` → `status="missing"`, separate from `"failed"`. |
 
 ---
 

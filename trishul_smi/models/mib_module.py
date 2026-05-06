@@ -20,9 +20,16 @@ class MibModule:
     types: dict[str, MibType] = field(default_factory=dict)
     notifications: dict[str, MibObject] = field(default_factory=dict)
     organization: str | None = None
+    contactinfo: str | None = None
+    lastupdated: str | None = None
     revisions: list[dict[str, str]] = field(default_factory=list)
+    description: str | None = None
     source_text: str | None = None  # original raw ASN.1, kept for debugging
 
     def all_imports(self) -> list[str]:
         """Return flat list of all imported MIB module names."""
         return list(self.imports.keys())
+
+    def import_reverse_map(self) -> dict[str, str]:
+        """Return a reverse map: imported symbol name → source MIB module name."""
+        return {sym: mod for mod, syms in self.imports.items() for sym in syms}

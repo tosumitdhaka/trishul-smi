@@ -39,16 +39,13 @@ from trishul_smi.resolver.resolver import MibResolver
 
 logger = logging.getLogger(__name__)
 
-_FORMATTER_CLASSES: dict[str, type[FormatterProtocol]] = {
-    "json": JsonFormatter,
-    "pysnmp": PysnmpFormatter,
-}
-
 
 def _make_formatter(fmt: str, config: CompilerConfig) -> FormatterProtocol:
     if fmt == "pysnmp":
         return PysnmpFormatter(no_texts=config.no_texts)
-    return _FORMATTER_CLASSES[fmt]()
+    if fmt == "json":
+        return JsonFormatter(no_texts=config.no_texts)
+    raise ValueError(f"Unknown output format: {fmt!r}")
 
 
 class MibCompiler:
@@ -178,12 +175,14 @@ class MibCompiler:
                 )
             )
 
-        # --- Failed modules ---
+        # --- Failed / missing modules ---
+        from trishul_smi.errors import MibNotFoundError
+
         for name, exc in resolve_result.errors.items():
             results.append(
                 CompileResult(
                     name=name,
-                    status="failed",
+                    status="missing" if isinstance(exc, MibNotFoundError) else "failed",
                     error=str(exc),
                 )
             )

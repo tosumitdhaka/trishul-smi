@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-compare_compilers.py — Mechanical MIB compiler comparison data collector.
+compare_compilers.py — Comprehensive MIB compiler comparison.
 
-Collects raw timing, file-size, JSON-structure, and pysnmp-output data for
-pysmi and trishul-smi across configurable MIBs.  Writes a single JSON results
-file.  Prints a concise markdown summary table to stdout when done.  All
-progress messages go to stderr so stdout stays clean.
+Compiles a set of MIBs with pysmi 2.0.0 and trishul-smi (local or PyPI)
+in both with-texts and no-texts modes, then produces a detailed report
+covering JSON structure, field values, nodetype accuracy, and pysnmp output.
 
 Usage:
-    python scripts/compare_compilers.py \
-        --tools "pysmi==1.5.11,pysmi==2.0.0,trishul-smi==0.2.0" \
-        --mib-dir ~/test/mibs \
-        --mibs "IF-MIB,IP-MIB,SNMPv2-MIB" \
-        --work-dir /tmp/mib-compare \
-        --output results.json
+    python scripts/compare_compilers.py \\
+        --tools "pysmi==2.0.0,trishul-smi" \\
+        --mib-dir ~/test/mibs \\
+        --local-tsmi ~/trishul3/trishul-smi \\
+        --mibs "IF-MIB,IP-MIB" \\
+        --work-dir /tmp/mib-compare
+
+    # Re-use existing venvs and compiled files:
+    python scripts/compare_compilers.py ... --skip-install --skip-compile
 """
 
 import argparse
 import datetime
-import difflib
 import json
 import os
 import pathlib
@@ -29,13 +30,12 @@ import sys
 import time
 from typing import Any
 
-# Default output dir: docs/comparison/output/ relative to this script's location
 _SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 _DEFAULT_OUTPUT_DIR = _SCRIPT_DIR.parent / "output"
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Utilities
 # ---------------------------------------------------------------------------
 
 def log(msg: str) -> None:
@@ -43,12 +43,10 @@ def log(msg: str) -> None:
 
 
 def tool_slug(tool_spec: str) -> str:
-    """pysmi==2.0.0  ->  pysmi-2-0-0"""
     return re.sub(r"[=.]", "-", tool_spec).replace("--", "-")
 
 
 def tool_name_and_version(tool_spec: str) -> tuple[str, str]:
-    """'pysmi==2.0.0' -> ('pysmi', '2.0.0')"""
     if "==" in tool_spec:
         name, ver = tool_spec.split("==", 1)
         return name.strip(), ver.strip()
@@ -60,443 +58,608 @@ def run_cmd(
     *,
     cwd: pathlib.Path | None = None,
     env: dict | None = None,
-    capture: bool = True,
 ) -> tuple[int, str, str, float]:
-    """Run a command, return (exit_code, stdout, stderr, elapsed_s)."""
     t0 = time.perf_counter()
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=env,
-        capture_output=capture,
-        text=True,
-    )
+    result = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
     elapsed = time.perf_counter() - t0
-    stdout = result.stdout if capture else ""
-    stderr = result.stderr if capture else ""
-    return result.returncode, stdout, stderr, elapsed
+    return result.returncode, result.stdout, result.stderr, elapsed
+
+
+def load_json_safe(path: pathlib.Path) -> dict | None:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
-# Step 1 — Venv setup
+# Venv setup
 # ---------------------------------------------------------------------------
 
-def venv_python(venv_dir: pathlib.Path) -> pathlib.Path:
-    return venv_dir / "bin" / "python"
+def venv_python(d: pathlib.Path) -> pathlib.Path:
+    return d / "bin" / "python"
 
+def venv_pip(d: pathlib.Path) -> pathlib.Path:
+    return d / "bin" / "pip"
 
-def venv_pip(venv_dir: pathlib.Path) -> pathlib.Path:
-    return venv_dir / "bin" / "pip"
+def pysmi_bin(d: pathlib.Path) -> str:
+    return str(d / "bin" / "mibdump")
+
+def tsmi_bin(d: pathlib.Path) -> str:
+    return str(d / "bin" / "tsmi")
 
 
 def setup_venv(
     tool_spec: str,
     work_dir: pathlib.Path,
     skip_install: bool,
+    local_tsmi: pathlib.Path | None = None,
 ) -> dict[str, Any]:
     name, version = tool_name_and_version(tool_spec)
-    slug = tool_slug(tool_spec)
+    is_local_tsmi = name == "trishul-smi" and local_tsmi is not None
+    slug = "trishul-smi-local" if is_local_tsmi else tool_slug(tool_spec)
     venv_dir = work_dir / f"venv-{slug}"
 
     info: dict[str, Any] = {
-        "tool_spec": tool_spec,
-        "slug": slug,
-        "name": name,
-        "version": version,
-        "venv_dir": str(venv_dir),
-        "installed_version": None,
-        "install_skipped": False,
-        "install_error": None,
+        "tool_spec": tool_spec, "slug": slug, "name": name, "version": version,
+        "venv_dir": str(venv_dir), "installed_version": None,
+        "install_error": None, "local_source": str(local_tsmi) if is_local_tsmi else None,
     }
 
-    if skip_install:
-        log(f"  [skip-install] using existing venv: {venv_dir}")
-        info["install_skipped"] = True
-    elif venv_dir.exists():
-        log(f"  venv already exists, skipping install: {venv_dir}")
-        info["install_skipped"] = True
+    if skip_install or venv_dir.exists():
+        log(f"  venv exists/skipped: {venv_dir}")
     else:
         log(f"  creating venv: {venv_dir}")
-        rc, out, err, _ = run_cmd([sys.executable, "-m", "venv", str(venv_dir)])
+        rc, _, err, _ = run_cmd([sys.executable, "-m", "venv", str(venv_dir)])
         if rc != 0:
             info["install_error"] = f"venv create failed: {err.strip()}"
-            log(f"  ERROR: {info['install_error']}")
             return info
 
-        # Packages to install
-        if name == "trishul-smi":
+        if is_local_tsmi:
+            log(f"  pip install -e {local_tsmi}")
+            rc, _, err, _ = run_cmd(
+                [str(venv_pip(venv_dir)), "install", "--quiet", "-e", str(local_tsmi)]
+            )
+        elif name == "trishul-smi":
             pkgs = [f"trishul-smi=={version}" if version else "trishul-smi"]
+            rc, _, err, _ = run_cmd(
+                [str(venv_pip(venv_dir)), "install", "--quiet"] + pkgs
+            )
         else:
-            # pysmi venv: install both pysmi AND trishul-smi latest so tsmi is available
-            pkgs = [
-                f"pysmi=={version}" if version else "pysmi",
-                "trishul-smi",
-            ]
+            pkgs = [f"pysmi=={version}" if version else "pysmi", "trishul-smi"]
+            log(f"  pip install {pkgs}")
+            rc, _, err, _ = run_cmd(
+                [str(venv_pip(venv_dir)), "install", "--quiet"] + pkgs
+            )
 
-        log(f"  installing: {pkgs}")
-        rc, out, err, _ = run_cmd(
-            [str(venv_pip(venv_dir)), "install", "--quiet"] + pkgs
-        )
         if rc != 0:
             info["install_error"] = f"pip install failed: {err.strip()[-500:]}"
             log(f"  ERROR: {info['install_error']}")
             return info
 
-    # Record installed version via pip show
     show_pkg = "trishul-smi" if name == "trishul-smi" else "pysmi"
-    rc, out, err, _ = run_cmd(
-        [str(venv_pip(venv_dir)), "show", show_pkg]
-    )
+    rc, out, _, _ = run_cmd([str(venv_pip(venv_dir)), "show", show_pkg])
     if rc == 0:
         for line in out.splitlines():
             if line.startswith("Version:"):
                 info["installed_version"] = line.split(":", 1)[1].strip()
                 break
+    if is_local_tsmi:
+        info["installed_version"] = (info["installed_version"] or "dev") + "+local"
 
-    log(f"  installed_version={info['installed_version']}")
+    log(f"  {slug} installed_version={info['installed_version']}")
     return info
 
 
 # ---------------------------------------------------------------------------
-# Scenario helpers
+# Compile runners
 # ---------------------------------------------------------------------------
-
-def pysmi_bin(venv_dir: pathlib.Path) -> str:
-    return str(venv_dir / "bin" / "mibdump")
-
-
-def tsmi_bin(venv_dir: pathlib.Path) -> str:
-    return str(venv_dir / "bin" / "tsmi")
-
-
-def _parse_pysmi_output(stdout: str, stderr: str) -> tuple[list[str], list[str]]:
-    """Extract created / up-to-date MIB names from pysmi output."""
-    created: list[str] = []
-    uptodate: list[str] = []
-    combined = stdout + "\n" + stderr
-    for line in combined.splitlines():
-        line = line.strip()
-        # e.g. "IF-MIB: %% created"  or  "IF-MIB: MIB module up-to-date"
-        m = re.match(r"^(\S+?):\s*(.*)", line)
-        if m:
-            mib_name = m.group(1).rstrip(":")
-            rest = m.group(2).lower()
-            if "created" in rest or "written" in rest:
-                created.append(mib_name)
-            elif "up-to-date" in rest or "uptodate" in rest:
-                uptodate.append(mib_name)
-    return created, uptodate
-
-
-def run_pysmi_sc1(
-    venv_dir: pathlib.Path,
-    mib_dir: pathlib.Path,
-    out_dir: pathlib.Path,
-    mibs: list[str],
-) -> dict[str, Any]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        pysmi_bin(venv_dir),
-        f"--mib-source=file://{mib_dir}/",
-        "--destination-format=json",
-        f"--destination-directory={out_dir}",
-        "--no-dependencies",
-        "--generate-mib-texts",
-        "--keep-texts-layout",
-        "--rebuild",
-    ] + mibs
-    log(f"    pysmi SC1: {' '.join(cmd[-4:] + ['...'])}")
-    rc, stdout, stderr, elapsed = run_cmd(cmd)
-    created, uptodate = _parse_pysmi_output(stdout, stderr)
-    return {
-        "time_s": round(elapsed, 4),
-        "exit_code": rc,
-        "mibs_created": created,
-        "mibs_uptodate": uptodate,
-        "stdout": stdout[-2000:],
-        "stderr": stderr[-2000:],
-    }
-
-
-def run_pysmi_sc2(
-    venv_dir: pathlib.Path,
-    mib_dir: pathlib.Path,
-    out_dir: pathlib.Path,
-    mibs: list[str],
-) -> dict[str, Any]:
-    """SC2: warm cache (reuse sc1 out_dir), no rebuild, no texts. Run twice."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        pysmi_bin(venv_dir),
-        f"--mib-source=file://{mib_dir}/",
-        "--destination-format=json",
-        f"--destination-directory={out_dir}",
-        "--no-dependencies",
-    ] + mibs
-
-    results = {}
-    for run_n in (1, 2):
-        log(f"    pysmi SC2 run{run_n}")
-        rc, stdout, stderr, elapsed = run_cmd(cmd)
-        created, uptodate = _parse_pysmi_output(stdout, stderr)
-        results[f"run{run_n}"] = {
-            "time_s": round(elapsed, 4),
-            "exit_code": rc,
-            "mibs_created": created,
-            "mibs_uptodate": uptodate,
-            "stderr": stderr[-1000:],
-        }
-
-    return {
-        "warm_run1_s": results["run1"]["time_s"],
-        "warm_run2_s": results["run2"]["time_s"],
-        "exit_code": results["run2"]["exit_code"],
-        "run1": results["run1"],
-        "run2": results["run2"],
-    }
-
 
 def _tsmi_cache_dir() -> pathlib.Path:
     return pathlib.Path.home() / ".cache" / "trishul-smi"
 
 
-def run_tsmi_sc1(
+def run_pysmi_json(
     venv_dir: pathlib.Path,
     mib_dir: pathlib.Path,
     out_dir: pathlib.Path,
     mibs: list[str],
+    with_texts: bool,
+    cold: bool,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Cold cache: delete ~/.cache/trishul-smi
-    cache_dir = _tsmi_cache_dir()
-    if cache_dir.exists():
-        log(f"    tsmi SC1: removing cache {cache_dir}")
-        shutil.rmtree(cache_dir, ignore_errors=True)
-
     cmd = [
-        tsmi_bin(venv_dir),
-        "compile",
+        pysmi_bin(venv_dir),
+        f"--mib-source=file://{mib_dir}/",
+        "--destination-format=json",
+        f"--destination-directory={out_dir}",
+        "--no-dependencies",
+    ]
+    if with_texts:
+        cmd += ["--generate-mib-texts", "--keep-texts-layout"]
+    if cold:
+        cmd += ["--rebuild"]
+    cmd += mibs
+
+    rc, stdout, stderr, elapsed = run_cmd(cmd)
+    return {"exit_code": rc, "time_s": round(elapsed, 4),
+            "stdout": stdout[-1000:], "stderr": stderr[-1000:]}
+
+
+def run_pysmi_pysnmp(
+    venv_dir: pathlib.Path,
+    mib_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    mibs: list[str],
+    with_texts: bool,
+) -> dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        pysmi_bin(venv_dir),
+        f"--mib-source=file://{mib_dir}/",
+        "--destination-format=pysnmp",
+        f"--destination-directory={out_dir}",
+        "--no-dependencies",
+        "--rebuild",
+    ]
+    if with_texts:
+        cmd += ["--generate-mib-texts", "--keep-texts-layout"]
+    cmd += mibs
+    rc, stdout, stderr, elapsed = run_cmd(cmd)
+    return {"exit_code": rc, "time_s": round(elapsed, 4), "stderr": stderr[-500:]}
+
+
+def run_tsmi_json(
+    venv_dir: pathlib.Path,
+    mib_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    mibs: list[str],
+    with_texts: bool,
+    cold: bool,
+) -> dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if cold:
+        shutil.rmtree(_tsmi_cache_dir(), ignore_errors=True)
+    cmd = [
+        tsmi_bin(venv_dir), "compile",
         "--mib-dir", str(mib_dir),
         "--format", "json",
         "--output-dir", str(out_dir),
-        "--cache-dir", "",
-    ] + mibs
-    log(f"    tsmi SC1: {' '.join(cmd)}")
+    ]
+    if not with_texts:
+        cmd += ["--no-texts"]
+    if cold:
+        cmd += ["--cache-dir", ""]
+    cmd += mibs
     rc, stdout, stderr, elapsed = run_cmd(cmd)
-    return {
-        "time_s": round(elapsed, 4),
-        "exit_code": rc,
-        "stdout": stdout[-2000:],
-        "stderr": stderr[-2000:],
-        "mibs_created": [],   # tsmi doesn't report this the same way
-        "mibs_uptodate": [],
-    }
+    return {"exit_code": rc, "time_s": round(elapsed, 4),
+            "stdout": stdout[-1000:], "stderr": stderr[-1000:]}
 
 
-def run_tsmi_sc2(
+def run_tsmi_pysnmp(
     venv_dir: pathlib.Path,
     mib_dir: pathlib.Path,
-    work_dir: pathlib.Path,
+    out_dir: pathlib.Path,
     mibs: list[str],
-    slug: str,
+    with_texts: bool,
 ) -> dict[str, Any]:
-    """SC2: warm cache. Warmup run, then two timed runs."""
-    warmup_dir = work_dir / f"sc2-warmup-{slug}"
-    out_dir = work_dir / f"sc2-{slug}"
-    warmup_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(_tsmi_cache_dir(), ignore_errors=True)
+    cmd = [
+        tsmi_bin(venv_dir), "compile",
+        "--mib-dir", str(mib_dir),
+        "--format", "pysnmp",
+        "--output-dir", str(out_dir),
+        "--cache-dir", "",
+    ]
+    if not with_texts:
+        cmd += ["--no-texts"]
+    cmd += mibs
+    rc, stdout, stderr, elapsed = run_cmd(cmd)
+    return {"exit_code": rc, "time_s": round(elapsed, 4), "stderr": stderr[-500:]}
 
-    # Warmup: prime the default cache
-    warmup_cmd = [
-        tsmi_bin(venv_dir),
-        "compile",
+
+def warm_tsmi(
+    venv_dir: pathlib.Path,
+    mib_dir: pathlib.Path,
+    mibs: list[str],
+) -> float:
+    """Prime tsmi cache, return elapsed."""
+    warmup_dir = _tsmi_cache_dir().parent / "warmup-scratch"
+    warmup_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        tsmi_bin(venv_dir), "compile",
         "--mib-dir", str(mib_dir),
         "--format", "json",
         "--output-dir", str(warmup_dir),
     ] + mibs
-    log(f"    tsmi SC2 warmup")
-    run_cmd(warmup_cmd)
+    _, _, _, elapsed = run_cmd(cmd)
+    return round(elapsed, 4)
 
-    results = {}
-    for run_n in (1, 2):
-        cmd = [
-            tsmi_bin(venv_dir),
-            "compile",
-            "--mib-dir", str(mib_dir),
-            "--format", "json",
-            "--output-dir", str(out_dir),
-        ] + mibs
-        log(f"    tsmi SC2 run{run_n}")
-        rc, stdout, stderr, elapsed = run_cmd(cmd)
-        results[f"run{run_n}"] = {
-            "time_s": round(elapsed, 4),
-            "exit_code": rc,
-            "stderr": stderr[-1000:],
-        }
 
+# ---------------------------------------------------------------------------
+# File size helpers
+# ---------------------------------------------------------------------------
+
+def dir_sizes(out_dir: pathlib.Path, mibs: list[str], suffix: str) -> dict[str, int | None]:
     return {
-        "warm_run1_s": results["run1"]["time_s"],
-        "warm_run2_s": results["run2"]["time_s"],
-        "exit_code": results["run2"]["exit_code"],
-        "run1": results["run1"],
-        "run2": results["run2"],
-        "sc2_out_dir": str(out_dir),
+        mib: ((out_dir / f"{mib}{suffix}").stat().st_size
+              if (out_dir / f"{mib}{suffix}").exists() else None)
+        for mib in mibs
     }
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — File sizes
+# JSON deep analysis
 # ---------------------------------------------------------------------------
 
-def collect_file_sizes(
-    out_dir: pathlib.Path,
+def _pysmi_all_objects(data: dict) -> dict[str, dict]:
+    """All named dicts in pysmi JSON except meta/imports."""
+    return {k: v for k, v in data.items()
+            if k not in ("meta", "imports") and isinstance(v, dict)}
+
+
+def _tsmi_all_objects(data: dict) -> dict[str, dict]:
+    """Combined objects + notifications from tsmi JSON."""
+    combined: dict[str, dict] = {}
+    combined.update(data.get("objects", {}))
+    combined.update(data.get("notifications", {}))
+    return combined
+
+
+def _norm_maxaccess(v: str | None) -> str:
+    return (v or "").replace("-", "").lower()
+
+
+def analyse_json_file(data: dict, tool: str, mib: str) -> dict[str, Any]:
+    """Structural counts and field presence for a single compiled MIB JSON."""
+    if tool == "pysmi":
+        objs = _pysmi_all_objects(data)
+        by_class: dict[str, list[str]] = {}
+        for k, v in objs.items():
+            cls = v.get("class", "unknown")
+            by_class.setdefault(cls, []).append(k)
+        return {
+            "total": len(objs),
+            "by_class": {cls: len(names) for cls, names in by_class.items()},
+            "object_names": sorted(objs.keys()),
+        }
+    else:  # tsmi
+        objects = data.get("objects", {})
+        notifications = data.get("notifications", {})
+        types = data.get("types", {})
+        return {
+            "objects": len(objects),
+            "notifications": len(notifications),
+            "types": len(types),
+            "total": len(objects) + len(notifications),
+            "object_names": sorted(list(objects.keys()) + list(notifications.keys())),
+        }
+
+
+def _pysmi_oid_to_list(oid: Any) -> list[int]:
+    """Convert pysmi OID (dot-string '1.3.6.1.2') to int list."""
+    if isinstance(oid, list):
+        return [int(x) for x in oid]
+    if isinstance(oid, str) and oid:
+        try:
+            return [int(x) for x in oid.split(".") if x]
+        except ValueError:
+            pass
+    return []
+
+
+def cross_json_compare(
+    pysmi_dir: pathlib.Path,
+    tsmi_dir: pathlib.Path,
     mibs: list[str],
-) -> dict[str, int | None]:
-    sizes: dict[str, int | None] = {}
+) -> dict[str, Any]:
+    """Deep field-level comparison between pysmi and tsmi JSON output."""
+    results: dict[str, Any] = {}
+
     for mib in mibs:
-        p = out_dir / f"{mib}.json"
-        sizes[mib] = p.stat().st_size if p.exists() else None
-    return sizes
+        pdata = load_json_safe(pysmi_dir / f"{mib}.json")
+        tdata = load_json_safe(tsmi_dir / f"{mib}.json")
 
-
-# ---------------------------------------------------------------------------
-# Step 5 — JSON object analysis
-# ---------------------------------------------------------------------------
-
-REFERENCE_OBJECTS = ["linkDown", "linkUp", "linkUpDownNotificationsGroup"]
-PYSMI_OBJ_FIELDS = ["class", "description", "maxaccess", "nodetype", "oid", "status", "syntax", "name"]
-PYSMI_MI_FIELDS = ["organization", "contactinfo", "lastupdated", "revisions", "description"]
-TSMI_OBJ_FIELDS = ["oid", "oid_path", "object_type", "syntax", "max_access", "status", "description", "index", "augments"]
-TSMI_MI_FIELDS = ["organization", "contactinfo", "lastupdated", "revisions", "description"]
-
-
-def _load_json_safe(path: pathlib.Path) -> Any:
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception as e:
-        return {"_load_error": str(e)}
-
-
-def analyse_pysmi_json(sc1_dir: pathlib.Path, mibs: list[str]) -> dict[str, Any]:
-    analysis: dict[str, Any] = {}
-    for mib in mibs:
-        p = sc1_dir / f"{mib}.json"
-        if not p.exists():
-            analysis[mib] = {"error": "file_missing"}
-            continue
-        data = _load_json_safe(p)
-        if "_load_error" in data:
-            analysis[mib] = {"error": data["_load_error"]}
+        if pdata is None or tdata is None:
+            results[mib] = {"error": "missing_file"}
             continue
 
-        # Count keys excluding meta, imports, class
-        excluded = {"meta", "imports", "class"}
-        keys = [k for k in data.keys() if k not in excluded]
-        object_count = len(keys)
+        pobjs = _pysmi_all_objects(pdata)
+        tobjs = _tsmi_all_objects(tdata)
 
-        # Reference objects present/missing
-        present_refs = [r for r in REFERENCE_OBJECTS if r in data]
-        missing_refs = [r for r in REFERENCE_OBJECTS if r not in data]
+        pnames = set(pobjs.keys())
+        tnames = set(tobjs.keys())
+        common = sorted(pnames & tnames)
+        pysmi_only = sorted(pnames - tnames)
+        tsmi_only = sorted(tnames - pnames)
 
-        # Sample object: ifDescr
-        sample_obj_fields: dict | None = None
-        if "ifDescr" in data:
-            obj = data["ifDescr"]
-            sample_obj_fields = {
-                f: (f in obj) for f in PYSMI_OBJ_FIELDS
+        # For each common object, compare fields
+        oid_matches: dict[str, bool] = {}
+        nodetype_matches: dict[str, bool | None] = {}
+        status_matches: dict[str, bool] = {}
+        maxaccess_matches: dict[str, bool] = {}
+        desc_present_texts: dict[str, dict] = {}
+
+        for name in common:
+            p = pobjs[name]
+            t = tobjs[name]
+
+            # OID — pysmi stores as dot-string, tsmi as int list
+            p_oid = _pysmi_oid_to_list(p.get("oid"))
+            t_oid = list(t.get("oid_path") or [])
+            oid_matches[name] = (p_oid == t_oid)
+
+            # Nodetype (only meaningful for objecttype)
+            if p.get("class") == "objecttype" and "nodetype" in t:
+                p_nt = p.get("nodetype", "")
+                t_nt = t.get("nodetype", "")
+                nodetype_matches[name] = (p_nt == t_nt)
+            else:
+                nodetype_matches[name] = None
+
+            # Status
+            status_matches[name] = (p.get("status") == t.get("status"))
+
+            # Max-access
+            p_ma = _norm_maxaccess(p.get("maxaccess"))
+            t_ma = _norm_maxaccess(t.get("max_access"))
+            maxaccess_matches[name] = (p_ma == t_ma)
+
+            # Description
+            desc_present_texts[name] = {
+                "pysmi": "description" in p,
+                "tsmi": "description" in t,
             }
 
-        # Module-identity fields
-        mi_fields: dict | None = None
-        mi_key: str | None = None
-        # look for ifMIB or any moduleidentity class
-        for k, v in data.items():
+        # Summary stats
+        objecttype_common = [n for n in common if pobjs[n].get("class") == "objecttype"]
+        oid_ok = sum(1 for n in objecttype_common if oid_matches.get(n))
+        nt_compared = [n for n in objecttype_common if nodetype_matches.get(n) is not None]
+        nt_ok = sum(1 for n in nt_compared if nodetype_matches.get(n))
+        st_ok = sum(1 for n in objecttype_common if status_matches.get(n))
+        ma_ok = sum(1 for n in objecttype_common if maxaccess_matches.get(n))
+
+        # Sample objects: ifDescr, linkDown
+        samples: dict[str, Any] = {}
+        for sample_name in ["ifDescr", "ifTable", "ifEntry", "linkDown"]:
+            if sample_name not in pobjs or sample_name not in tobjs:
+                continue
+            p = pobjs[sample_name]
+            t = tobjs[sample_name]
+            samples[sample_name] = {
+                "pysmi": {
+                    "class": p.get("class"),
+                    "oid": p.get("oid"),
+                    "nodetype": p.get("nodetype"),
+                    "status": p.get("status"),
+                    "maxaccess": p.get("maxaccess"),
+                    "syntax": p.get("syntax"),
+                    "has_description": "description" in p,
+                    "has_index": "indices" in p or "index" in p,
+                    "members_raw": p.get("objects"),
+                },
+                "tsmi": {
+                    "object_type": t.get("object_type"),
+                    "oid_path": t.get("oid_path"),
+                    "nodetype": t.get("nodetype"),
+                    "status": t.get("status"),
+                    "max_access": t.get("max_access"),
+                    "syntax": t.get("syntax"),
+                    "constraints": t.get("constraints"),
+                    "has_description": "description" in t,
+                    "has_index": t.get("index") is not None,
+                    "members": t.get("members"),
+                },
+            }
+
+        # Module metadata comparison
+        # pysmi: find moduleidentity key in flat dict
+        p_mi: dict = {}
+        for k, v in pobjs.items():
             if isinstance(v, dict) and v.get("class") == "moduleidentity":
-                mi_key = k
-                mi_fields = {f: (f in v) for f in PYSMI_MI_FIELDS}
+                p_mi = v
                 break
+        t_mm = tdata.get("module_metadata") or {}
 
-        # Imports wart check
-        imports_wart = False
-        if "imports" in data and isinstance(data["imports"], dict):
-            for imp_val in data["imports"].values():
-                if isinstance(imp_val, dict) and imp_val.get("class") == "imports":
-                    imports_wart = True
-                    break
-            if isinstance(data["imports"], dict) and data["imports"].get("class") == "imports":
-                imports_wart = True
-
-        analysis[mib] = {
-            "object_count": object_count,
-            "present_refs": present_refs,
-            "missing_refs": missing_refs,
-            "sample_object_fields": sample_obj_fields,
-            "module_identity_key": mi_key,
-            "module_identity_fields": mi_fields,
-            "imports_class_wart": imports_wart,
+        metadata_cmp = {
+            "pysmi": {
+                "lastupdated": p_mi.get("lastupdated"),
+                "organization": bool(p_mi.get("organization")),
+                "contactinfo": bool(p_mi.get("contactinfo")),
+                "description": bool(p_mi.get("description")),
+                "revisions": len(p_mi.get("revisions") or []),
+            },
+            "tsmi": {
+                "lastupdated": t_mm.get("lastupdated"),
+                "organization": bool(t_mm.get("organization")),
+                "contactinfo": bool(t_mm.get("contactinfo")),
+                "description": bool(t_mm.get("description")),
+                "revisions": len(t_mm.get("revisions") or []),
+            },
         }
-    return analysis
+
+        # tsmi v0.3.0 new fields check
+        tsmi_objs_only = tdata.get("objects", {})
+        tsmi_notifs_only = tdata.get("notifications", {})
+        objects_with_nodetype = sum(
+            1 for o in tsmi_objs_only.values()
+            if o.get("object_type") == "OBJECT-TYPE" and "nodetype" in o
+        )
+        objects_with_constraints = [
+            name for name, o in tsmi_objs_only.items()
+            if o.get("constraints") is not None
+        ]
+        notifs_with_member_dicts = all(
+            isinstance(m, dict)
+            for n in tsmi_notifs_only.values()
+            for m in (n.get("members") or [])
+        )
+        lastupdated_is_iso = bool(
+            t_mm.get("lastupdated") and
+            re.match(r"^\d{4}-\d{2}-\d{2}$", str(t_mm.get("lastupdated", "")))
+        )
+        revisions_iso = all(
+            re.match(r"^\d{4}-\d{2}-\d{2}$", str(r.get("date", "")))
+            for r in (t_mm.get("revisions") or [])
+        )
+
+        results[mib] = {
+            "pysmi_total": len(pnames),
+            "tsmi_objects": len(tdata.get("objects", {})),
+            "tsmi_notifications": len(tdata.get("notifications", {})),
+            "tsmi_types": len(tdata.get("types", {})),
+            "tsmi_total": len(tnames),
+            "common_count": len(common),
+            "pysmi_only": pysmi_only,
+            "tsmi_only": tsmi_only,
+            "objecttype_common": len(objecttype_common),
+            "oid_agreement": f"{oid_ok}/{len(objecttype_common)}",
+            "nodetype_agreement": f"{nt_ok}/{len(nt_compared)}" if nt_compared else "n/a",
+            "status_agreement": f"{st_ok}/{len(objecttype_common)}",
+            "maxaccess_agreement": f"{ma_ok}/{len(objecttype_common)}",
+            "samples": samples,
+            "metadata": metadata_cmp,
+            "tsmi_v030": {
+                "objects_with_nodetype": objects_with_nodetype,
+                "objects_with_constraints": objects_with_constraints[:10],
+                "notif_members_attributed": notifs_with_member_dicts,
+                "lastupdated_iso": lastupdated_is_iso,
+                "revisions_iso": revisions_iso,
+                "module_description_present": bool(t_mm.get("description")),
+            },
+        }
+
+    return results
 
 
-def analyse_tsmi_json(sc1_dir: pathlib.Path, mibs: list[str]) -> dict[str, Any]:
-    analysis: dict[str, Any] = {}
+def cross_no_texts(
+    pysmi_dir: pathlib.Path,
+    tsmi_dir: pathlib.Path,
+    mibs: list[str],
+) -> dict[str, Any]:
+    """Check that both tools correctly strip descriptions in no-texts mode."""
+    results: dict[str, Any] = {}
     for mib in mibs:
-        p = sc1_dir / f"{mib}.json"
-        if not p.exists():
-            analysis[mib] = {"error": "file_missing"}
-            continue
-        data = _load_json_safe(p)
-        if "_load_error" in data:
-            analysis[mib] = {"error": data["_load_error"]}
+        pdata = load_json_safe(pysmi_dir / f"{mib}.json")
+        tdata = load_json_safe(tsmi_dir / f"{mib}.json")
+        if pdata is None or tdata is None:
+            results[mib] = {"error": "missing_file"}
             continue
 
-        objects = data.get("objects", {})
-        types = data.get("types", {})
-        object_count = len(objects)
-        type_count = len(types)
+        pobjs = _pysmi_all_objects(pdata)
+        tobjs = _tsmi_all_objects(tdata)
 
-        # Reference objects present/missing
-        present_refs = [r for r in REFERENCE_OBJECTS if r in objects]
-        missing_refs = [r for r in REFERENCE_OBJECTS if r not in objects]
+        # Check a sample of common objects for absent description
+        sample = list(set(pobjs.keys()) & set(tobjs.keys()))[:10]
+        pysmi_desc_absent = all("description" not in pobjs[n] for n in sample if n in pobjs)
+        tsmi_desc_absent = all("description" not in tobjs[n] for n in sample if n in tobjs)
 
-        # Sample object: ifDescr
-        sample_obj_fields: dict | None = None
-        if "ifDescr" in objects:
-            obj = objects["ifDescr"]
-            sample_obj_fields = {f: (f in obj) for f in TSMI_OBJ_FIELDS}
+        # tsmi module_metadata should be absent in no-texts mode
+        tsmi_metadata_absent = "module_metadata" not in tdata
 
-        # Module-identity: look for object with lastupdated / organization
-        mi_key: str | None = None
-        mi_fields: dict | None = None
-        for k, v in objects.items():
-            if isinstance(v, dict) and ("organization" in v or "lastupdated" in v):
-                mi_key = k
-                mi_fields = {f: (f in v) for f in TSMI_MI_FIELDS}
-                break
-
-        # Check "class" wart absent from imports section
-        imports = data.get("imports", {})
-        has_class_wart = "class" in imports if isinstance(imports, dict) else False
-
-        analysis[mib] = {
-            "object_count": object_count,
-            "type_count": type_count,
-            "present_refs": present_refs,
-            "missing_refs": missing_refs,
-            "sample_object_fields": sample_obj_fields,
-            "module_identity_key": mi_key,
-            "module_identity_fields": mi_fields,
-            "imports_class_wart_absent": not has_class_wart,
+        results[mib] = {
+            "pysmi_descriptions_stripped": pysmi_desc_absent,
+            "tsmi_descriptions_stripped": tsmi_desc_absent,
+            "tsmi_metadata_stripped": tsmi_metadata_absent,
         }
-    return analysis
+    return results
 
 
 # ---------------------------------------------------------------------------
-# Step 6 — pysnmp output checks
+# pysnmp deep analysis
 # ---------------------------------------------------------------------------
 
-def _inspect_pysnmp_file(py_file: pathlib.Path) -> dict[str, Any]:
+def _find_pysnmp_file(out_dir: pathlib.Path, mib: str) -> pathlib.Path | None:
+    # tsmi: IF-MIB.py; pysmi: IF_MIB.py
+    for candidate in [
+        out_dir / f"{mib}.py",
+        out_dir / f"{mib.replace('-', '_')}.py",
+    ]:
+        if candidate.exists():
+            return candidate
+    for f in out_dir.glob("*.py"):
+        if mib.replace("-", "") in f.stem.replace("_", ""):
+            return f
+    return None
+
+
+def _check_mibtable_no_syntax(text: str) -> dict[str, Any]:
+    """P1: MibTable and MibTableRow constructors should not receive a syntax arg."""
+    lines = text.splitlines()
+    violations: list[str] = []
+    for i, line in enumerate(lines):
+        if not ("MibTable(" in line or "MibTableRow(" in line):
+            continue
+        # Collect the constructor block (next 5 lines)
+        block = "\n".join(lines[i: i + 6])
+        # Bad: a syntax class call follows the OID tuple
+        if re.search(r"OctetString\(\)|Integer32\(\)|TODO:", block):
+            violations.append(line.strip()[:80])
+    return {"ok": len(violations) == 0, "violations": violations}
+
+
+def _check_tc_desc_guard(text: str) -> dict[str, Any]:
+    # TC description guard check.
+    # Valid: same-line guard or block guard on preceding line.
+    # Flags bare class-body 'description = """' with no guard.
+    lines = text.splitlines()
+    guarded_count = 0
+    unguarded: list[str] = []
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Pattern 1: guard and assignment on same line
+        if re.search(r"mibBuilder\.loadTexts.*description\s*=\s*\"\"\"", line):
+            guarded_count += 1
+            continue
+        # Pattern 2: bare description = """ line
+        if not re.match(r'^description\s*=\s*"""', stripped):
+            continue
+        # Check if previous non-blank line is a guard
+        prev = ""
+        for j in range(i - 1, max(i - 3, -1), -1):
+            if lines[j].strip():
+                prev = lines[j]
+                break
+        if "mibBuilder.loadTexts" in prev:
+            guarded_count += 1
+        else:
+            unguarded.append(line.rstrip()[:80])
+
+    return {
+        "ok": len(unguarded) == 0,
+        "guarded_count": guarded_count,
+        "unguarded_samples": unguarded[:3],
+    }
+
+
+def _extract_setobjects(text: str) -> list[dict[str, Any]]:
+    """Extract setObjects calls with their module attributions."""
+    lines = text.splitlines()
+    results = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if ".setObjects(" in line:
+            obj_name = line.split(".setObjects")[0].strip()
+            tuples = []
+            j = i + 1
+            while j < len(lines) and ")" not in lines[j - 1] or j == i + 1:
+                m = re.search(r"\('([^']+)',\s*'([^']+)'\)", lines[j])
+                if m:
+                    tuples.append({"module": m.group(1), "object": m.group(2)})
+                if ")" in lines[j] and not ".setObjects(" in lines[j]:
+                    break
+                j += 1
+                if j > i + 20:
+                    break
+            results.append({"name": obj_name, "tuples": tuples})
+        i += 1
+    return results
+
+
+def deep_pysnmp_inspect(py_file: pathlib.Path, mib: str) -> dict[str, Any]:
     if not py_file.exists():
         return {"error": "file_missing"}
     try:
@@ -504,288 +667,421 @@ def _inspect_pysnmp_file(py_file: pathlib.Path) -> dict[str, Any]:
     except Exception as e:
         return {"error": str(e)}
 
-    lines_list = text.splitlines()
-    line_count = len(lines_list)
+    lines = text.splitlines()
 
-    # Check mibBuilder idiom
-    # Standard: "if 'mibBuilder' not in globals():"
-    # Non-standard: "mibBuilder = MibBuilder()"
-    standard_idiom = any("if 'mibBuilder' not in globals()" in l for l in lines_list)
-    own_instance = any(re.search(r"\bMibBuilder\(\)", l) for l in lines_list)
-    mibbuilder_standard = standard_idiom and not own_instance
+    # Import preamble checks — accept both single and double quotes
+    has_snmpv2_smi = "SNMPv2-SMI" in text
+    has_snmpv2_tc = "SNMPv2-TC" in text
+    has_asn1 = bool(re.search(r"""['"]ASN1['"]""", text))
+    has_asn1_ref = "ASN1-REFINEMENT" in text
+    standard_guard = any("if 'mibBuilder' not in globals()" in l for l in lines)
+    own_instance = any(re.search(r"\bMibBuilder\(\)", l) for l in lines)
 
-    # Check linkDown .setObjects
-    linkdown_lines = [l for l in lines_list if "linkDown" in l]
-    linkdown_setobjects = any(".setObjects" in l for l in linkdown_lines)
+    # TODO quality check
+    todo_count = text.count("# TODO")
+
+    # MibTable/MibTableRow check
+    mibtable_check = _check_mibtable_no_syntax(text)
+
+    # TC description guard check
+    tc_check = _check_tc_desc_guard(text)
+
+    # setObjects
+    setobjects = _extract_setobjects(text)
+
+    # Counts per class — handles both pysmi 2.0 style (_X_Object = MibTable)
+    # and trishul-smi style (x = MibTable(...))
+    mibtable_count = len(re.findall(r"=\s*MibTable[\s(]", text))
+    mibtablerow_count = len(re.findall(r"=\s*MibTableRow[\s(]", text))
+    mibtablecol_count = len(re.findall(r"=\s*MibTableColumn[\s(]", text))
+    mibscalar_count = len(re.findall(r"=\s*MibScalar[\s(]", text))
+    tc_class_count = len(re.findall(r"class \w+\(TextualConvention,", text))
 
     return {
-        "lines": line_count,
-        "mibbuilder_standard": mibbuilder_standard,
-        "linkdown_setobjects": linkdown_setobjects,
-        "linkdown_lines_sample": linkdown_lines[:5],
+        "lines": len(lines),
+        "todo_count": todo_count,
+        "mibbuilder_guard_ok": standard_guard and not own_instance,
+        "imports": {
+            "SNMPv2-SMI": has_snmpv2_smi,
+            "SNMPv2-TC": has_snmpv2_tc,
+            "ASN1": has_asn1,
+            "ASN1-REFINEMENT": has_asn1_ref,
+        },
+        "object_counts": {
+            "MibTable": mibtable_count,
+            "MibTableRow": mibtablerow_count,
+            "MibTableColumn": mibtablecol_count,
+            "MibScalar": mibscalar_count,
+            "TextualConvention": tc_class_count,
+        },
+        "mibtable_no_syntax": mibtable_check,
+        "tc_desc_guard": tc_check,
+        "setobjects": setobjects,
     }
-
-
-def run_pysmi_pysnmp(
-    venv_dir: pathlib.Path,
-    mib_dir: pathlib.Path,
-    py_out: pathlib.Path,
-) -> dict[str, Any]:
-    py_out.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        pysmi_bin(venv_dir),
-        f"--mib-source=file://{mib_dir}/",
-        "--destination-format=pysnmp",
-        f"--destination-directory={py_out}",
-        "--no-dependencies",
-        "--generate-mib-texts",
-        "--keep-texts-layout",
-        "--rebuild",
-        "IF-MIB",
-    ]
-    log(f"    pysmi pysnmp: {' '.join(cmd)}")
-    rc, stdout, stderr, elapsed = run_cmd(cmd)
-    result: dict[str, Any] = {
-        "exit_code": rc,
-        "time_s": round(elapsed, 4),
-        "stderr": stderr[-1000:],
-    }
-    py_file = py_out / "IF_MIB.py"
-    if not py_file.exists():
-        # pysmi may use IF-MIB.py or IF_MIB.py
-        for candidate in py_out.glob("IF*MIB*.py"):
-            py_file = candidate
-            break
-    result["IF-MIB"] = _inspect_pysnmp_file(py_file)
-    return result
-
-
-def run_tsmi_pysnmp(
-    venv_dir: pathlib.Path,
-    mib_dir: pathlib.Path,
-    py_out: pathlib.Path,
-) -> dict[str, Any]:
-    py_out.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        tsmi_bin(venv_dir),
-        "compile",
-        "--mib-dir", str(mib_dir),
-        "--format", "pysnmp",
-        "--output-dir", str(py_out),
-        "IF-MIB",
-    ]
-    log(f"    tsmi pysnmp: {' '.join(cmd)}")
-    rc, stdout, stderr, elapsed = run_cmd(cmd)
-    result: dict[str, Any] = {
-        "exit_code": rc,
-        "time_s": round(elapsed, 4),
-        "stderr": stderr[-1000:],
-    }
-    py_file = py_out / "IF-MIB.py"
-    if not py_file.exists():
-        for candidate in py_out.glob("IF*MIB*.py"):
-            py_file = candidate
-            break
-    result["IF-MIB"] = _inspect_pysnmp_file(py_file)
-    return result
 
 
 # ---------------------------------------------------------------------------
-# Step 7 — Cross-version JSON diff
+# Markdown report builder
 # ---------------------------------------------------------------------------
 
-def cross_version_diff(
-    results: dict[str, Any],
-    pysmi_slugs: list[str],
-    work_dir: pathlib.Path,
-    mibs: list[str],
-) -> dict[str, Any]:
-    """Diff pysmi JSON outputs between versions. Only for pysmi tools."""
-    if len(pysmi_slugs) < 2:
-        return {}
+TICK = "✓"
+CROSS = "✗"
+NA = "—"
 
-    slug_a, slug_b = pysmi_slugs[0], pysmi_slugs[1]
-    dir_a = work_dir / f"sc1-{slug_a}"
-    dir_b = work_dir / f"sc1-{slug_b}"
 
-    diffs: dict[str, Any] = {}
-    _pysmi_header = re.compile(r"Produced by pysmi", re.IGNORECASE)
+def _reduction(a: Any, b: Any) -> str:
+    try:
+        if a and b:
+            return f"{round((1 - int(b) / int(a)) * 100)}% smaller"
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+    return NA
+
+
+def _yn(v: Any) -> str:
+    if v is True:
+        return TICK
+    if v is False:
+        return CROSS
+    return str(v) if v is not None else NA
+
+
+def build_report(results: dict[str, Any]) -> str:
+    meta = results.get("meta", {})
+    mibs = meta.get("mibs", [])
+    tools_data = results.get("tools", {})
+    cross = results.get("cross_json", {})
+    cross_nt = results.get("cross_no_texts", {})
+    cross_pysnmp = results.get("cross_pysnmp", {})
+
+    # identify tool slugs by role
+    pysmi_slug = next((s for s in tools_data if "pysmi" in s), None)
+    tsmi_slug = next((s for s in tools_data if "trishul" in s), None)
+
+    pysmi_ver = tools_data.get(pysmi_slug, {}).get("installed_version", "?") if pysmi_slug else "?"
+    tsmi_ver = tools_data.get(tsmi_slug, {}).get("installed_version", "?") if tsmi_slug else "?"
+
+    lines: list[str] = []
+
+    def h(level: int, text: str) -> None:
+        lines.append("")
+        lines.append("#" * level + " " + text)
+        lines.append("")
+
+    def table(headers: list[str], rows: list[list[str]]) -> None:
+        lines.append("| " + " | ".join(headers) + " |")
+        lines.append("| " + " | ".join("---" for _ in headers) + " |")
+        for row in rows:
+            lines.append("| " + " | ".join(str(c) for c in row) + " |")
+        lines.append("")
+
+    lines.append(f"# MIB Compiler Comparison: pysmi 2.0 vs trishul-smi")
+    lines.append("")
+    lines.append(f"Run at: {meta.get('run_at', '?')}")
+    lines.append(f"pysmi: `{pysmi_ver}`  |  trishul-smi: `{tsmi_ver}`")
+    lines.append(f"MIBs: {', '.join(mibs)}")
+    lines.append("")
+
+    # -----------------------------------------------------------------------
+    h(2, "1. Timing")
+
+    timing_rows = []
+    for slug, td in tools_data.items():
+        wt = td.get("with_texts", {})
+        nt = td.get("no_texts", {})
+        timing_rows.append([
+            slug,
+            wt.get("cold_s", NA),
+            wt.get("warm_s", NA),
+            nt.get("cold_s", NA),
+        ])
+    table(
+        ["Tool", "with-texts cold (s)", "with-texts warm (s)", "no-texts cold (s)"],
+        timing_rows,
+    )
+
+    # -----------------------------------------------------------------------
+    h(2, "2. JSON Output — Object Coverage")
 
     for mib in mibs:
-        fa = dir_a / f"{mib}.json"
-        fb = dir_b / f"{mib}.json"
-        if not fa.exists() or not fb.exists():
-            diffs[mib] = {"error": "one_or_both_files_missing"}
-            continue
-        try:
-            lines_a = [l for l in fa.read_text().splitlines() if not _pysmi_header.search(l)]
-            lines_b = [l for l in fb.read_text().splitlines() if not _pysmi_header.search(l)]
-        except Exception as e:
-            diffs[mib] = {"error": str(e)}
+        cmp = cross.get(mib, {})
+        if "error" in cmp:
+            lines.append(f"**{mib}**: missing output file")
             continue
 
-        diff = list(difflib.unified_diff(lines_a, lines_b, lineterm=""))
-        # Count changed lines (lines starting with + or - but not +++ / ---)
-        changed = [l for l in diff if (l.startswith("+") or l.startswith("-")) and not l.startswith(("+++", "---"))]
-        excerpt = changed[:3]
-        diffs[mib] = {
-            "diff_lines": len(changed),
-            "excerpt": excerpt,
-        }
+        h(3, mib)
 
-    return {f"{slug_a}_vs_{slug_b}": diffs}
+        p_total = cmp.get("pysmi_total", NA)
+        t_objs = cmp.get("tsmi_objects", NA)
+        t_notifs = cmp.get("tsmi_notifications", NA)
+        t_types = cmp.get("tsmi_types", NA)
+        t_total = cmp.get("tsmi_total", NA)
+        common = cmp.get("common_count", NA)
 
+        table(
+            ["", f"pysmi {pysmi_ver}", f"trishul-smi {tsmi_ver}"],
+            [
+                ["Named objects (flat)", p_total, "—"],
+                ["objects (OBJECT-TYPE etc)", "—", t_objs],
+                ["notifications", "—", t_notifs],
+                ["types (TCs)", "—", t_types],
+                ["Total named items", p_total, t_total],
+                ["Common names", common, common],
+            ],
+        )
 
-# ---------------------------------------------------------------------------
-# Markdown summary
-# ---------------------------------------------------------------------------
+        pysmi_only = cmp.get("pysmi_only", [])
+        tsmi_only = cmp.get("tsmi_only", [])
+        if pysmi_only:
+            lines.append(f"**pysmi-only** ({len(pysmi_only)}): "
+                         f"`{'`, `'.join(pysmi_only[:20])}`"
+                         + (" …" if len(pysmi_only) > 20 else ""))
+            lines.append("")
+        if tsmi_only:
+            lines.append(f"**tsmi-only** ({len(tsmi_only)}): "
+                         f"`{'`, `'.join(tsmi_only[:20])}`"
+                         + (" …" if len(tsmi_only) > 20 else ""))
+            lines.append("")
 
-def build_summary(results: dict[str, Any]) -> str:
-    tools = results.get("tools", {})
-    mibs = results.get("meta", {}).get("mibs", [])
+    # -----------------------------------------------------------------------
+    h(2, "3. JSON Field Agreement — IF-MIB OBJECT-TYPE Objects")
 
-    lines = [
-        "## MIB Compiler Comparison Summary",
-        "",
-        f"Run at: {results.get('meta', {}).get('run_at', 'unknown')}",
-        f"MIBs:   {', '.join(mibs)}",
-        "",
-    ]
+    cmp_if = cross.get("IF-MIB", {})
+    if "error" not in cmp_if:
+        n = cmp_if.get("objecttype_common", 0)
+        table(
+            ["Metric", "Result"],
+            [
+                ["Common OBJECT-TYPE objects compared", n],
+                ["OID path agreement", cmp_if.get("oid_agreement", NA)],
+                ["nodetype agreement", cmp_if.get("nodetype_agreement", NA)],
+                ["status agreement", cmp_if.get("status_agreement", NA)],
+                ["max-access agreement (normalised)", cmp_if.get("maxaccess_agreement", NA)],
+            ],
+        )
 
-    # Timing table
-    lines.append("### Timing")
-    lines.append("| Tool | SC1 cold (s) | SC2 warm-1 (s) | SC2 warm-2 (s) |")
-    lines.append("|------|-------------|----------------|----------------|")
-    for slug, tdata in tools.items():
-        sc1 = tdata.get("sc1", {})
-        sc2 = tdata.get("sc2", {})
-        t1 = sc1.get("time_s", "n/a")
-        t2a = sc2.get("warm_run1_s", "n/a")
-        t2b = sc2.get("warm_run2_s", "n/a")
-        lines.append(f"| {slug} | {t1} | {t2a} | {t2b} |")
+    # -----------------------------------------------------------------------
+    h(2, "4. Sample Object Deep-Dive — IF-MIB")
 
-    lines.append("")
+    samples = cmp_if.get("samples", {})
+    for sample_name, s in samples.items():
+        h(3, sample_name)
+        p = s.get("pysmi", {})
+        t = s.get("tsmi", {})
 
-    # Object count table (IF-MIB)
-    lines.append("### Object counts (IF-MIB)")
-    lines.append("| Tool | Objects | Types | missing refs |")
-    lines.append("|------|---------|-------|--------------|")
-    for slug, tdata in tools.items():
-        ja = tdata.get("json_analysis", {})
-        if_mib = ja.get("IF-MIB", {})
-        obj_count = if_mib.get("object_count", "n/a")
-        type_count = if_mib.get("type_count", "n/a")  # tsmi only
-        missing = if_mib.get("missing_refs", [])
-        missing_str = ", ".join(missing) if missing else "none"
-        lines.append(f"| {slug} | {obj_count} | {type_count} | {missing_str} |")
+        p_syntax = p.get("syntax")
+        if isinstance(p_syntax, dict):
+            p_syntax_str = p_syntax.get("type", str(p_syntax))
+            if isinstance(p_syntax_str, dict):
+                p_syntax_str = p_syntax_str.get("name", str(p_syntax_str))
+        else:
+            p_syntax_str = str(p_syntax) if p_syntax is not None else NA
 
-    lines.append("")
+        rows = [
+            ["class / object_type", p.get("class", NA), t.get("object_type", NA)],
+            ["oid / oid_path", str(p.get("oid", NA))[:50], str(t.get("oid_path", NA))[:50]],
+            ["nodetype", p.get("nodetype", NA), t.get("nodetype", NA)],
+            ["status", p.get("status", NA), t.get("status", NA)],
+            ["max_access", p.get("maxaccess", NA), t.get("max_access", NA)],
+            ["syntax (raw)", p_syntax_str, t.get("syntax", NA)],
+            ["constraints", NA, str(t.get("constraints", NA))[:60]],
+            ["description present", _yn(p.get("has_description")), _yn(t.get("has_description"))],
+            ["index", _yn(p.get("has_index")), _yn(t.get("has_index"))],
+        ]
+        if sample_name == "linkDown":
+            rows.append(["members", str(p.get("members_raw", NA))[:60],
+                         str(t.get("members", NA))[:80]])
+        table([f"Field", f"pysmi {pysmi_ver}", f"trishul-smi {tsmi_ver}"], rows)
 
-    # pysnmp flags (IF-MIB)
-    lines.append("### pysnmp output (IF-MIB)")
-    lines.append("| Tool | exit | lines | mibbuilder_std | linkdown_setobjects |")
-    lines.append("|------|------|-------|----------------|---------------------|")
-    for slug, tdata in tools.items():
-        py = tdata.get("pysnmp", {})
-        if_mib_py = py.get("IF-MIB", {})
-        exit_code = py.get("exit_code", "n/a")
-        lc = if_mib_py.get("lines", "n/a")
-        mb_std = if_mib_py.get("mibbuilder_standard", "n/a")
-        ld_so = if_mib_py.get("linkdown_setobjects", "n/a")
-        lines.append(f"| {slug} | {exit_code} | {lc} | {mb_std} | {ld_so} |")
+    # -----------------------------------------------------------------------
+    h(2, "5. Module Metadata — IF-MIB")
 
-    lines.append("")
+    meta_cmp = cmp_if.get("metadata", {})
+    if meta_cmp:
+        pm = meta_cmp.get("pysmi", {})
+        tm = meta_cmp.get("tsmi", {})
+        table(
+            ["Field", f"pysmi {pysmi_ver}", f"trishul-smi {tsmi_ver}"],
+            [
+                ["lastupdated", pm.get("lastupdated", NA), tm.get("lastupdated", NA)],
+                ["organization", _yn(pm.get("organization")), _yn(tm.get("organization"))],
+                ["contactinfo", _yn(pm.get("contactinfo")), _yn(tm.get("contactinfo"))],
+                ["description", _yn(pm.get("description")), _yn(tm.get("description"))],
+                ["revisions count", pm.get("revisions", NA), tm.get("revisions", NA)],
+            ],
+        )
 
-    # Cross-version diffs summary
-    vd = {}
-    for slug, tdata in tools.items():
-        if tdata.get("version_diffs"):
-            vd.update(tdata["version_diffs"])
-    if vd:
-        lines.append("### Cross-version diffs")
-        for pair_key, mib_diffs in vd.items():
-            lines.append(f"**{pair_key}**")
-            lines.append("| MIB | diff lines |")
-            lines.append("|-----|-----------|")
-            for mib, dinfo in mib_diffs.items():
-                dl = dinfo.get("diff_lines", "err")
-                lines.append(f"| {mib} | {dl} |")
+    # -----------------------------------------------------------------------
+    h(2, "6. trishul-smi v0.3.0 New Fields — IF-MIB")
+
+    v030 = cmp_if.get("tsmi_v030", {})
+    if v030:
+        table(
+            ["Check", "Result", "Notes"],
+            [
+                ["OBJECT-TYPE objects with nodetype",
+                 v030.get("objects_with_nodetype", NA),
+                 "table/row/column/scalar"],
+                ["Objects with constraints dict",
+                 len(v030.get("objects_with_constraints", [])),
+                 ", ".join(v030.get("objects_with_constraints", [])[:5])],
+                ["notification members attributed",
+                 _yn(v030.get("notif_members_attributed")),
+                 "{module, object} dicts"],
+                ["lastupdated ISO 8601",
+                 _yn(v030.get("lastupdated_iso")),
+                 "YYYY-MM-DD format"],
+                ["revision dates ISO 8601",
+                 _yn(v030.get("revisions_iso")),
+                 "all revisions"],
+                ["module description present",
+                 _yn(v030.get("module_description_present")),
+                 "from MODULE-IDENTITY"],
+            ],
+        )
+
+    # -----------------------------------------------------------------------
+    h(2, "7. No-texts Mode")
+
+    for mib in mibs:
+        nt_cmp = cross_nt.get(mib, {})
+        if "error" in nt_cmp:
+            continue
+
+        # File size comparison
+        pysmi_td = tools_data.get(pysmi_slug, {}) if pysmi_slug else {}
+        tsmi_td = tools_data.get(tsmi_slug, {}) if tsmi_slug else {}
+
+        p_wt_sz = (pysmi_td.get("with_texts", {}).get("json_sizes", {}).get(mib))
+        p_nt_sz = (pysmi_td.get("no_texts", {}).get("json_sizes", {}).get(mib))
+        t_wt_sz = (tsmi_td.get("with_texts", {}).get("json_sizes", {}).get(mib))
+        t_nt_sz = (tsmi_td.get("no_texts", {}).get("json_sizes", {}).get(mib))
+
+        def _sz(sz: int | None) -> str:
+            return f"{sz // 1024} KB" if sz else NA
+
+        h(3, mib)
+        table(
+            ["Metric", f"pysmi {pysmi_ver}", f"trishul-smi {tsmi_ver}"],
+            [
+                ["with-texts size", _sz(p_wt_sz), _sz(t_wt_sz)],
+                ["no-texts size", _sz(p_nt_sz), _sz(t_nt_sz)],
+                ["size reduction", _reduction(p_wt_sz, p_nt_sz), _reduction(t_wt_sz, t_nt_sz)],
+                ["descriptions stripped", _yn(nt_cmp.get("pysmi_descriptions_stripped")),
+                 _yn(nt_cmp.get("tsmi_descriptions_stripped"))],
+                ["module_metadata stripped", NA, _yn(nt_cmp.get("tsmi_metadata_stripped"))],
+            ],
+        )
+
+    # -----------------------------------------------------------------------
+    h(2, "8. pysnmp Output — IF-MIB")
+
+    cp = cross_pysnmp.get("IF-MIB", {})
+    p_py_wt = cp.get("pysmi_with_texts", {})
+    p_py_nt = cp.get("pysmi_no_texts", {})
+    t_py_wt = cp.get("tsmi_with_texts", {})
+    t_py_nt = cp.get("tsmi_no_texts", {})
+
+    h(3, "8a. Line counts")
+    table(
+        ["Mode", f"pysmi {pysmi_ver}", f"trishul-smi {tsmi_ver}"],
+        [
+            ["with texts", p_py_wt.get("lines", NA), t_py_wt.get("lines", NA)],
+            ["no texts", p_py_nt.get("lines", NA), t_py_nt.get("lines", NA)],
+            ["reduction", _reduction(p_py_wt.get("lines"), p_py_nt.get("lines")),
+             _reduction(t_py_wt.get("lines"), t_py_nt.get("lines"))],
+        ],
+    )
+
+    h(3, "8b. Object class counts (with texts)")
+    p_cnt = p_py_wt.get("object_counts", {})
+    t_cnt = t_py_wt.get("object_counts", {})
+    table(
+        ["Class", f"pysmi {pysmi_ver}", f"trishul-smi {tsmi_ver}"],
+        [
+            ["MibTable", p_cnt.get("MibTable", NA), t_cnt.get("MibTable", NA)],
+            ["MibTableRow", p_cnt.get("MibTableRow", NA), t_cnt.get("MibTableRow", NA)],
+            ["MibTableColumn", p_cnt.get("MibTableColumn", NA), t_cnt.get("MibTableColumn", NA)],
+            ["MibScalar", p_cnt.get("MibScalar", NA), t_cnt.get("MibScalar", NA)],
+            ["TextualConvention", p_cnt.get("TextualConvention", NA), t_cnt.get("TextualConvention", NA)],
+        ],
+    )
+
+    h(3, "8c. Quality checks")
+
+    def _tc_guard(d: dict) -> str:
+        tc = d.get("tc_desc_guard", {})
+        if tc.get("ok"):
+            return f"{TICK} ({tc.get('guarded_count', 0)} guarded)"
+        return f"{CROSS} {tc.get('unguarded_samples', [])}"
+
+    def _mibtable_check(d: dict) -> str:
+        mt = d.get("mibtable_no_syntax", {})
+        return TICK if mt.get("ok") else f"{CROSS} {mt.get('violations', [])}"
+
+    table(
+        ["Check", f"pysmi {pysmi_ver}", f"trishul-smi {tsmi_ver}"],
+        [
+            ["mibBuilder guard", _yn(p_py_wt.get("mibbuilder_guard_ok")), _yn(t_py_wt.get("mibbuilder_guard_ok"))],
+            ["SNMPv2-SMI import", _yn(p_py_wt.get("imports", {}).get("SNMPv2-SMI")), _yn(t_py_wt.get("imports", {}).get("SNMPv2-SMI"))],
+            ["SNMPv2-TC import", _yn(p_py_wt.get("imports", {}).get("SNMPv2-TC")), _yn(t_py_wt.get("imports", {}).get("SNMPv2-TC"))],
+            ["ASN1 import", _yn(p_py_wt.get("imports", {}).get("ASN1")), _yn(t_py_wt.get("imports", {}).get("ASN1"))],
+            ["MibTable: no syntax arg", _mibtable_check(p_py_wt), _mibtable_check(t_py_wt)],
+            ["TC description loadTexts guard", _tc_guard(p_py_wt), _tc_guard(t_py_wt)],
+            ["TODO comments", p_py_wt.get("todo_count", NA), t_py_wt.get("todo_count", NA)],
+        ],
+    )
+
+    h(3, "8d. setObjects (IF-MIB notifications)")
+    for tool_label, d in [
+        (f"pysmi {pysmi_ver}", p_py_wt),
+        (f"trishul-smi {tsmi_ver}", t_py_wt),
+    ]:
+        so_list = d.get("setobjects", [])
+        if not so_list:
+            lines.append(f"**{tool_label}**: no setObjects calls found")
+            lines.append("")
+        else:
+            lines.append(f"**{tool_label}**:")
+            for so in so_list[:3]:
+                tuples_str = ", ".join(f"({t['module']}, {t['object']})" for t in so["tuples"])
+                lines.append(f"  `{so['name']}.setObjects({tuples_str})`")
             lines.append("")
 
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Main orchestrator
+# Main
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Collect MIB compiler comparison data."
-    )
-    parser.add_argument(
-        "--tools",
-        default="pysmi==1.5.11,pysmi==2.0.0,trishul-smi==0.2.0",
-        help="Comma-separated tool==version specs",
-    )
-    parser.add_argument(
-        "--mib-dir",
-        default=str(pathlib.Path.home() / "test" / "mibs"),
-        help="Directory containing MIB source files",
-    )
-    parser.add_argument(
-        "--mibs",
-        default=(
-            "IF-MIB,IP-MIB,SNMPv2-MIB,ENTITY-MIB,HOST-RESOURCES-MIB,"
-            "TCP-MIB,UDP-MIB,IANAifType-MIB,INET-ADDRESS-MIB,UUID-TC-MIB,"
-            "IANA-ENTITY-MIB,SNMP-FRAMEWORK-MIB"
-        ),
-        help="Comma-separated MIB names to compile",
-    )
-    parser.add_argument(
-        "--work-dir",
-        default="/tmp/mib-compare",
-        help="Working directory for venvs and outputs",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=None,
-        help=(
-            "Root directory for run outputs. Each run creates a timestamped "
-            "subdirectory here (e.g. 2026-05-02T10-30-00/). "
-            f"Defaults to {_DEFAULT_OUTPUT_DIR}"
-        ),
-    )
-    parser.add_argument(
-        "--output",
-        default=None,
-        help=(
-            "Path for the JSON results file. Defaults to results.json inside "
-            "the timestamped run subdirectory under --output-dir."
-        ),
-    )
-    parser.add_argument(
-        "--skip-install",
-        action="store_true",
-        help="Skip venv creation/install (use existing venvs)",
-    )
-    parser.add_argument(
-        "--skip-pysnmp",
-        action="store_true",
-        help="Skip pysnmp output checks",
-    )
+    parser = argparse.ArgumentParser(description="Comprehensive MIB compiler comparison.")
+    parser.add_argument("--tools", default="pysmi==2.0.0,trishul-smi",
+                        help="Comma-separated tool==version specs")
+    parser.add_argument("--mib-dir", default=str(pathlib.Path.home() / "test" / "mibs"))
+    parser.add_argument("--mibs", default=(
+        "IF-MIB,IP-MIB,SNMPv2-MIB,ENTITY-MIB,HOST-RESOURCES-MIB,"
+        "TCP-MIB,UDP-MIB,IANAifType-MIB,INET-ADDRESS-MIB,UUID-TC-MIB,"
+        "IANA-ENTITY-MIB,SNMP-FRAMEWORK-MIB"
+    ))
+    parser.add_argument("--work-dir", default="/tmp/mib-compare")
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--skip-install", action="store_true")
+    parser.add_argument("--skip-compile", action="store_true",
+                        help="Skip all compile steps (use existing output dirs)")
+    parser.add_argument("--local-tsmi", default=None, metavar="PATH")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-
     tool_specs = [t.strip() for t in args.tools.split(",") if t.strip()]
     mibs = [m.strip() for m in args.mibs.split(",") if m.strip()]
     mib_dir = pathlib.Path(args.mib_dir).expanduser().resolve()
     work_dir = pathlib.Path(args.work_dir).expanduser().resolve()
+    local_tsmi = pathlib.Path(args.local_tsmi).expanduser().resolve() if args.local_tsmi else None
 
-    # Resolve output run directory (timestamped subdir under --output-dir)
     run_at = datetime.datetime.now(datetime.timezone.utc)
     run_ts = run_at.strftime("%Y-%m-%dT%H-%M-%S")
     output_root = pathlib.Path(
@@ -793,135 +1089,158 @@ def main() -> None:
     ).expanduser().resolve()
     run_dir = output_root / run_ts
     run_dir.mkdir(parents=True, exist_ok=True)
-
-    output_path = (
-        pathlib.Path(args.output).expanduser()
-        if args.output
-        else run_dir / "results.json"
-    )
-    summary_path = run_dir / "summary.md"
-
     work_dir.mkdir(parents=True, exist_ok=True)
 
     log(f"=== MIB Compiler Comparison ===")
-    log(f"Tools:   {tool_specs}")
-    log(f"MIBs:    {mibs}")
-    log(f"MIB dir: {mib_dir}")
-    log(f"Work:    {work_dir}")
-    log(f"Run dir: {run_dir}")
-    log(f"Output:  {output_path}")
-    log("")
+    log(f"Tools:  {tool_specs}")
+    log(f"MIBs:   {mibs[:4]}{'...' if len(mibs) > 4 else ''}")
+    log(f"Run:    {run_dir}")
 
     results: dict[str, Any] = {
         "meta": {
-            "run_at": run_at,
+            "run_at": str(run_at),
             "mib_dir": str(mib_dir),
             "mibs": mibs,
             "tools": tool_specs,
+            "local_tsmi": str(local_tsmi) if local_tsmi else None,
         },
         "tools": {},
     }
 
-    # Track pysmi slugs for cross-version diff
-    pysmi_slugs: list[str] = []
+    pysmi_slug: str | None = None
+    tsmi_slug: str | None = None
 
-    # -----------------------------------------------------------------------
-    # Per-tool processing
-    # -----------------------------------------------------------------------
     for tool_spec in tool_specs:
         name, version = tool_name_and_version(tool_spec)
-        slug = tool_slug(tool_spec)
-        log(f"--- Tool: {tool_spec} (slug={slug}) ---")
+        log(f"\n--- {tool_spec} ---")
 
-        # Step 1: venv setup
-        log(f"[1] Setting up venv for {tool_spec}")
-        venv_info = setup_venv(tool_spec, work_dir, args.skip_install)
+        venv_info = setup_venv(tool_spec, work_dir, args.skip_install, local_tsmi)
+        slug = venv_info["slug"]
         venv_dir = pathlib.Path(venv_info["venv_dir"])
+        is_tsmi = (name == "trishul-smi")
 
-        tool_result: dict[str, Any] = {
+        if is_tsmi:
+            tsmi_slug = slug
+        else:
+            pysmi_slug = slug
+
+        td: dict[str, Any] = {
             "installed_version": venv_info.get("installed_version"),
             "install_error": venv_info.get("install_error"),
         }
 
-        is_tsmi = (name == "trishul-smi")
-        sc1_dir = work_dir / f"sc1-{slug}"
-        sc2_dir = work_dir / f"sc2-{slug}"
-
-        # Step 2: SC1 — cold cache, texts ON
-        log(f"[2] SC1 — cold cache, texts ON")
-        if is_tsmi:
-            sc1 = run_tsmi_sc1(venv_dir, mib_dir, sc1_dir, mibs)
-        else:
-            sc1 = run_pysmi_sc1(venv_dir, mib_dir, sc1_dir, mibs)
-            pysmi_slugs.append(slug)
-        tool_result["sc1"] = sc1
-
-        # Step 3: SC2 — warm cache, texts OFF
-        log(f"[3] SC2 — warm cache, texts OFF")
-        if is_tsmi:
-            sc2 = run_tsmi_sc2(venv_dir, mib_dir, work_dir, mibs, slug)
-        else:
-            sc2 = run_pysmi_sc2(venv_dir, mib_dir, sc2_dir, mibs)
-        tool_result["sc2"] = sc2
-
-        # Step 4: File sizes
-        log(f"[4] Collecting file sizes")
-        sc1_sizes = collect_file_sizes(sc1_dir, mibs)
-        if is_tsmi:
-            sc2_out_dir = pathlib.Path(sc2.get("sc2_out_dir", str(sc2_dir)))
-        else:
-            sc2_out_dir = sc2_dir
-        sc2_sizes = collect_file_sizes(sc2_out_dir, mibs)
-        tool_result["file_sizes"] = {"sc1": sc1_sizes, "sc2": sc2_sizes}
-
-        # Step 5: JSON analysis (SC1 output, texts ON)
-        log(f"[5] JSON object analysis")
-        if is_tsmi:
-            tool_result["json_analysis"] = analyse_tsmi_json(sc1_dir, mibs)
-        else:
-            tool_result["json_analysis"] = analyse_pysmi_json(sc1_dir, mibs)
-
-        # Step 6: pysnmp output checks
-        tool_result["pysnmp"] = {}
-        if not args.skip_pysnmp:
-            log(f"[6] pysnmp output checks")
-            py_out = work_dir / f"pysnmp-{slug}"
+        # ---------- JSON: with-texts cold ----------
+        wt_json_dir = work_dir / f"json-wt-{slug}"
+        if not args.skip_compile:
+            log(f"  [json with-texts cold]")
             if is_tsmi:
-                tool_result["pysnmp"] = run_tsmi_pysnmp(venv_dir, mib_dir, py_out)
+                r = run_tsmi_json(venv_dir, mib_dir, wt_json_dir, mibs, with_texts=True, cold=True)
             else:
-                tool_result["pysnmp"] = run_pysmi_pysnmp(venv_dir, mib_dir, py_out)
+                r = run_pysmi_json(venv_dir, mib_dir, wt_json_dir, mibs, with_texts=True, cold=True)
+            cold_s = r["time_s"]
         else:
-            log(f"[6] skipping pysnmp (--skip-pysnmp)")
+            cold_s = NA
 
-        results["tools"][slug] = tool_result
-        log("")
+        # ---------- JSON: with-texts warm (tsmi only — pysmi doesn't have a meaningful warm) ----------
+        warm_s: Any = NA
+        if is_tsmi and not args.skip_compile:
+            log(f"  [json with-texts warm]")
+            warm_s = warm_tsmi(venv_dir, mib_dir, mibs)
+            r2 = run_tsmi_json(venv_dir, mib_dir, wt_json_dir, mibs, with_texts=True, cold=False)
+            warm_s = r2["time_s"]
 
-    # Step 7: Cross-version JSON diff
-    log(f"[7] Cross-version JSON diff")
-    if len(pysmi_slugs) >= 2:
-        version_diffs = cross_version_diff(results, pysmi_slugs, work_dir, mibs)
-        # Attach to the first pysmi tool entry
-        first_pysmi_slug = pysmi_slugs[0]
-        if first_pysmi_slug in results["tools"]:
-            results["tools"][first_pysmi_slug]["version_diffs"] = version_diffs
-    else:
-        log("  fewer than 2 pysmi versions, skipping cross-version diff")
-        for slug in pysmi_slugs:
-            if slug in results["tools"]:
-                results["tools"][slug]["version_diffs"] = {}
+        # ---------- JSON: no-texts cold ----------
+        nt_json_dir = work_dir / f"json-nt-{slug}"
+        if not args.skip_compile:
+            log(f"  [json no-texts cold]")
+            if is_tsmi:
+                r_nt = run_tsmi_json(venv_dir, mib_dir, nt_json_dir, mibs, with_texts=False, cold=True)
+            else:
+                r_nt = run_pysmi_json(venv_dir, mib_dir, nt_json_dir, mibs, with_texts=False, cold=True)
+            nt_cold_s = r_nt["time_s"]
+        else:
+            nt_cold_s = NA
 
-    # Step 8: Write output
-    log(f"[8] Writing results to {output_path}")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
+        td["with_texts"] = {
+            "cold_s": cold_s,
+            "warm_s": warm_s,
+            "json_dir": str(wt_json_dir),
+            "json_sizes": dir_sizes(wt_json_dir, mibs, ".json"),
+        }
+        td["no_texts"] = {
+            "cold_s": nt_cold_s,
+            "json_dir": str(nt_json_dir),
+            "json_sizes": dir_sizes(nt_json_dir, mibs, ".json"),
+        }
+
+        # ---------- pysnmp: with-texts and no-texts ----------
+        py_wt_dir = work_dir / f"pysnmp-wt-{slug}"
+        py_nt_dir = work_dir / f"pysnmp-nt-{slug}"
+        if not args.skip_compile:
+            log(f"  [pysnmp with-texts]")
+            if is_tsmi:
+                run_tsmi_pysnmp(venv_dir, mib_dir, py_wt_dir, ["IF-MIB"], with_texts=True)
+                log(f"  [pysnmp no-texts]")
+                run_tsmi_pysnmp(venv_dir, mib_dir, py_nt_dir, ["IF-MIB"], with_texts=False)
+            else:
+                run_pysmi_pysnmp(venv_dir, mib_dir, py_wt_dir, ["IF-MIB"], with_texts=True)
+                log(f"  [pysnmp no-texts]")
+                run_pysmi_pysnmp(venv_dir, mib_dir, py_nt_dir, ["IF-MIB"], with_texts=False)
+
+        td["pysnmp_wt_dir"] = str(py_wt_dir)
+        td["pysnmp_nt_dir"] = str(py_nt_dir)
+        results["tools"][slug] = td
+        log(f"  done.")
+
+    # -----------------------------------------------------------------------
+    # Cross-tool JSON comparison (with-texts outputs)
+    # -----------------------------------------------------------------------
+    if pysmi_slug and tsmi_slug:
+        p_wt_dir = pathlib.Path(results["tools"][pysmi_slug]["with_texts"]["json_dir"])
+        t_wt_dir = pathlib.Path(results["tools"][tsmi_slug]["with_texts"]["json_dir"])
+        p_nt_dir = pathlib.Path(results["tools"][pysmi_slug]["no_texts"]["json_dir"])
+        t_nt_dir = pathlib.Path(results["tools"][tsmi_slug]["no_texts"]["json_dir"])
+
+        log(f"\n[cross-tool JSON comparison]")
+        results["cross_json"] = cross_json_compare(p_wt_dir, t_wt_dir, mibs)
+        results["cross_no_texts"] = cross_no_texts(p_nt_dir, t_nt_dir, mibs)
+
+        # Cross-tool pysnmp comparison
+        log(f"[cross-tool pysnmp comparison]")
+        pysnmp_cross: dict[str, Any] = {}
+        p_py_wt_dir = pathlib.Path(results["tools"][pysmi_slug]["pysnmp_wt_dir"])
+        p_py_nt_dir = pathlib.Path(results["tools"][pysmi_slug]["pysnmp_nt_dir"])
+        t_py_wt_dir = pathlib.Path(results["tools"][tsmi_slug]["pysnmp_wt_dir"])
+        t_py_nt_dir = pathlib.Path(results["tools"][tsmi_slug]["pysnmp_nt_dir"])
+
+        for mib in ["IF-MIB"]:
+            p_f_wt = _find_pysnmp_file(p_py_wt_dir, mib)
+            p_f_nt = _find_pysnmp_file(p_py_nt_dir, mib)
+            t_f_wt = _find_pysnmp_file(t_py_wt_dir, mib)
+            t_f_nt = _find_pysnmp_file(t_py_nt_dir, mib)
+
+            pysnmp_cross[mib] = {
+                "pysmi_with_texts": deep_pysnmp_inspect(p_f_wt, mib) if p_f_wt else {"error": "missing"},
+                "pysmi_no_texts": deep_pysnmp_inspect(p_f_nt, mib) if p_f_nt else {"error": "missing"},
+                "tsmi_with_texts": deep_pysnmp_inspect(t_f_wt, mib) if t_f_wt else {"error": "missing"},
+                "tsmi_no_texts": deep_pysnmp_inspect(t_f_nt, mib) if t_f_nt else {"error": "missing"},
+            }
+        results["cross_pysnmp"] = pysnmp_cross
+
+    # -----------------------------------------------------------------------
+    # Write outputs
+    # -----------------------------------------------------------------------
+    results_path = run_dir / "results.json"
+    with open(results_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
-    log(f"  wrote {output_path.stat().st_size} bytes")
+    log(f"\nResults JSON → {results_path}")
 
-    # Build markdown summary, print to stdout, and save to run dir
-    summary_md = build_summary(results)
-    print(summary_md)
-    summary_path.write_text(summary_md + "\n")
-    log(f"  wrote summary to {summary_path}")
+    report_md = build_report(results)
+    summary_path = run_dir / "summary.md"
+    summary_path.write_text(report_md + "\n")
+    log(f"Summary MD  → {summary_path}")
+
+    print(report_md)
 
 
 if __name__ == "__main__":

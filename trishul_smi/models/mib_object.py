@@ -20,3 +20,4 @@ class MibObject:
     augments: str | None = None  # columnar objects: AUGMENTS { <row> }
     oid_parent: str | None = None  # leading name arc before numeric arcs, e.g. "ifMIB"
     constraints: dict[str, Any] | None = None  # inline SYNTAX constraint (range/size/enum/bits)
+    members: list[str] | None = None  # OBJECTS/NOTIFICATIONS clause members (groups, notifications)

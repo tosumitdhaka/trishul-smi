@@ -38,6 +38,18 @@ _SMIv2_PATTERN = re.compile(
     r"(?<![A-Za-z0-9\-])(" + "|".join(re.escape(m) for m in SMIv2_MARKERS) + r")(?![A-Za-z0-9\-])"
 )
 
+# Strip MACRO body content before LALR parsing.
+# MACRO..END blocks contain free-form ASN.1 notation that is not valid grammar input.
+# We reduce each to "MACRO-NAME MACRO ::= BEGIN END" (preserving newlines for line numbers).
+_MACRO_BODY_RE = re.compile(r"\bMACRO\b(.*?)\bEND\b", re.DOTALL)
+
+
+def _strip_macro_bodies(text: str) -> str:
+    def _keep_newlines(m: re.Match[str]) -> str:
+        return "MACRO ::= BEGIN" + "".join(c for c in m.group(1) if c in "\r\n") + "END"
+
+    return _MACRO_BODY_RE.sub(_keep_newlines, text)
+
 
 def _load_grammar(name: str) -> str:
     """Load a .lark grammar file from the grammar/ package directory."""
@@ -85,6 +97,7 @@ class SmiParser:
 
     def parse(self, text: str) -> MibModule:
         """Parse raw ASN.1 text. Raises ParseError on invalid input."""
+        text = _strip_macro_bodies(text)
         dialect: Literal["smiv2", "smiv1"] = (
             _detect_dialect(text) if self._dialect == "auto" else self._dialect
         )

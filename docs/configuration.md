@@ -27,7 +27,7 @@ config = CompilerConfig(
 | `max_mib_size` | `int` | `10485760` (10 MB) | Maximum MIB source size in bytes; raises `MibSizeLimitError` if exceeded |
 | `http_timeout` | `float` | `30.0` | Per-request HTTP timeout in seconds |
 | `http_retries` | `int` | `3` | Number of retries on transient HTTP failure |
-| `no_texts` | `bool` | `False` | Suppress `setDescription`/`setOrganization`/`setRevisions` and TC `description` in pysnmp output |
+| `no_texts` | `bool` | `False` | Omit description, organization, and contact text from output for leaner files. Structural metadata (OIDs, dates, types) is always preserved. |
 
 ---
 

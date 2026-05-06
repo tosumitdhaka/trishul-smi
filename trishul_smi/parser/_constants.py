@@ -20,9 +20,10 @@ SMIv2_MARKERS: frozenset[str] = frozenset(
     }
 )
 
-# Well-known SNMP base MIBs that are built into pysnmp and similar tools.
-# The resolver skips fetching these — they are not distributed as standalone
-# ASN.1 files and will always 404 from MIB repositories.
+# Well-known SNMP infrastructure MIBs skipped during *transitive* dependency
+# resolution — they are not distributed as standalone ASN.1 files and will
+# 404 from MIB repositories when chased as deps. Explicit compile requests
+# for these names are still honoured (resolver.py initial pending set).
 BASE_MIBS: frozenset[str] = frozenset(
     {
         "SNMPv2-SMI",

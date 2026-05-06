@@ -86,10 +86,11 @@ class MibResolver:
         """
         fetched: dict[str, MibModule] = {}
         errors: dict[str, Exception] = {}
-        # Silently skip BASE_MIBs even when explicitly requested — they are
-        # pysnmp builtins that don't need compilation and may not parse cleanly
-        # (e.g. SNMPv2-SMI contains MACRO definitions).
-        pending: set[str] = {n for n in mib_names if n not in BASE_MIBS}
+        # Explicit requests are always honoured; BASE_MIBS filter applies only
+        # to transitive dependency resolution (line 146) so that well-known
+        # infrastructure MIBs are skipped when pulled in as deps but still
+        # compiled when the user explicitly asks for them.
+        pending: set[str] = set(mib_names)
 
         while pending:
             # --- Cache check (synchronous, cheap) ---

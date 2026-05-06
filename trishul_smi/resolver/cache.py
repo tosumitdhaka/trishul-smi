@@ -48,6 +48,7 @@ def _module_to_bytes(module: MibModule) -> bytes:
             "index": o.index,
             "augments": o.augments,
             "constraints": o.constraints,
+            "members": o.members,
         }
 
     def _typ(t: MibType) -> dict[str, Any]:
@@ -68,7 +69,10 @@ def _module_to_bytes(module: MibModule) -> bytes:
         "types": {k: _typ(v) for k, v in module.types.items()},
         "notifications": {k: _obj(v) for k, v in module.notifications.items()},
         "organization": module.organization,
+        "contactinfo": module.contactinfo,
+        "lastupdated": module.lastupdated,
         "revisions": module.revisions,
+        "description": module.description,
     }
     return orjson.dumps(payload, option=orjson.OPT_INDENT_2)
 
@@ -90,6 +94,7 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
             index=o.get("index"),
             augments=o.get("augments"),
             constraints=o.get("constraints"),
+            members=o.get("members"),
         )
 
     def _typ(t: dict[str, Any]) -> MibType:
@@ -110,7 +115,10 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
         types={k: _typ(v) for k, v in d.get("types", {}).items()},
         notifications={k: _obj(v) for k, v in d.get("notifications", {}).items()},
         organization=d.get("organization"),
+        contactinfo=d.get("contactinfo"),
+        lastupdated=d.get("lastupdated"),
         revisions=d.get("revisions") or [],
+        description=d.get("description"),
     )
 
 

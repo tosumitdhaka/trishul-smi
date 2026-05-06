@@ -30,7 +30,7 @@ Compile one or more MIBs and all their transitive dependencies.
 | `--max-mib-size` | `10485760` | Maximum MIB source size in bytes. |
 | `--timeout` | `30.0` | HTTP timeout in seconds. |
 | `--retries` | `3` | HTTP retry count on transient failure. |
-| `--no-texts` | off | Suppress `setDescription`/`setOrganization`/`setRevisions` and TC descriptions in pysnmp output. |
+| `--no-texts` | off | Omit description, organization, and contact text from output for leaner files. Structural metadata (OIDs, dates, types) is always preserved. |
 | `-v` / `--verbose` | — | Show output file paths per module. |
 | `--help` | — | Show help and exit. |
 
@@ -60,8 +60,8 @@ tsmi compile IF-MIB --online --cache-dir ""
 # Show per-module output paths
 tsmi compile IF-MIB --online --verbose
 
-# Lean pysnmp output without description text
-tsmi compile IF-MIB --online -f pysnmp --no-texts
+# Lean output without description text (works for both json and pysnmp)
+tsmi compile IF-MIB --online --no-texts
 ```
 
 **Sample output**
@@ -133,6 +133,7 @@ One `.json` file per MIB module:
   "module": "IF-MIB",
   "language": "SMIv2",
   "generated_by": "trishul-smi",
+  "generated_at": "2026-05-06T12:00:00Z",
   "imports": {
     "SNMPv2-SMI": ["MODULE-IDENTITY", "OBJECT-TYPE"]
   },
@@ -141,14 +142,31 @@ One `.json` file per MIB module:
       "oid": "1.3.6.1.2.1.2.2.1.1",
       "oid_path": [1, 3, 6, 1, 2, 1, 2, 2, 1, 1],
       "object_type": "OBJECT-TYPE",
+      "class": "objecttype",
+      "nodetype": "column",
       "syntax": "InterfaceIndex",
       "max_access": "read-only",
       "status": "current",
       "description": "A unique value ..."
     }
   },
-  "types": {},
-  "notifications": {}
+  "types": {
+    "InterfaceIndex": {
+      "class": "textualconvention",
+      "base_type": "Integer32",
+      "display_hint": "d",
+      "status": "current",
+      "description": "..."
+    }
+  },
+  "notifications": {},
+  "module_metadata": {
+    "lastupdated": "2000-06-14",
+    "revisions": [{"date": "2000-06-14", "description": "..."}],
+    "organization": "IETF Interfaces MIB Working Group",
+    "contactinfo": "...",
+    "description": "..."
+  }
 }
 ```
 

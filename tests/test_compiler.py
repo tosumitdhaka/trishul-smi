@@ -305,11 +305,11 @@ class TestMibCompiler:
         assert "mibBuilder" in py_file.read_text()
 
     @pytest.mark.asyncio
-    async def test_missing_mib_status_failed(self, tmp_path: Path):
+    async def test_missing_mib_status_missing(self, tmp_path: Path):
         config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
         compiler = MibCompiler(config).add_reader(MockReader({}))
         results = await compiler.compile("MISSING-MIB")
-        assert any(r.name == "MISSING-MIB" and r.status == "failed" for r in results)
+        assert any(r.name == "MISSING-MIB" and r.status == "missing" for r in results)
 
     @pytest.mark.asyncio
     async def test_fluent_add_reader(self, tmp_path: Path):
@@ -447,12 +447,13 @@ class TestPysnmpSyntaxEdgeCases:
         src = PysnmpFormatter().format(m)
         assert "OctetString()  # unknown syntax" in src
 
-    def test_spaced_syntax_fallback(self):
+    def test_sequence_of_becomes_mibtable(self):
         m = MibModule(
             name="X", language="SMIv2", objects={"o": self._obj("o", "SEQUENCE OF Entry")}
         )
         src = PysnmpFormatter().format(m)
-        assert "TODO: map syntax" in src
+        assert "MibTable(" in src
+        assert "TODO: map syntax" not in src
 
     def test_named_syntax_with_hyphen(self):
         m = MibModule(name="X", language="SMIv2", objects={"o": self._obj("o", "Display-String")})
@@ -889,3 +890,454 @@ END
         child = next((x for x in results if x.name == "CHILD-DEP-MIB"), None)
         assert child is not None and child.is_dependency is False
         assert base is not None and base.is_dependency is True
+
+
+# ---------------------------------------------------------------------------
+# v0.3.0 gap-closure tests
+# ---------------------------------------------------------------------------
+
+_NOTIF_MIB = """
+NOTIF-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, NOTIFICATION-TYPE, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+notifMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "Notif Org"
+    CONTACT-INFO "info@example.com"
+    DESCRIPTION  "MIB with notifications."
+    ::= { 1 20 }
+ifIndex OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Interface index."
+    ::= { notifMIB 1 }
+ifOperStatus OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Operational status."
+    ::= { notifMIB 2 }
+linkDown NOTIFICATION-TYPE
+    OBJECTS     { ifIndex, ifOperStatus }
+    STATUS      current
+    DESCRIPTION "Link went down."
+    ::= { notifMIB 3 }
+END
+"""
+
+_GROUP_MIB = """
+GROUP-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI
+    OBJECT-GROUP FROM SNMPv2-CONF ;
+groupMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "Group Org"
+    CONTACT-INFO "g@example.com"
+    DESCRIPTION  "MIB with conformance groups."
+    ::= { 1 21 }
+fooObj OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "A foo."
+    ::= { groupMIB 1 }
+barObj OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "A bar."
+    ::= { groupMIB 2 }
+fooGroup OBJECT-GROUP
+    OBJECTS     { fooObj, barObj }
+    STATUS      current
+    DESCRIPTION "Foo group."
+    ::= { groupMIB 3 }
+END
+"""
+
+
+class TestV030JsonGaps:
+    """v0.3.0: JSON output gap closure."""
+
+    def _fmt(self, mib_text: str, no_texts: bool = False) -> dict:
+        from trishul_smi.parser.smi_parser import SmiParser
+
+        parser = SmiParser()
+        module = parser.parse(mib_text)
+        return json.loads(JsonFormatter(no_texts=no_texts).format(module))
+
+    # Item 1 — NOTIFICATION-TYPE members in JSON with module attribution
+    def test_notification_members_present(self):
+        data = self._fmt(_NOTIF_MIB)
+        assert "linkDown" in data["notifications"]
+        notif = data["notifications"]["linkDown"]
+        assert notif["members"] == [
+            {"module": "NOTIF-MIB", "object": "ifIndex"},
+            {"module": "NOTIF-MIB", "object": "ifOperStatus"},
+        ]
+
+    # Item 2 — --no-texts suppresses descriptions in JSON
+    def test_no_texts_removes_description(self):
+        full = self._fmt(_NOTIF_MIB, no_texts=False)
+        lean = self._fmt(_NOTIF_MIB, no_texts=True)
+        assert "description" in full["notifications"]["linkDown"]
+        assert "description" not in lean["notifications"]["linkDown"]
+        assert "description" in full["objects"]["ifIndex"]
+        assert "description" not in lean["objects"]["ifIndex"]
+
+    def test_no_texts_module_metadata_structural_only(self):
+        full = self._fmt(_NOTIF_MIB, no_texts=False)
+        lean = self._fmt(_NOTIF_MIB, no_texts=True)
+        # module_metadata is always present — structural fields survive no-texts
+        assert "module_metadata" in full
+        assert "module_metadata" in lean
+        lean_meta = lean["module_metadata"]
+        assert "lastupdated" in lean_meta
+        assert "revisions" in lean_meta
+        # text fields are stripped
+        assert "organization" not in lean_meta
+        assert "contactinfo" not in lean_meta
+        assert "description" not in lean_meta
+        # revision entries have date but no description
+        for rev in lean_meta["revisions"]:
+            assert "date" in rev
+            assert "description" not in rev
+
+    def test_no_texts_shrinks_output(self):
+        from trishul_smi.parser.smi_parser import SmiParser
+
+        module = SmiParser().parse(_NOTIF_MIB)
+        full = JsonFormatter(no_texts=False).format(module)
+        lean = JsonFormatter(no_texts=True).format(module)
+        assert len(lean) < len(full)
+
+    # Item 3 — module-identity metadata in JSON
+    def test_module_metadata_fields(self):
+        data = self._fmt(_NOTIF_MIB)
+        meta = data["module_metadata"]
+        assert meta["organization"] == "Notif Org"
+        assert meta["contactinfo"] == "info@example.com"
+        assert meta["lastupdated"] == "2020-01-01"
+        assert isinstance(meta["revisions"], list)
+
+    # J1 — nodetype field on OBJECT-TYPE entries (uses absolute OIDs so paths resolve)
+    def test_nodetype_table_row_column_scalar(self):
+        table_mib = """
+TABLE-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+tableMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "T"
+    CONTACT-INFO "t@t.com"
+    DESCRIPTION  "T."
+    ::= { 1 60 }
+myTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF MyEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "The table."
+    ::= { 1 60 1 }
+MyEntry ::= SEQUENCE { myIndex Integer32, myVal Integer32 }
+myEntry OBJECT-TYPE
+    SYNTAX      MyEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "A row."
+    ::= { 1 60 1 1 }
+myIndex OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Index."
+    ::= { 1 60 1 1 1 }
+myVal OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Value."
+    ::= { 1 60 1 1 2 }
+myScalar OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Scalar."
+    ::= { 1 60 2 }
+END
+"""
+        data = self._fmt(table_mib)
+        objects = data["objects"]
+        assert objects["myTable"]["nodetype"] == "table"
+        assert objects["myEntry"]["nodetype"] == "row"
+        assert objects["myIndex"]["nodetype"] == "column"
+        assert objects["myVal"]["nodetype"] == "column"
+        assert objects["myScalar"]["nodetype"] == "scalar"
+        # MODULE-IDENTITY should not have nodetype
+        assert "nodetype" not in objects["tableMIB"]
+
+    # J3 — module description in module_metadata
+    def test_module_metadata_description(self):
+        data = self._fmt(_NOTIF_MIB)
+        meta = data["module_metadata"]
+        assert "description" in meta
+        assert "MIB with notifications" in meta["description"]
+
+    # J4 — revision dates converted to ISO 8601
+    def test_revision_dates_iso(self):
+        mib_with_revisions = """
+REV-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY FROM SNMPv2-SMI ;
+revMIB MODULE-IDENTITY
+    LAST-UPDATED "200306140000Z"
+    ORGANIZATION "Rev Org"
+    CONTACT-INFO "rev@example.com"
+    DESCRIPTION  "Revisions test."
+    REVISION     "200306140000Z"
+    DESCRIPTION  "Added stuff."
+    REVISION     "9603280000Z"
+    DESCRIPTION  "Initial version."
+    ::= { 1 70 }
+END
+"""
+        data = self._fmt(mib_with_revisions)
+        meta = data["module_metadata"]
+        assert meta["lastupdated"] == "2003-06-14"
+        dates = [r["date"] for r in meta["revisions"]]
+        assert "2003-06-14" in dates
+        assert "1996-03-28" in dates
+
+    # Item 4 — TC displayhint and status in types
+    def test_tc_displayhint_and_status(self):
+        tc_mib = """
+TC-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+tcMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "TC Org"
+    CONTACT-INFO "tc@example.com"
+    DESCRIPTION  "TC test."
+    ::= { 1 22 }
+DisplayString ::= TEXTUAL-CONVENTION
+    DISPLAY-HINT "255a"
+    STATUS       current
+    DESCRIPTION  "Display string."
+    SYNTAX       OCTET STRING (SIZE (0..255))
+END
+"""
+        data = self._fmt(tc_mib)
+        ds = data["types"]["DisplayString"]
+        assert ds["display_hint"] == "255a"
+        assert ds["status"] == "current"
+
+    # J-G1 — class field on every object and TC
+    def test_class_field_on_objects(self):
+        data = self._fmt(_NOTIF_MIB)
+        for name, obj in data["objects"].items():
+            assert "class" in obj, f"missing class on {name}"
+        for name, tc in data["types"].items():
+            assert tc["class"] == "textualconvention", f"wrong class on type {name}"
+
+    def test_class_field_values(self):
+        data = self._fmt(_NOTIF_MIB)
+        objects = data["objects"]
+        # MODULE-IDENTITY
+        mi_names = [n for n, o in objects.items() if o["object_type"] == "MODULE-IDENTITY"]
+        assert mi_names
+        assert objects[mi_names[0]]["class"] == "moduleidentity"
+        # NOTIFICATION-TYPE
+        notifs = data["notifications"]
+        for obj in notifs.values():
+            assert obj["class"] == "notificationtype"
+
+    def test_class_field_objecttype(self):
+        table_mib = """
+TABLE2-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+t2MIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z" ORGANIZATION "T"
+    CONTACT-INFO "t" DESCRIPTION "T." ::= { 1 61 }
+scalarObj OBJECT-TYPE
+    SYNTAX Integer32 MAX-ACCESS read-only
+    STATUS current DESCRIPTION "s." ::= { 1 61 1 }
+END
+"""
+        data = self._fmt(table_mib)
+        assert data["objects"]["scalarObj"]["class"] == "objecttype"
+
+    # J-G2 — MODULE-COMPLIANCE group refs
+    def test_module_compliance_members(self):
+        compliance_mib = """
+COMPLY-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI
+        MODULE-COMPLIANCE, OBJECT-GROUP FROM SNMPv2-CONF ;
+complyMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z" ORGANIZATION "T"
+    CONTACT-INFO "t" DESCRIPTION "T." ::= { 1 62 }
+aObj OBJECT-TYPE SYNTAX Integer32 MAX-ACCESS read-only
+    STATUS current DESCRIPTION "a." ::= { 1 62 1 }
+bObj OBJECT-TYPE SYNTAX Integer32 MAX-ACCESS read-only
+    STATUS current DESCRIPTION "b." ::= { 1 62 2 }
+aGroup OBJECT-GROUP
+    OBJECTS { aObj } STATUS current
+    DESCRIPTION "a group." ::= { 1 62 10 }
+bGroup OBJECT-GROUP
+    OBJECTS { bObj } STATUS current
+    DESCRIPTION "b group." ::= { 1 62 11 }
+complyCompliance MODULE-COMPLIANCE
+    STATUS current DESCRIPTION "The compliance."
+    MODULE
+        MANDATORY-GROUPS { aGroup }
+        GROUP bGroup
+            DESCRIPTION "Optional."
+    ::= { 1 62 20 }
+END
+"""
+        data = self._fmt(compliance_mib)
+        mc = data["objects"]["complyCompliance"]
+        assert mc["class"] == "modulecompliance"
+        assert mc["members"] is not None
+        member_objects = [m["object"] for m in mc["members"]]
+        assert "aGroup" in member_objects
+        assert "bGroup" in member_objects
+        assert "complyCompliance" not in member_objects  # own name must not appear
+
+    # Item 5 — conformance group members in JSON
+    def test_group_members_present(self):
+        data = self._fmt(_GROUP_MIB)
+        assert "fooGroup" in data["objects"]
+        group = data["objects"]["fooGroup"]
+        member_objects = {m["object"] for m in group["members"]}
+        assert member_objects == {"fooObj", "barObj"}
+
+
+class TestV030PysnmpGaps:
+    """v0.3.0: pysnmp output gap closure."""
+
+    def _src(self, mib_text: str) -> str:
+        from trishul_smi.parser.smi_parser import SmiParser
+
+        module = SmiParser().parse(mib_text)
+        return PysnmpFormatter().format(module)
+
+    # Item 7 — standard mibBuilder injection guard
+    def test_standard_mibbuilder_guard(self):
+        src = self._src(_NOTIF_MIB)
+        assert "if 'mibBuilder' not in globals():" in src
+
+    def test_no_own_mibbuilder_instance(self):
+        src = self._src(_NOTIF_MIB)
+        assert "MibBuilder()" not in src
+
+    # Item 8 — .setObjects() on notifications
+    def test_notification_setobjects(self):
+        src = self._src(_NOTIF_MIB)
+        assert "linkDown.setObjects(" in src
+        assert "('NOTIF-MIB', 'ifIndex')" in src
+        assert "('NOTIF-MIB', 'ifOperStatus')" in src
+
+    # P1 — MibTable/MibTableRow take no syntax argument
+    def test_mibtable_no_syntax_arg(self):
+        table_mib = """
+TABLE-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+tableMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "T"
+    CONTACT-INFO "t@t.com"
+    DESCRIPTION  "T."
+    ::= { 1 40 }
+myTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF MyEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "The table."
+    ::= { tableMIB 1 }
+MyEntry ::= SEQUENCE { myIndex Integer32 }
+myEntry OBJECT-TYPE
+    SYNTAX      MyEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "A row."
+    ::= { myTable 1 }
+END
+"""
+        src = self._src(table_mib)
+        assert "MibTable(" in src
+        assert "MibTableRow(" in src
+        assert "TODO: map syntax" not in src
+        # syntax arg must not appear in MibTable/MibTableRow constructors
+        lines = src.split("\n")
+        for i, line in enumerate(lines):
+            if "MibTable(" in line or "MibTableRow(" in line:
+                # next non-blank line should be the closing paren + setMaxAccess
+                following = "\n".join(lines[i : i + 5])
+                assert "SEQUENCE" not in following
+
+    # P2 — TC description is guarded by mibBuilder.loadTexts
+    def test_tc_description_loadtexts_guard(self):
+        tc_mib = """
+TC-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY, Integer32 FROM SNMPv2-SMI
+        TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+tcMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "T"
+    CONTACT-INFO "t@t.com"
+    DESCRIPTION  "TC test."
+    ::= { 1 50 }
+MyTC ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION "A custom TC."
+    SYNTAX      Integer32
+END
+"""
+        src = self._src(tc_mib)
+        assert "if mibBuilder.loadTexts: description" in src
+        # bare assignment without guard must not appear
+        assert '    description = """' not in src
+
+    def test_notification_without_objects_no_setobjects(self):
+        bare_notif = """
+BARE-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY, NOTIFICATION-TYPE FROM SNMPv2-SMI ;
+bareMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "Bare"
+    CONTACT-INFO "bare@example.com"
+    DESCRIPTION  "No objects clause."
+    ::= { 1 30 }
+bareNotif NOTIFICATION-TYPE
+    STATUS      current
+    DESCRIPTION "No varbinds."
+    ::= { bareMIB 1 }
+END
+"""
+        src = self._src(bare_notif)
+        assert "bareNotif.setObjects(" not in src
+
+
+class TestV030BaseLibExplicitRequest:
+    """v0.3.0 Item 6 — explicitly requested BASE_MIBS are honoured."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_base_mib_compiled(self, tmp_path: Path):
+        snmpv2_mib_text = MINIMAL_V2.replace("TEST-MIB", "SNMPv2-MIB").replace("testMIB", "snmpMIB")
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"SNMPv2-MIB": snmpv2_mib_text}))
+        results = await compiler.compile("SNMPv2-MIB")
+        assert any(r.name == "SNMPv2-MIB" for r in results)
+        assert (tmp_path / "SNMPv2-MIB.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_base_mib_as_dep_still_skipped(self, tmp_path: Path):
+        """When SNMPv2-SMI appears only as a transitive dep (not explicit), skip it."""
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        # MINIMAL_V2 imports SNMPv2-SMI — resolver should NOT try to fetch it
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        results = await compiler.compile("TEST-MIB")
+        names = [r.name for r in results]
+        assert "TEST-MIB" in names
+        assert "SNMPv2-SMI" not in names

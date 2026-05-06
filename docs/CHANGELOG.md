@@ -6,6 +6,62 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.0] — 2026-05-06
+
+### Added
+
+- **`class` field on all JSON objects and types** — pysmi-compatible lowercase class string
+  (e.g. `"objecttype"`, `"textualconvention"`, `"notificationtype"`) on every entry in
+  `objects`, `types`, and `notifications`.
+- **`nodetype` field on OBJECT-TYPE** — two-pass OID-tree walk classifies each object as
+  `"table"`, `"row"`, `"column"`, or `"scalar"`.
+- **`members` list on conformance objects** — `OBJECT-GROUP`, `NOTIFICATION-GROUP`,
+  `MODULE-COMPLIANCE`, and `NOTIFICATION-TYPE` entries carry their `OBJECTS`/`NOTIFICATIONS`
+  member list, resolved to `{"module": "...", "object": "..."}` dicts.
+- **TC `display_hint` and `status` in JSON** — both fields now emitted in the `types` section.
+- **`module_metadata` block always emitted** — `lastupdated` (ISO 8601), `revisions`,
+  `organization`, `contactinfo`, `description` in JSON output. Text fields suppressed by
+  `--no-texts`; structural fields (`lastupdated`, `revisions[].date`) always present.
+- **`--no-texts` for JSON** — `JsonFormatter` now honours the flag; suppresses `description`,
+  `organization`, `contactinfo`, and per-revision descriptions.
+- **`"missing"` compile status** — `MibNotFoundError` produces `status="missing"` instead of
+  `"failed"`, distinguishing unfindable transitive dependencies from parse/format errors. CLI
+  shows them as dimmed `–` rows and excludes them from the failure exit code.
+- **Standard `mibBuilder` guard in pysnmp output** — compiled modules use
+  `if 'mibBuilder' not in globals(): ...` instead of instantiating `MibBuilder()`.
+- **`.setObjects()` on NOTIFICATION-TYPE in pysnmp output** — `OBJECTS` clause wired through
+  transformer → `MibObject.members` → Jinja2 template.
+- **MACRO body preprocessing** (`_strip_macro_bodies`) — `MACRO...END` blocks stripped before
+  grammar parsing, eliminating the Earley parser fallback that caused ~10× slower cold parse
+  on MIBs importing MACRO definitions from `SNMPv2-SMI`.
+- **Grammar: SMIv1 EXPORTS clause** — `EXPORTS foo, bar ;` now parsed correctly.
+- **Grammar: CHOICE type in syntax** — `SYNTAX CHOICE { ... }` handled in both grammars.
+- **Grammar: BITS in SEQUENCE fields** — bare `BITS` as a SEQUENCE member type now accepted.
+- **Grammar: DEFVAL variants** — negative integers (`DEFVAL { -1 }`), multi-name BITS sets
+  (`DEFVAL { { bit1, bit2 } }`), and OID-style values (`DEFVAL { 0 6 }`) now parse correctly.
+- **Grammar: INTEGER range in type assignments** — `INTEGER (0..65535)` in `TYPE ::= INTEGER
+  (range)` now parses in both grammars.
+- **`BASE_MIBS` explicit-request bypass** — `SNMPv2-SMI`, `RFC1213-MIB`, and friends compile
+  normally when explicitly requested; the filter now applies only to transitive dependencies.
+- **`import_reverse_map()` on `MibModule`** — shared utility (inverts the imports dict to
+  `symbol → source_module`) replacing duplicate inline loops in both formatters.
+
+### Performance
+
+- Cold compile of a 380-MIB IETF/IANA corpus: ~9.8 s mean (pysmi 2.0.0: ~87 s, ~9× faster).
+  Warm (cache-hit) compile: ~1.4 s mean (~62× faster than pysmi cold).
+- Root cause of previous slow path eliminated: MACRO preprocessing keeps Lark in LALR(1) mode
+  for all tested real-world MIBs.
+
+### Fixed
+
+- 35 → 6 corpus parse failures on 380-MIB IETF/IANA corpus. The remaining 6 also fail in
+  pysmi 2.0.0.
+
+[0.3.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.3.0
+
+---
+
 ## [0.2.0] — 2026-05-01
 
 ### Added

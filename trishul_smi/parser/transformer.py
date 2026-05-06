@@ -60,6 +60,21 @@ class _OrganizationInfo:
 
 
 @dataclass
+class _ContactInfo:
+    value: str
+
+
+@dataclass
+class _LastUpdatedInfo:
+    value: str
+
+
+@dataclass
+class _MembersInfo:
+    names: list[str]
+
+
+@dataclass
 class _RevisionInfo:
     date: str
     description: str
@@ -143,10 +158,13 @@ class MibTransformer(Transformer[Token, MibModule]):
         types: dict[str, MibType] = {}
         notifications: dict[str, MibObject] = {}
         organization: str | None = None
+        contactinfo: str | None = None
+        lastupdated: str | None = None
         revisions: list[dict[str, str]] = []
+        description: str | None = None
 
         def _process_child(child: Any) -> None:
-            nonlocal module_name, imports, organization
+            nonlocal module_name, imports, organization, contactinfo, lastupdated, description
             if isinstance(child, list):
                 for item in child:
                     _process_child(item)
@@ -159,10 +177,16 @@ class MibTransformer(Transformer[Token, MibModule]):
                     notifications[child.name] = child
                 else:
                     objects[child.name] = child
+                if child.object_type == "MODULE-IDENTITY" and child.description:
+                    description = child.description
             elif isinstance(child, MibType):
                 types[child.name] = child
             elif isinstance(child, _OrganizationInfo):
                 organization = child.value
+            elif isinstance(child, _ContactInfo):
+                contactinfo = child.value
+            elif isinstance(child, _LastUpdatedInfo):
+                lastupdated = child.value
             elif isinstance(child, _RevisionInfo):
                 revisions.append({"date": child.date, "description": child.description})
 
@@ -179,7 +203,10 @@ class MibTransformer(Transformer[Token, MibModule]):
             types=types,
             notifications=notifications,
             organization=organization,
+            contactinfo=contactinfo,
+            lastupdated=lastupdated,
             revisions=revisions,
+            description=description,
         )
 
     def module_name(self, children: list[Any]) -> str:
@@ -227,12 +254,14 @@ class MibTransformer(Transformer[Token, MibModule]):
             oid_parent=oid_parent,
             description=description,
         )
-        org = _OrganizationInfo(_unquote(quoted[1])) if len(quoted) > 1 else None
-        revisions = [c for c in children if isinstance(c, _RevisionInfo)]
         result: list[Any] = [obj]
-        if org is not None:
-            result.append(org)
-        result.extend(revisions)
+        if len(quoted) > 0:
+            result.append(_LastUpdatedInfo(_unquote(quoted[0])))
+        if len(quoted) > 1:
+            result.append(_OrganizationInfo(_unquote(quoted[1])))
+        if len(quoted) > 2:
+            result.append(_ContactInfo(_unquote(quoted[2])))
+        result.extend(c for c in children if isinstance(c, _RevisionInfo))
         return result
 
     # ------------------------------------------------------------------
@@ -293,6 +322,7 @@ class MibTransformer(Transformer[Token, MibModule]):
             status=self._status(children),
             description=self._description(children),
             oid_parent=oid_parent,
+            members=self._members(children),
         )
 
     # ------------------------------------------------------------------
@@ -347,13 +377,37 @@ class MibTransformer(Transformer[Token, MibModule]):
     # ------------------------------------------------------------------
 
     def object_group_assignment(self, children: list[Any]) -> MibObject:
-        return self._simple_oid_object(children, "OBJECT-GROUP")
+        obj = self._simple_oid_object(children, "OBJECT-GROUP")
+        obj.members = self._members(children)
+        return obj
 
     def notification_group_assignment(self, children: list[Any]) -> MibObject:
-        return self._simple_oid_object(children, "NOTIFICATION-GROUP")
+        obj = self._simple_oid_object(children, "NOTIFICATION-GROUP")
+        obj.members = self._members(children)
+        return obj
 
     def module_compliance_assignment(self, children: list[Any]) -> MibObject:
-        return self._simple_oid_object(children, "MODULE-COMPLIANCE")
+        obj = self._simple_oid_object(children, "MODULE-COMPLIANCE")
+        # Flatten items from compliance_module lists into a single sequence.
+        flat: list[Any] = []
+        for c in children:
+            if isinstance(c, list):
+                flat.extend(c)
+            else:
+                flat.append(c)
+        seen: set[str] = {obj.name}  # exclude the object's own name
+        groups: list[str] = []
+        for c in flat:
+            if isinstance(c, _MembersInfo):
+                for name in c.names:
+                    if name not in seen:
+                        seen.add(name)
+                        groups.append(name)
+            elif isinstance(c, str) and c not in seen:
+                seen.add(c)
+                groups.append(c)
+        obj.members = groups or None
+        return obj
 
     def agent_capabilities_assignment(self, children: list[Any]) -> MibObject:
         return self._simple_oid_object(children, "AGENT-CAPABILITIES")
@@ -363,7 +417,13 @@ class MibTransformer(Transformer[Token, MibModule]):
         number = next(
             (str(c) for c in children if isinstance(c, Token) and c.type == "NUMBER"), "0"
         )
-        return MibObject(name=name, oid=number, oid_path=[int(number)], object_type="TRAP-TYPE")
+        return MibObject(
+            name=name,
+            oid=number,
+            oid_path=[int(number)],
+            object_type="TRAP-TYPE",
+            members=self._members(children),
+        )
 
     def assignment(self, children: list[Any]) -> Any:
         return children[0] if children else None
@@ -401,17 +461,19 @@ class MibTransformer(Transformer[Token, MibModule]):
         desc = _unquote(quoted[1]) if len(quoted) > 1 else ""
         return _RevisionInfo(date=date, description=desc)
 
-    def compliance_module(self, _: list[Any]) -> None:
-        return None
+    def compliance_module(self, children: list[Any]) -> list[Any]:
+        # Pass through _MembersInfo (from mandatory_groups) and str (from compliance_group).
+        return [c for c in children if isinstance(c, (_MembersInfo, str))]
 
-    def mandatory_groups(self, _: list[Any]) -> None:
-        return None
+    def mandatory_groups(self, children: list[Any]) -> _MembersInfo:
+        names = next((c for c in children if isinstance(c, list)), [])
+        return _MembersInfo(names)
 
-    def compliance_item(self, _: list[Any]) -> None:
-        return None
+    def compliance_item(self, children: list[Any]) -> Any:
+        return children[0] if children else None
 
-    def compliance_group(self, _: list[Any]) -> None:
-        return None
+    def compliance_group(self, children: list[Any]) -> str:
+        return str(children[0])
 
     def compliance_object(self, _: list[Any]) -> None:
         return None
@@ -422,8 +484,8 @@ class MibTransformer(Transformer[Token, MibModule]):
     def variation(self, _: list[Any]) -> None:
         return None
 
-    def trap_variables_clause(self, _: list[Any]) -> None:
-        return None
+    def trap_variables_clause(self, children: list[Any]) -> _MembersInfo:
+        return _MembersInfo(children[0] if children else [])
 
     def units_clause(self, _: list[Any]) -> None:
         return None
@@ -437,8 +499,8 @@ class MibTransformer(Transformer[Token, MibModule]):
     def defval_clause(self, _: list[Any]) -> None:
         return None
 
-    def objects_clause(self, _: list[Any]) -> None:
-        return None
+    def objects_clause(self, children: list[Any]) -> _MembersInfo:
+        return _MembersInfo(children[0] if children else [])
 
     def scalar_value(self, _: list[Any]) -> None:
         return None
@@ -656,6 +718,20 @@ class MibTransformer(Transformer[Token, MibModule]):
     def _access(self, children: list[Any]) -> str | None:
         info = next((c for c in children if isinstance(c, _AccessInfo)), None)
         return info.value if info else None
+
+    def _members(self, children: list[Any]) -> list[str] | None:
+        """Extract member list from children: _MembersInfo (from objects_clause /
+        trap_variables_clause) or a plain list[str] (from inline object_list in
+        OBJECT-GROUP / NOTIFICATION-GROUP grammar rules)."""
+        mi = next((c for c in children if isinstance(c, _MembersInfo)), None)
+        if mi is not None:
+            return mi.names or None
+        # object_list returns list[str]; OID components are non-str — check first element
+        plain = next(
+            (c for c in children if isinstance(c, list) and (not c or isinstance(c[0], str))),
+            None,
+        )
+        return plain or None
 
     def _simple_oid_object(self, children: list[Any], object_type: str) -> MibObject:
         name = str(children[0])

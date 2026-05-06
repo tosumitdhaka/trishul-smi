@@ -60,6 +60,11 @@ assignment : object_type_assignment
            | module_compliance_assignment
            | agent_capabilities_assignment
            | trap_type_assignment
+           | macro_assignment
+
+// MACRO body is stripped by the preprocessor in smi_parser.py before parsing.
+// By the time the grammar sees this, only "MACRO-NAME MACRO ::= BEGIN END" remains.
+macro_assignment : UPPER_ID "MACRO" "::=" "BEGIN" "END"
 
 
 // ---------------------------------------------------------------------------
@@ -98,8 +103,9 @@ index_item : ["IMPLIED"] LOWER_ID
 augments_part : "AUGMENTS" "{" LOWER_ID "}"
 
 defval_clause : "DEFVAL" "{" defval_value "}"
-defval_value  : LOWER_ID | NUMBER | QUOTED_STRING | HEX_STRING | BIN_STRING
-              | "{" bits_value* "}"
+defval_value  : LOWER_ID | SIGNED_NUMBER | QUOTED_STRING | HEX_STRING | BIN_STRING
+              | "{" (bits_value ("," bits_value)*)? "}"
+              | "{" NUMBER+ "}"
 bits_value    : LOWER_ID
 
 
@@ -233,6 +239,7 @@ sequence_of_type : "SEQUENCE" "OF" UPPER_ID
 
 sequence_type : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
 sequence_field : LOWER_ID syntax_type
+               | LOWER_ID "BITS"   -> sequence_field_bits
 
 bits_type : "BITS" "{" named_bits "}"
 named_bits : named_bit ("," named_bit)* [","]

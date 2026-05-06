@@ -13,11 +13,11 @@ Examples
     # Compile using HTTP sources (opt-in):
     trishul-smi compile IF-MIB IP-MIB --online
 
-    # Write pysnmp modules; local dir first, fall back to HTTP:
-    trishul-smi compile IF-MIB -f pysnmp -d /usr/share/snmp/mibs --online
+    # Lean output without description text:
+    trishul-smi compile IF-MIB -d /usr/share/snmp/mibs --no-texts
 
-    # Multiple formats, custom output dir, no disk cache:
-    trishul-smi compile IF-MIB -f json -f pysnmp -o ./out --cache-dir ""
+    # Custom output dir, no disk cache:
+    trishul-smi compile IF-MIB -o ./out --cache-dir "" -d /usr/share/snmp/mibs
 
 Exit codes
 ----------
@@ -44,7 +44,7 @@ from trishul_smi.models import CompileResult
 
 app = typer.Typer(
     name="trishul-smi",
-    help="Compile SNMP MIB definitions to JSON or pysnmp format.",
+    help="Compile SNMP MIB definitions to portable JSON.",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )
@@ -112,7 +112,7 @@ def compile(  # noqa: A001
         typer.Option(
             "--format",
             "-f",
-            help="Output format: json or pysnmp. Repeat to write both.",
+            help="Output format: json (default) or pysnmp (best-effort). Repeat to write both.",
         ),
     ] = None,
     mib_dirs: Annotated[
@@ -167,8 +167,8 @@ def compile(  # noqa: A001
         bool,
         typer.Option(
             "--no-texts",
-            help="Suppress setDescription/setOrganization/setRevisions and TC description "
-            "in pysnmp output for leaner modules.",
+            help="Omit description, organization, and contact text from output for leaner files. "
+            "Structural metadata (OIDs, dates, types) is always preserved.",
         ),
     ] = False,
     verbose: Annotated[
@@ -304,6 +304,7 @@ async def _compile_async(
 def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     compiled = [r for r in results if r.status == "compiled"]
     failed = [r for r in results if r.status == "failed"]
+    missing = [r for r in results if r.status == "missing"]
     warned = [r for r in compiled if r.warnings]
 
     tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold")
@@ -321,6 +322,10 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
             else:
                 detail = ""
             name_cell = f"[dim]{r.name}[/dim]" if r.is_dependency and not verbose else r.name
+        elif r.status == "missing":
+            icon = "[dim]–[/dim]"
+            detail = f"[dim]{r.error}[/dim]"
+            name_cell = f"[dim]{r.name}[/dim]"
         else:
             icon = "[red]❌[/red]"
             detail = f"[red]{r.error}[/red]"
@@ -332,6 +337,8 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     parts = [f"[green]{len(compiled)} compiled[/green]"]
     if failed:
         parts.append(f"[red]{len(failed)} failed[/red]")
+    if missing:
+        parts.append(f"[dim]{len(missing)} missing[/dim]")
     if warned:
         parts.append(f"[yellow]{len(warned)} with warnings[/yellow]")
     console.print("  ".join(parts))
