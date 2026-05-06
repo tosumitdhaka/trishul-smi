@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
+from trishul_smi.errors import MibNotFoundError, MibSizeLimitError, NetworkError
 from trishul_smi.reader.httpclient import HttpReader
 
 _TEMPLATE = "https://mibs.example.com/@mib@"
@@ -183,6 +184,34 @@ class TestHttpReaderFallback:
         httpx_mock.add_response(url=self._BACKUP_URL, method="HEAD", status_code=404)
         async with HttpReader(_TEMPLATE, self._BACKUP) as reader:
             with pytest.raises(MibNotFoundError):
+                await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_transport_error_raises_network_error(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_exception(
+            httpx.ConnectError("connection reset"),
+            url=_IF_MIB_URL,
+            method="HEAD",
+        )
+        async with HttpReader(_TEMPLATE, retries=1) as reader:
+            with pytest.raises(NetworkError, match="HTTP fetch failed"):
+                await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_server_error_raises_network_error(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=500)
+        async with HttpReader(_TEMPLATE) as reader:
+            with pytest.raises(NetworkError, match="500"):
+                await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_404_then_server_error_raises_network_error(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=404)
+        httpx_mock.add_response(url=self._BACKUP_URL, method="HEAD", status_code=200)
+        httpx_mock.add_response(url=self._BACKUP_URL, method="GET", status_code=500)
+        async with HttpReader(_TEMPLATE, self._BACKUP) as reader:
+            with pytest.raises(NetworkError, match="500"):
                 await reader.fetch("IF-MIB")
 
 

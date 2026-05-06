@@ -259,7 +259,7 @@ def compile(  # noqa: A001
 
     _print_results(results, verbose=verbose)
 
-    if any(r.status == "failed" for r in results):
+    if any(r.status in {"failed", "missing"} for r in results):
         raise typer.Exit(1)
 
 
@@ -283,13 +283,19 @@ async def _compile_async(
 
     for d in mib_dirs:
         if d.is_dir():
-            compiler.add_reader(FileReader(d))
+            compiler.add_reader(FileReader(d, max_size=config.max_mib_size))
 
     if use_http:
         from trishul_smi.reader.httpclient import HttpReader
 
-        # HttpReader takes *url_templates (varargs), not a list — unpack with *.
-        async with HttpReader(*config.sources) as http:
+        async with HttpReader(
+            *config.sources,
+            timeout=config.http_timeout,
+            retries=config.http_retries,
+            max_size=config.max_mib_size,
+            cache_dir=config.cache_dir,
+            cache_ttl_days=config.cache_ttl_days,
+        ) as http:
             compiler.add_reader(http)
             return await compiler.compile(*mib_names)
 

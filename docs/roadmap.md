@@ -56,12 +56,30 @@ JSON output completeness, pysnmp correctness, grammar coverage.
 
 ---
 
+## v0.3.1
+
+Implementation is complete locally; release/tagging is still pending.
+
+Correctness, status semantics, and CLI/runtime contract fixes.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | CLI exits non-zero when modules are `missing` | done | GitHub `#1`. CLI now exits `1` when any result is `missing` or `failed`. |
+| 2 | CLI compile path applies configured reader options | done | GitHub `#2`. `_compile_async()` now passes size, timeout, retry, cache dir, and cache TTL settings into `FileReader` / `HttpReader`. |
+| 3 | Block compilation when non-base imports fail to resolve | done | GitHub `#3`. Blocked dependents are marked `failed`, skipped from output emission, and preserve the unresolved dependency result separately. |
+| 4 | Distinguish HTTP/network failure from true not-found | done | GitHub `#4`. True miss outcomes stay `missing`; transport/server failures now surface via `NetworkError` and become `failed`. |
+
+---
+
 ## v0.4.0
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | OID index file generation | planned | Flat JSON file mapping OID → module/object for fast reverse lookup. |
-| 2 | MIB validation / lint mode | planned | `tsmi lint IF-MIB` — report missing imports, undefined types, etc. |
-| 3 | Watch mode | planned | Recompile on file change for local MIB development workflows. |
-| 4 | Plugin system for custom formatters | planned | Allow third-party output formats without forking. |
-| 5 | MIB borrowing (pre-compiled fallback) | planned | Download pre-compiled MIBs from a remote registry as fallback. |
+| 1 | Define runtime bundle contract: module JSON is atomic, sidecars optional | planned | GitHub `#8`. Module JSON is the source of truth; `manifest.json` and `oid_index.json` are additive sidecars. |
+| 2 | Version the JSON IR for downstream consumers | planned | GitHub `#7`. Add `schema_version` and producer metadata so downstream runtimes can detect compatibility explicitly. |
+| 3 | Emit a bundle manifest for compiled JSON output | planned | GitHub `#6`. Add `manifest.json` as optional bundle metadata for deterministic discovery. |
+| 4 | Generate `oid_index.json` for fast reverse OID lookup | planned | GitHub `#5`. Flat JSON lookup artifact for OID → module/object resolution; optional accelerator, not source of truth. |
+| 5 | MIB validation / lint mode | planned | `tsmi lint IF-MIB` — report missing imports, undefined types, etc. |
+| 6 | Watch mode | planned | Recompile on file change for local MIB development workflows. |
+| 7 | Plugin system for custom formatters | planned | Allow third-party output formats without forking. |
+| 8 | MIB borrowing (pre-compiled fallback) | planned | Download pre-compiled MIBs from a remote registry as fallback. |

@@ -6,6 +6,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **CLI failure semantics for `missing` results** — `trishul-smi compile` now exits with code
+  `1` when any module result is `missing` or `failed`, so automation no longer treats
+  incomplete compile runs as success.
+- **CLI reader option wiring** — the async compile path now passes configured
+  `max_mib_size`, HTTP timeout, retry count, cache directory, and cache TTL into the
+  `FileReader` and `HttpReader` instances it constructs.
+- **HTTP failure classification** — `HttpReader` now keeps genuine all-source misses as
+  `MibNotFoundError`, while transport failures and non-404 HTTP exhaustion surface as
+  `NetworkError` instead of being collapsed into `"missing"`.
+- **Blocked dependent emission** — modules whose non-base imports fail to resolve are no
+  longer emitted as `compiled`; they are marked `failed`, their output files are skipped,
+  and the underlying missing dependency remains reported separately.
+
+---
+
 ## [0.3.0] — 2026-05-06
 
 ### Added

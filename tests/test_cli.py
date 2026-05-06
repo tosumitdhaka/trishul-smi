@@ -11,6 +11,7 @@ Strategy:
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,7 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import typer
 from click.testing import CliRunner
 
-from trishul_smi.cli.main import app
+from trishul_smi.cli.main import _compile_async, app
+from trishul_smi.config import CompilerConfig
 from trishul_smi.models import CompileResult
 
 # Compile the Typer app to a Click command ONCE. CliRunner.invoke() needs a
@@ -159,6 +161,12 @@ class TestCompileOutput:
             result = _invoke(["compile", "IF-MIB", "BAD", "--online"])
         assert result.exit_code == 1
 
+    def test_exit_1_when_any_missing(self):
+        results = [_make_result("IF-MIB"), _make_result("MISSING", status="missing")]
+        with _patch_run(results):
+            result = _invoke(["compile", "IF-MIB", "MISSING", "--online"])
+        assert result.exit_code == 1
+
     def test_exit_0_when_all_compiled(self):
         results = [_make_result("IF-MIB"), _make_result("IP-MIB")]
         with _patch_run(results):
@@ -247,6 +255,76 @@ class TestMibDir:
             result = _invoke(["compile", "IF-MIB", "-d", str(fake_dir), "--online"])
         assert result.exit_code == 0
         assert "not a directory" in result.output or "Warning" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _compile_async wiring
+# ---------------------------------------------------------------------------
+
+
+class TestCompileAsyncWiring:
+    def test_reader_options_flow_into_file_and_http_readers(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        compiler = MagicMock()
+        compiler.add_reader.return_value = compiler
+        compiler.compile = AsyncMock(return_value=[])
+        config = CompilerConfig(
+            cache_dir=tmp_path / "cache",
+            cache_ttl_days=11,
+            http_timeout=12.5,
+            http_retries=4,
+            max_mib_size=4096,
+            sources=["https://example.test/@mib@"],
+        )
+
+        seen: dict[str, object] = {}
+        file_reader_instance = object()
+        http_reader_instance = object()
+
+        def _build_file_reader(*dirs, max_size):
+            seen["file_args"] = dirs
+            seen["file_max_size"] = max_size
+            return file_reader_instance
+
+        class FakeHttpReader:
+            def __init__(self, *templates, **kwargs):
+                seen["http_templates"] = templates
+                seen["http_kwargs"] = kwargs
+
+            async def __aenter__(self):
+                return http_reader_instance
+
+            async def __aexit__(self, *_):
+                return None
+
+        with (
+            patch("trishul_smi.reader.localfile.FileReader", side_effect=_build_file_reader),
+            patch("trishul_smi.reader.httpclient.HttpReader", FakeHttpReader),
+        ):
+            asyncio.run(
+                _compile_async(
+                    compiler,
+                    config,
+                    [mib_dir],
+                    ["IF-MIB"],
+                    use_http=True,
+                )
+            )
+
+        assert seen["file_args"] == (mib_dir,)
+        assert seen["file_max_size"] == 4096
+        assert seen["http_templates"] == ("https://example.test/@mib@",)
+        assert seen["http_kwargs"] == {
+            "timeout": 12.5,
+            "retries": 4,
+            "max_size": 4096,
+            "cache_dir": tmp_path / "cache",
+            "cache_ttl_days": 11,
+        }
+        assert compiler.add_reader.call_args_list[0].args == (file_reader_instance,)
+        assert compiler.add_reader.call_args_list[1].args == (http_reader_instance,)
+        compiler.compile.assert_awaited_once_with("IF-MIB")
 
 
 # ---------------------------------------------------------------------------

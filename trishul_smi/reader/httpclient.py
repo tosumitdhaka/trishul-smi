@@ -13,7 +13,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
+from trishul_smi.errors import MibNotFoundError, MibSizeLimitError, NetworkError
 from trishul_smi.reader.base import AbstractReader
 
 _PLACEHOLDER = "@mib@"
@@ -97,20 +97,30 @@ class HttpReader(AbstractReader):
         - ``RuntimeError``: re-raise immediately (programming error — no CM).
         - ``MibSizeLimitError``: re-raise immediately (config error).
         - ``MibNotFoundError``: continue to next template (per-source 404).
-        - All other exceptions: continue to next template (transient errors).
+        - All other exceptions: continue to next template and classify as
+          ``NetworkError`` if no source ultimately succeeds.
         """
-        last_exc: Exception = MibNotFoundError(mib_name)
+        last_not_found: MibNotFoundError = MibNotFoundError(mib_name)
+        last_network: Exception | None = None
         for template in self._templates:
             url = template.replace(_PLACEHOLDER, mib_name)
             try:
                 return await self._fetch_url_with_retry(url)
             except (RuntimeError, MibSizeLimitError):
                 raise  # programming / config errors — never swallow
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
+            except MibNotFoundError as exc:
+                last_not_found = exc
                 continue
+            except Exception as exc:  # noqa: BLE001
+                last_network = exc
+                continue
+        if last_network is not None:
+            raise NetworkError(
+                f"HTTP fetch failed for MIB '{mib_name}' from all configured sources. "
+                f"Last error: {last_network}"
+            ) from last_network
         raise MibNotFoundError(
-            f"MIB '{mib_name}' not found at any HTTP source. Last error: {last_exc}"
+            f"MIB '{mib_name}' not found at any HTTP source. Last error: {last_not_found}"
         )
 
     async def _fetch_url_with_retry(self, url: str) -> str:

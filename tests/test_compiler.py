@@ -53,6 +53,34 @@ foo OBJECT-TYPE
 END
 """
 
+UPSTREAM_WITH_MISSING_DEP = """
+UPSTREAM-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, Integer32 FROM SNMPv2-SMI
+    MissingSymbol FROM MISSING-DEP ;
+upstreamMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Upstream Org"
+    CONTACT-INFO "upstream@example.com"
+    DESCRIPTION  "MIB with an unresolved non-base dependency."
+    ::= { 1 10 }
+END
+"""
+
+DOWNSTREAM_IMPORTING_UPSTREAM = """
+DOWNSTREAM-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, Integer32 FROM SNMPv2-SMI
+    upstreamMIB FROM UPSTREAM-MIB ;
+downstreamMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Downstream Org"
+    CONTACT-INFO "downstream@example.com"
+    DESCRIPTION  "Depends on UPSTREAM-MIB."
+    ::= { 1 11 }
+END
+"""
+
 
 # ---------------------------------------------------------------------------
 # ReaderChain
@@ -310,6 +338,46 @@ class TestMibCompiler:
         compiler = MibCompiler(config).add_reader(MockReader({}))
         results = await compiler.compile("MISSING-MIB")
         assert any(r.name == "MISSING-MIB" and r.status == "missing" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_requested_module_with_missing_dependency_fails_without_output(
+        self, tmp_path: Path
+    ):
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(
+            MockReader({"UPSTREAM-MIB": UPSTREAM_WITH_MISSING_DEP})
+        )
+
+        results = await compiler.compile("UPSTREAM-MIB")
+        by_name = {result.name: result for result in results}
+
+        assert by_name["UPSTREAM-MIB"].status == "failed"
+        assert "MISSING-DEP" in (by_name["UPSTREAM-MIB"].error or "")
+        assert by_name["MISSING-DEP"].status == "missing"
+        assert not (tmp_path / "UPSTREAM-MIB.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_transitive_dependents_of_missing_dependency_also_fail(self, tmp_path: Path):
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(
+            MockReader(
+                {
+                    "UPSTREAM-MIB": UPSTREAM_WITH_MISSING_DEP,
+                    "DOWNSTREAM-MIB": DOWNSTREAM_IMPORTING_UPSTREAM,
+                }
+            )
+        )
+
+        results = await compiler.compile("DOWNSTREAM-MIB")
+        by_name = {result.name: result for result in results}
+
+        assert by_name["DOWNSTREAM-MIB"].status == "failed"
+        assert "UPSTREAM-MIB" in (by_name["DOWNSTREAM-MIB"].error or "")
+        assert by_name["UPSTREAM-MIB"].status == "failed"
+        assert "MISSING-DEP" in (by_name["UPSTREAM-MIB"].error or "")
+        assert by_name["MISSING-DEP"].status == "missing"
+        assert not (tmp_path / "DOWNSTREAM-MIB.json").exists()
+        assert not (tmp_path / "UPSTREAM-MIB.json").exists()
 
     @pytest.mark.asyncio
     async def test_fluent_add_reader(self, tmp_path: Path):

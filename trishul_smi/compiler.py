@@ -30,6 +30,7 @@ from trishul_smi.models import CompileResult
 from trishul_smi.output.base import FormatterProtocol
 from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter
+from trishul_smi.parser._constants import BASE_MIBS
 from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import FetchProtocol
 from trishul_smi.reader.chain import ReaderChain
@@ -115,7 +116,8 @@ class MibCompiler:
         Returns a list of CompileResult, one per module (including deps).
         Status values:
         - ``'compiled'`` — successfully parsed and written to disk.
-        - ``'failed'``   — fetch or parse error; see ``.error``.
+        - ``'failed'``   — fetch, parse, or dependency-blocking error; see ``.error``.
+        - ``'missing'``  — the module could not be found in any configured reader.
 
         Formatter errors (e.g. a buggy Jinja2 template) are non-fatal:
         they are appended to ``result.warnings`` and logged at WARNING
@@ -134,6 +136,8 @@ class MibCompiler:
         resolve_result = await resolver.resolve(list(mib_names))
         resolve_oids(resolve_result.modules)
         requested_set = set(mib_names)
+        resolved_names = {module.name for module in resolve_result.modules}
+        blocked: dict[str, list[str]] = {}
 
         results: list[CompileResult] = []
         out_dir = self._config.output_dir
@@ -146,8 +150,24 @@ class MibCompiler:
                 f"Cannot create output directory {out_dir}: {_mkdir_exc}"
             ) from _mkdir_exc
 
+        for module in resolve_result.modules:
+            unresolved = sorted(
+                dep
+                for dep in module.all_imports()
+                if dep not in BASE_MIBS
+                and (
+                    dep in resolve_result.errors
+                    or dep in blocked
+                    or dep not in resolved_names
+                )
+            )
+            if unresolved:
+                blocked[module.name] = unresolved
+
         # --- Successfully resolved modules ---
         for module in resolve_result.modules:
+            if module.name in blocked:
+                continue
             output_paths: list[Path] = []
             warnings: list[str] = []
 
@@ -175,6 +195,21 @@ class MibCompiler:
                 )
             )
 
+        for module in resolve_result.modules:
+            if module.name not in blocked:
+                continue
+            results.append(
+                CompileResult(
+                    name=module.name,
+                    status="failed",
+                    error=(
+                        f"Unresolved non-base imports for {module.name}: "
+                        f"{', '.join(blocked[module.name])}"
+                    ),
+                    is_dependency=module.name not in requested_set,
+                )
+            )
+
         # --- Failed / missing modules ---
         from trishul_smi.errors import MibNotFoundError
 
@@ -184,6 +219,7 @@ class MibCompiler:
                     name=name,
                     status="missing" if isinstance(exc, MibNotFoundError) else "failed",
                     error=str(exc),
+                    is_dependency=name not in requested_set,
                 )
             )
 
