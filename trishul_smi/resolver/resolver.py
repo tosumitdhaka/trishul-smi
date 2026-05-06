@@ -9,7 +9,9 @@ The resolver performs a BFS over the MIB import graph:
     3. Fetch all cache-missing MIBs *concurrently* via asyncio.gather.
     4. Parse each fetched text in a thread pool (asyncio.to_thread) so
        the event loop stays unblocked during CPU-bound Lark parsing.
-    5. Collect newly-discovered imports; add unseen names to the next wave.
+    5. Collect imports from every module resolved in the current wave
+       (cache hits and newly fetched modules); add unseen names to the next
+       wave.
     6. Repeat until the import closure is complete.
     7. Topological-sort (Kahn's) the full set and return in order.
 
@@ -94,55 +96,57 @@ class MibResolver:
 
         while pending:
             # --- Cache check (synchronous, cheap) ---
+            resolved_this_wave: set[str] = set()
             still_pending: set[str] = set()
             for name in sorted(pending):
                 if self._cache is not None:
                     cached = self._cache.get(name)
                     if cached is not None:
                         fetched[name] = cached
+                        resolved_this_wave.add(name)
                         continue
                 still_pending.add(name)
 
-            if not still_pending:
-                pending.clear()
-                break
+            if still_pending:
+                # --- Concurrent fetch + parse ---
+                names_ordered = sorted(still_pending)
+                results = await asyncio.gather(
+                    *[self._fetch_and_parse(name) for name in names_ordered],
+                    return_exceptions=True,
+                )
 
-            # --- Concurrent fetch + parse ---
-            names_ordered = sorted(still_pending)
-            results = await asyncio.gather(
-                *[self._fetch_and_parse(name) for name in names_ordered],
-                return_exceptions=True,
-            )
-
-            newly_fetched: set[str] = set()
-            # strict=True: asyncio.gather always returns exactly one result per
-            # coroutine, so a length mismatch would be a bug — fail loudly.
-            for name, result in zip(names_ordered, results, strict=True):
-                if isinstance(result, MibSizeLimitError):
-                    # Propagate immediately — size limit is a config error,
-                    # not a per-module failure. Use `raise result` (not bare
-                    # `raise`) because asyncio.gather(return_exceptions=True)
-                    # returns exceptions as *values*, not as the active
-                    # exception — bare `raise` would hit RuntimeError:
-                    # "No active exception to re-raise".
-                    raise result
-                elif isinstance(result, Exception):
-                    errors[name] = result
-                elif isinstance(result, BaseException):
-                    # KeyboardInterrupt / SystemExit must not be silently
-                    # collected — re-raise so the process can exit cleanly.
-                    raise result
-                else:
-                    # mypy now knows: not BaseException → must be MibModule
-                    module: MibModule = result
-                    fetched[name] = module
-                    if self._cache is not None:
-                        self._cache.put(name, module)
-                    newly_fetched.add(name)
+                # strict=True: asyncio.gather always returns exactly one
+                # result per coroutine, so a length mismatch would be a bug —
+                # fail loudly.
+                for name, result in zip(names_ordered, results, strict=True):
+                    if isinstance(result, MibSizeLimitError):
+                        # Propagate immediately — size limit is a config
+                        # error, not a per-module failure. Use `raise result`
+                        # (not bare `raise`) because
+                        # asyncio.gather(return_exceptions=True) returns
+                        # exceptions as *values*, not as the active exception
+                        # — bare `raise` would hit RuntimeError:
+                        # "No active exception to re-raise".
+                        raise result
+                    elif isinstance(result, Exception):
+                        errors[name] = result
+                    elif isinstance(result, BaseException):
+                        # KeyboardInterrupt / SystemExit must not be silently
+                        # collected — re-raise so the process can exit
+                        # cleanly.
+                        raise result
+                    else:
+                        # mypy now knows: not BaseException → must be
+                        # MibModule
+                        module: MibModule = result
+                        fetched[name] = module
+                        if self._cache is not None:
+                            self._cache.put(name, module)
+                        resolved_this_wave.add(name)
 
             # --- Discover new transitive dependencies ---
             pending = set()
-            for name in newly_fetched:
+            for name in resolved_this_wave:
                 for dep in fetched[name].all_imports():
                     if dep not in fetched and dep not in errors and dep not in BASE_MIBS:
                         pending.add(dep)

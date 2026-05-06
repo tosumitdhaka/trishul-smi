@@ -155,11 +155,7 @@ class MibCompiler:
                 dep
                 for dep in module.all_imports()
                 if dep not in BASE_MIBS
-                and (
-                    dep in resolve_result.errors
-                    or dep in blocked
-                    or dep not in resolved_names
-                )
+                and (dep in resolve_result.errors or dep in blocked or dep not in resolved_names)
             )
             if unresolved:
                 blocked[module.name] = unresolved

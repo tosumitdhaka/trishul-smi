@@ -56,9 +56,7 @@ JSON output completeness, pysnmp correctness, grammar coverage.
 
 ---
 
-## v0.3.1
-
-Implementation is complete locally; release/tagging is still pending.
+## v0.3.1 — shipped 2026-05-06
 
 Correctness, status semantics, and CLI/runtime contract fixes.
 

@@ -8,6 +8,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.3.1] — 2026-05-06
+
 ### Fixed
 
 - **CLI failure semantics for `missing` results** — `trishul-smi compile` now exits with code
@@ -22,6 +26,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Blocked dependent emission** — modules whose non-base imports fail to resolve are no
   longer emitted as `compiled`; they are marked `failed`, their output files are skipped,
   and the underlying missing dependency remains reported separately.
+- **Warm-cache dependency discovery** — resolver cache hits now continue to expand transitive
+  imports, so repeated compiles do not strand cached top-level modules with unresolved
+  uncached dependencies.
+
+### Known Limitations
+
+- Bundle sidecars and explicit JSON IR versioning are not part of `0.3.1`; `manifest.json`,
+  `oid_index.json`, and schema-version metadata remain planned for `0.4.0`.
 
 ---
 
@@ -78,6 +90,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pysmi 2.0.0.
 
 [0.3.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.3.0
+[0.3.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.3.1
 
 ---
 

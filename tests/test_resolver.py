@@ -333,6 +333,21 @@ class TestMibResolver:
         assert result.modules[0].name == "IF-MIB"
 
     @pytest.mark.asyncio
+    async def test_cache_hit_discovers_transitive_dependencies(self, tmp_path: Path):
+        cache = MibCache(tmp_path, ttl_days=7)
+        cache.put("ROOT-MIB", _make_module("ROOT-MIB", imports={"DEP-MIB": ["depObj"]}))
+        reader = MockReader({"DEP-MIB": DEP_MIB})
+        resolver = MibResolver(reader, SmiParser(), cache=cache)
+
+        result = await resolver.resolve(["ROOT-MIB"])
+
+        assert result.ok
+        names = [m.name for m in result.modules]
+        assert "ROOT-MIB" in names
+        assert "DEP-MIB" in names
+        assert names.index("DEP-MIB") < names.index("ROOT-MIB")
+
+    @pytest.mark.asyncio
     async def test_result_ok_property(self):
         reader = MockReader({"TEST-MIB": MINIMAL_V2})
         resolver = MibResolver(reader, SmiParser())
