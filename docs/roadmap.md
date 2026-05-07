@@ -101,6 +101,16 @@ require repair logic rather than standards-compatible parsing.
 
 ---
 
+## v0.4.2 — shipped 2026-05-07
+
+Package maturity metadata update.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | Publish `trishul-smi` as Beta on PyPI | done | The package classifier is now `Development Status :: 4 - Beta`, replacing the initial `3 - Alpha` launch marker after the validated `0.4.x` release line. |
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |

@@ -10,6 +10,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.2] — 2026-05-07
+
+### Changed
+
+- **PyPI maturity classifier** — package metadata now publishes
+  `Development Status :: 4 - Beta` instead of `3 - Alpha`, reflecting the
+  stabilized `0.4.x` runtime contract, real-corpus validation, and clean
+  release path through `0.4.1`.
+
 ## [0.4.1] — 2026-05-07
 
 ### Changed
@@ -157,6 +166,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.3.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.3.1
 [0.4.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.0
 [0.4.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.1
+[0.4.2]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.2
 
 ---
 
