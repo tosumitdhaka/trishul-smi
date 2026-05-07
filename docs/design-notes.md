@@ -1,8 +1,8 @@
 # trishul-smi — Design Notes
 
-> **Status:** v0.3.0 — shipped 2026-05-06  
+> **Status:** updated through the `v0.4.0` runtime contract milestone
 > **Author:** GhaatakJi  
-> **Last updated:** 2026-05-06
+> **Last updated:** 2026-05-07
 
 ---
 
@@ -44,24 +44,24 @@ Rather than patching pysmi incrementally, `trishul-smi` is a **ground-up rewrite
 ## 3. Goals
 
 ### Must Have (v1.0)
-- [ ] Parse SMIv2 MIB files (RFC 2578, 2579, 2580)
-- [ ] Parse SMIv1 MIB files (RFC 1155, 1212, 1215)
-- [ ] Handle common vendor dialect quirks (Cisco, HP, NET-SNMP)
-- [ ] Output clean, structured **JSON** per MIB module (primary)
-- [ ] Output **PySNMP-compatible `.py` modules** (secondary, `--format pysnmp`)
-- [ ] Support **both outputs simultaneously** (`--format json pysnmp`)
+- [x] Parse SMIv2 MIB files (RFC 2578, 2579, 2580)
+- [x] Parse SMIv1 MIB files (RFC 1155, 1212, 1215)
+- [x] Handle common vendor dialect quirks (Cisco, HP, NET-SNMP)
+- [x] Output clean, structured **JSON** per MIB module (primary)
+- [x] Output **PySNMP-compatible `.py` modules** (secondary, `--format pysnmp`)
+- [x] Support **both outputs simultaneously** (`--format json pysnmp`)
 - [x] Convert existing PySNMP `.py` MIB modules → JSON (`tsmi convert` — shipped v0.2.0)
-- [ ] Automatic dependency resolution with **parallel async fetching**
-- [ ] Fetch missing MIBs from HTTP sources with retry + timeout
-- [ ] Read MIBs from local filesystem and ZIP archives
-- [ ] CLI: `trishul-smi compile <MIB-NAME>`
-- [ ] Python API: `MibCompiler` class
-- [ ] Full type annotations (mypy strict)
+- [x] Automatic dependency resolution with **parallel async fetching**
+- [x] Fetch missing MIBs from HTTP sources with retry + timeout
+- [x] Read MIBs from local filesystem and ZIP archives
+- [x] CLI: `trishul-smi compile <MIB-NAME>`
+- [x] Python API: `MibCompiler` class
+- [x] Full type annotations (mypy strict)
 - [ ] Test coverage ≥ 95%
-- [ ] Published to PyPI as `0.1.0` (unstable marker)
+- [x] Published to PyPI as `0.1.0` (unstable marker)
 
 ### Nice to Have (v1.x)
-- [ ] OID index file generation
+- [x] OID index file generation (`oid_index.json` — shipped in v0.4.0)
 - [ ] MIB validation / lint mode
 - [ ] Plugin system for custom code generators
 - [ ] Watch mode (recompile on file change)
@@ -95,7 +95,7 @@ PySNMP `.py` output is a **walled garden** — only useful inside the PySNMP eco
 ### Why also support PySNMP `.py` output?
 
 - Existing PySNMP-based tooling still needs `.py` format
-- The `AbstractCodeGen` architecture makes adding a second codegen **zero-cost to the pipeline**
+- The formatter-based architecture makes adding a second output path cheap in the pipeline
 - Makes `trishul-smi` a **complete drop-in replacement** for pysmi, not just a partial tool
 - Users can generate both formats in a single run
 
@@ -142,13 +142,18 @@ trishul-smi compile IF-MIB --format json pysnmp   # both simultaneously
 
 ### DD-4: Jinja2 for PySNMP `.py` output from v1.0
 
-**Decision:** Use Jinja2 for `PysnmpFormatter` from day one. Avoids two code paths (manual string building vs. template). Templates live in `output/templates/pysnmp_module.j2`.
+**Decision:** Use Jinja2 for `PysnmpFormatter` from day one. Avoids two code paths
+(manual string building vs. template). The project currently keeps the template inline in
+`output/pysnmp_fmt.py`.
 
 ---
 
 ### DD-5: No MIB borrowing in v1.0
 
-**Decision:** Deferred to v1.x. In v1.0 a failed fetch/parse raises `MibNotFoundError` or `ParseError`. `CompileResult.status` is `Literal["compiled", "cached", "failed"]`.
+**Decision:** Deferred to v1.x. A fetch miss produces `MibNotFoundError` and surfaces as
+`status="missing"` in compile results; parse and runtime failures surface as
+`status="failed"`. `cached` remains a reserved status in the type for future cache-path
+surfacing, but is not yet emitted by the compiler.
 
 ---
 
@@ -205,7 +210,7 @@ trishul-smi compile IF-MIB --format json pysnmp   # both simultaneously
 [MibModule dataclass]
         ↓  Dependency Resolver  (Kahn’s algorithm + asyncio.gather for parallel fetch)
 [Ordered MibModule list]
-        ↓  CodeGen  (json_codegen / pysnmp_codegen — one or both)
+        ↓  Formatter  (JsonFormatter / PysnmpFormatter — one or both)
 [dict / .py string]
         ↓  Writer  (file / stdout / callback)
 [Output artifacts]
@@ -229,13 +234,15 @@ Each stage is **independently testable** with clean interfaces.
 | Testing | `pytest` + `pytest-httpx` | Async support, HTTP mocking |
 | Packaging | `hatchling` + `pyproject.toml` | Modern Python packaging standard |
 
-### 6.3 Core Modules (Planned)
+### 6.3 Core Modules (Current Shape)
 
 ```
 trishul_smi/
+├── __init__.py            ← package version export
 ├── compiler.py           ← orchestrator (MibCompiler class)
 ├── config.py             ← CompilerConfig dataclass + VALID_FORMATS
 ├── errors.py             ← exception hierarchy (no circular imports)
+├── version.py            ← producer version helpers for JSON artifacts
 ├── models/               ← MibModule, MibObject, MibType, CompileResult
 ├── parser/
 │   ├── grammar/
@@ -255,8 +262,11 @@ trishul_smi/
 │   ├── dependency.py     ← topological sort
 │   └── cache.py          ← MibCache (orjson disk cache, atomic writes)
 ├── output/
-│   ├── json_fmt.py       ← MibModule → JSON          [PRIMARY]
-│   └── pysnmp_fmt.py     ← MibModule → PySNMP .py   [SECONDARY, Jinja2 inline template]
+│   ├── json_ir.py        ← shared JSON artifact metadata
+│   ├── json_contract.py  ← shared JSON class/nodetype semantics
+│   ├── json_bundle.py    ← optional manifest.json / oid_index.json builders
+│   ├── json_fmt.py       ← MibModule → JSON module artifact [PRIMARY]
+│   └── pysnmp_fmt.py     ← MibModule → PySNMP .py         [SECONDARY, Jinja2 inline template]
 ├── convert/
 │   └── pysnmp_reader.py  ← compiled .py → MibModule  [ast-based, no grammar]
 └── cli/
@@ -273,7 +283,7 @@ trishul_smi/
 6. `parser/transformer.py` + `smi_parser.py`
 7. `resolver/` — Kahn’s algorithm + parallel fetch
 8. `output/json_fmt.py` — primary output
-9. `output/pysnmp_fmt.py` + `templates/pysnmp_module.j2`
+9. `output/pysnmp_fmt.py` (inline Jinja2 template)
 10. `compiler.py` — wire everything
 11. `cli/` — last, always backed by real logic
 
@@ -287,8 +297,10 @@ trishul_smi/
 {
   "module": "IF-MIB",
   "language": "SMIv2",
+  "schema_version": "1.0",
+  "producer_version": "<installed trishul-smi version>",
   "generated_by": "trishul-smi",
-  "generated_at": "2026-05-06T12:00:00Z",
+  "generated_at": "2026-05-07T12:00:00Z",
   "imports": {
     "SNMPv2-SMI": ["MODULE-IDENTITY", "OBJECT-TYPE", "Integer32"],
     "SNMPv2-TC": ["DisplayString", "PhysAddress", "TruthValue"]
@@ -338,6 +350,10 @@ trishul_smi/
 }
 ```
 
+Module JSON is the atomic usable artifact. As of v0.4.0, optional `manifest.json` and
+`oid_index.json` sidecars may be emitted for deterministic discovery and faster reverse
+OID lookup, but correctness does not depend on them.
+
 ### 7.2 PySNMP `.py` Output
 
 Generated from an inline Jinja2 template in `output/pysnmp_fmt.py`. Covers the full set defined in DD-8 (as extended in v0.2.0): scalars, tables, table columns (with INDEX/AUGMENTS), notifications, textual-conventions with full subtypeSpec, module-identity with organization/revisions/description.
@@ -354,4 +370,4 @@ The project is considered v1.0 ready when:
 - Test suite passes with ≥ 95% coverage
 - `mypy --strict` passes with zero errors
 - `ruff check` passes with zero warnings
-- Package published to PyPI as `trishul-smi 0.1.0`
+- Package published to PyPI and installable as `trishul-smi`

@@ -1,6 +1,6 @@
 # trishul-smi — Architecture
 
-> **Last updated:** 2026-05-06
+> **Last updated:** 2026-05-07
 
 ---
 
@@ -24,10 +24,36 @@
 ## 2. Package Structure
 
 ```
+README.md                  ← repository overview
+LICENSE                    ← MIT license
+pyproject.toml             ← packaging and tool configuration
+
+.github/
+├── CONTRIBUTING.md        ← contribution guide and repo conventions
+├── CONTRIBUTORS.md        ← maintainer and contributor credits
+├── FUNDING.yml            ← GitHub funding metadata
+└── workflows/
+    ├── ci.yml             ← CI pipeline
+    └── release.yml        ← release automation
+
+docs/
+├── index.md               ← documentation index
+├── python-api.md          ← library/API usage
+├── configuration.md       ← CompilerConfig reference
+├── cli.md                 ← CLI reference
+├── json-bundles.md        ← JSON bundle runtime contract
+├── architecture.md        ← this file
+├── design-notes.md        ← design decisions and goals
+├── roadmap.md             ← planned features and known limitations
+├── release-checklist.md   ← maintainer release process
+└── CHANGELOG.md           ← version history
+
 trishul_smi/
+├── __init__.py            ← package version export
 ├── compiler.py            ← MibCompiler: pipeline orchestrator
 ├── config.py              ← CompilerConfig dataclass
 ├── errors.py              ← exception hierarchy
+├── version.py             ← producer version helpers for emitted JSON artifacts
 │
 ├── models/
 │   ├── mib_module.py      ← MibModule dataclass
@@ -59,6 +85,9 @@ trishul_smi/
 │
 ├── output/
 │   ├── base.py            ← FormatterProtocol
+│   ├── json_ir.py         ← shared JSON artifact metadata
+│   ├── json_contract.py   ← shared JSON class/nodetype semantics
+│   ├── json_bundle.py     ← optional manifest.json / oid_index.json builders
 │   ├── json_fmt.py        ← JsonFormatter  (FILE_SUFFIX = ".json")
 │   └── pysnmp_fmt.py      ← PysnmpFormatter (Jinja2, FILE_SUFFIX = ".py")
 │
@@ -77,19 +106,15 @@ tests/
 ├── test_convert.py
 ├── test_errors.py
 ├── test_httpreader.py
+├── test_json_bundle.py
+├── test_json_ir.py
+├── test_json_oid_index.py
 ├── test_models.py
 ├── test_oid_resolver.py
 ├── test_parser.py
 ├── test_readers.py
 ├── test_resolver.py
 └── test_transformer.py
-
-docs/
-├── index.md               ← documentation index
-├── architecture.md        ← this file
-├── design-notes.md        ← design decisions and goals
-├── roadmap.md             ← planned features and known limitations
-└── CHANGELOG.md           ← version history
 ```
 
 ---
@@ -232,15 +257,20 @@ Transforms a `MibModule` into an output string. Conforming to `FormatterProtocol
 ```python
 class FormatterProtocol(Protocol):
     FILE_SUFFIX: str             # e.g. ".json" or ".py"
-    def format(self, module: MibModule) -> str: ...
+    def format(self, module: MibModule) -> str | bytes: ...
 ```
 
 | Class | Output | Method |
 |---|---|---|
-| `JsonFormatter` | `.json` | `orjson` serialization; descriptions normalized; `oid_path` compact |
+| `JsonFormatter` | `.json` | `orjson` serialization; shared artifact metadata; descriptions normalized; `oid_path` compact |
 | `PysnmpFormatter` | `.py` | Jinja2 template; two-pass OID walk classifies MibTable / MibTableRow / MibTableColumn / MibScalar |
 
 `PysnmpFormatter` replaces hyphens in Python identifiers, emits full TEXTUAL-CONVENTION subclasses with `subtypeSpec`, inline `_Name_Type` wrappers for constrained OBJECT-TYPEs, `setIndexNames`/`AUGMENTS`, `setOrganization`, `setRevisions`, and `setDescription`. Supports `--no-texts` to suppress all text fields.
+
+`json_ir.py` creates one shared metadata block per compile run, `json_contract.py`
+centralizes runtime-visible JSON `class` and `nodetype` semantics, and `json_bundle.py`
+builds optional `manifest.json` and `oid_index.json` sidecars from successfully emitted
+JSON modules.
 
 ---
 
@@ -260,11 +290,17 @@ class MibCompiler:
 1. MibResolver.resolve(mib_names)
    → BFS + asyncio.gather + asyncio.to_thread(SmiParser.parse)
    → topological_sort → ResolveResult
-2. for each module in ResolveResult.modules:
+2. if JSON output is enabled:
+     create one shared JSON artifact metadata block for the compile run
+3. for each module in ResolveResult.modules:
      for each formatter in formatters:
        content = formatter.format(module)
        write to output_dir/<name><FILE_SUFFIX>
-3. return list[CompileResult]
+4. if emit_oid_index and JSON modules were emitted:
+     write output_dir/oid_index.json
+5. if emit_manifest and JSON modules were emitted:
+     write output_dir/manifest.json
+6. return list[CompileResult]
 ```
 
 Formatter errors are non-fatal — captured in `CompileResult.warnings`, logged at WARNING level.
@@ -285,9 +321,12 @@ class CompilerConfig:
     http_timeout: float          # seconds; default: 30.0
     http_retries: int            # default: 3
     no_texts: bool               # suppress descriptions/org/revisions; default: False
+    emit_manifest: bool          # optional manifest.json sidecar; default: False
+    emit_oid_index: bool         # optional oid_index.json sidecar; default: False
 ```
 
-Unknown format names raise `ValueError` at `MibCompiler.__init__` time.
+Unknown format names raise `ValueError` at `MibCompiler.__init__` time. Sidecar flags
+require `"json"` to be present in `formats`.
 
 ---
 
@@ -343,9 +382,14 @@ cli/main.py
         │
         ├─ resolve_oids(modules)  → rewrite all oid/oid_path to absolute numeric paths
         │
+        ├─ make shared JSON metadata once per compile() call
+        │
         └─ for each module in ordered list:
              JsonFormatter.format(module)     → IF-MIB.json
              PysnmpFormatter.format(module)   → IF-MIB.py
+        │
+        ├─ build_oid_index_bytes(...)         → oid_index.json   [optional]
+        └─ build_manifest_bytes(...)          → manifest.json    [optional]
 ```
 
 ---

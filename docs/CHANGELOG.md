@@ -10,6 +10,28 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.0] — 2026-05-07
+
+### Added
+
+- **Versioned JSON IR metadata** — module JSON now carries `schema_version`,
+  `producer_version`, `generated_by`, and `generated_at`, with one shared `generated_at`
+  value reused across every JSON artifact emitted in a single compile run.
+- **Optional JSON bundle sidecars** — `CompilerConfig` now exposes `emit_manifest` and
+  `emit_oid_index` flags, both defaulting to `False` and both requiring `"json"` in
+  `formats`.
+- **`manifest.json` bundle inventory** — optional deterministic sidecar listing only
+  successfully emitted JSON modules and referencing companion sidecars by filename.
+- **`oid_index.json` reverse lookup artifact** — optional OID-to-entry accelerator derived
+  from emitted module JSON, with list-valued entries from day one so duplicate OIDs remain
+  representable without changing the format.
+
+### Changed
+
+- **Documentation layout and API docs** — package/runtime docs now live under `docs/`,
+  GitHub community files live under `.github/`, and the new `docs/python-api.md` documents
+  library embedding and optional JSON sidecars.
+
 ## [0.3.1] — 2026-05-06
 
 ### Fixed
@@ -91,6 +113,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 [0.3.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.3.0
 [0.3.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.3.1
+[0.4.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.0
 
 ---
 

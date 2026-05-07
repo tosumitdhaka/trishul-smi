@@ -102,5 +102,5 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
-          # To use CHANGELOG.md instead of auto-generated notes:
-          # body_path: CHANGELOG.md
+          # To use docs/CHANGELOG.md instead of auto-generated notes:
+          # body_path: docs/CHANGELOG.md

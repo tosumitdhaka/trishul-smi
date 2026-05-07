@@ -43,6 +43,8 @@ class CompilerConfig:
 
     # Output content flags
     no_texts: bool = False  # suppress setDescription/setOrganization/setRevisions/TC description
+    emit_manifest: bool = False
+    emit_oid_index: bool = False
 
     def __post_init__(self) -> None:
         if self.max_mib_size <= 0:
@@ -65,3 +67,7 @@ class CompilerConfig:
                 f"Unknown output format(s): {sorted(unknown)}. "
                 f"Valid formats: {sorted(VALID_FORMATS)}"
             )
+        if self.emit_manifest and "json" not in self.formats:
+            raise ValueError("emit_manifest requires 'json' in formats")
+        if self.emit_oid_index and "json" not in self.formats:
+            raise ValueError("emit_oid_index requires 'json' in formats")

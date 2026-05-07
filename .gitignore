@@ -96,8 +96,12 @@ $RECYCLE.BIN/
 # Linux
 .directory
 
-# ── Claude Code ──────────────────────────────────────────────────────────────
+# ── AI  ──────────────────────────────────────────────────────────────
 CLAUDE.md
+AGENTS.md
+.claude/
+.codex/
+.agents/
 
 # ── Project-specific ─────────────────────────────────────────────────────────
 # Default MIB output directory

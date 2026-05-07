@@ -5,7 +5,8 @@ a single async ``compile()`` call.
 
 Typical usage::
 
-    from trishul_smi import MibCompiler, CompilerConfig
+    from trishul_smi.compiler import MibCompiler
+    from trishul_smi.config import CompilerConfig
     from trishul_smi.reader import FileReader, HttpReader
 
     config = CompilerConfig(output_dir=Path("./out"))
@@ -28,7 +29,15 @@ from pathlib import Path
 from trishul_smi.config import VALID_FORMATS, CompilerConfig
 from trishul_smi.models import CompileResult
 from trishul_smi.output.base import FormatterProtocol
+from trishul_smi.output.json_bundle import (
+    MANIFEST_FILENAME,
+    OID_INDEX_FILENAME,
+    JsonModuleArtifact,
+    build_manifest_bytes,
+    build_oid_index_bytes,
+)
 from trishul_smi.output.json_fmt import JsonFormatter
+from trishul_smi.output.json_ir import JsonArtifactMetadata, make_json_artifact_metadata
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter
 from trishul_smi.parser._constants import BASE_MIBS
 from trishul_smi.parser.smi_parser import SmiParser
@@ -135,11 +144,20 @@ class MibCompiler:
         resolver = MibResolver(chain, self._parser, self._cache)
         resolve_result = await resolver.resolve(list(mib_names))
         resolve_oids(resolve_result.modules)
+
+        json_artifact_metadata: JsonArtifactMetadata | None = None
+        if any(isinstance(formatter, JsonFormatter) for formatter in self._formatters.values()):
+            json_artifact_metadata = make_json_artifact_metadata()
+            for formatter in self._formatters.values():
+                if isinstance(formatter, JsonFormatter):
+                    formatter.set_artifact_metadata(json_artifact_metadata)
+
         requested_set = set(mib_names)
         resolved_names = {module.name for module in resolve_result.modules}
         blocked: dict[str, list[str]] = {}
 
         results: list[CompileResult] = []
+        emitted_json_modules: list[JsonModuleArtifact] = []
         out_dir = self._config.output_dir
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -175,6 +193,14 @@ class MibCompiler:
                         out_path.write_bytes(content)
                     else:
                         out_path.write_text(content, encoding="utf-8")
+                    if fmt_name == "json":
+                        emitted_json_modules.append(
+                            JsonModuleArtifact(
+                                module=module.name,
+                                file=out_path.name,
+                                module_data=module,
+                            )
+                        )
                     output_paths.append(out_path)
                 except Exception as _fmt_exc:  # noqa: BLE001
                     msg = f"[{fmt_name}] formatter error for {module.name}: {_fmt_exc}"
@@ -218,5 +244,41 @@ class MibCompiler:
                     is_dependency=name not in requested_set,
                 )
             )
+
+        oid_index_written = False
+        if self._config.emit_oid_index and emitted_json_modules:
+            if json_artifact_metadata is None:
+                raise RuntimeError("emit_oid_index requires an active JSON formatter")
+            oid_index_path = out_dir / OID_INDEX_FILENAME
+            try:
+                oid_index_path.write_bytes(
+                    build_oid_index_bytes(json_artifact_metadata, emitted_json_modules)
+                )
+                oid_index_written = True
+            except OSError as _oid_index_exc:
+                from trishul_smi.errors import WriterError
+
+                raise WriterError(
+                    f"Cannot write OID index {oid_index_path}: {_oid_index_exc}"
+                ) from _oid_index_exc
+
+        if self._config.emit_manifest and emitted_json_modules:
+            if json_artifact_metadata is None:
+                raise RuntimeError("emit_manifest requires an active JSON formatter")
+            manifest_path = out_dir / MANIFEST_FILENAME
+            try:
+                manifest_path.write_bytes(
+                    build_manifest_bytes(
+                        json_artifact_metadata,
+                        emitted_json_modules,
+                        oid_index_filename=OID_INDEX_FILENAME if oid_index_written else None,
+                    )
+                )
+            except OSError as _manifest_exc:
+                from trishul_smi.errors import WriterError
+
+                raise WriterError(
+                    f"Cannot write bundle manifest {manifest_path}: {_manifest_exc}"
+                ) from _manifest_exc
 
         return results

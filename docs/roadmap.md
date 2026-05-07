@@ -69,15 +69,24 @@ Correctness, status semantics, and CLI/runtime contract fixes.
 
 ---
 
-## v0.4.0
+## v0.4.0 — shipped 2026-05-07
+
+Runtime bundle contract and JSON sidecars.
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | Define runtime bundle contract: module JSON is atomic, sidecars optional | planned | GitHub `#8`. Module JSON is the source of truth; `manifest.json` and `oid_index.json` are additive sidecars. |
-| 2 | Version the JSON IR for downstream consumers | planned | GitHub `#7`. Add `schema_version` and producer metadata so downstream runtimes can detect compatibility explicitly. |
-| 3 | Emit a bundle manifest for compiled JSON output | planned | GitHub `#6`. Add `manifest.json` as optional bundle metadata for deterministic discovery. |
-| 4 | Generate `oid_index.json` for fast reverse OID lookup | planned | GitHub `#5`. Flat JSON lookup artifact for OID → module/object resolution; optional accelerator, not source of truth. |
-| 5 | MIB validation / lint mode | planned | `tsmi lint IF-MIB` — report missing imports, undefined types, etc. |
-| 6 | Watch mode | planned | Recompile on file change for local MIB development workflows. |
-| 7 | Plugin system for custom formatters | planned | Allow third-party output formats without forking. |
-| 8 | MIB borrowing (pre-compiled fallback) | planned | Download pre-compiled MIBs from a remote registry as fallback. |
+| 1 | Define runtime bundle contract: module JSON is atomic, sidecars optional | done | GitHub `#8`. A bundle is one or more module JSON artifacts; `manifest.json` and `oid_index.json` stay additive. |
+| 2 | Version the JSON IR for downstream consumers | done | GitHub `#7`. Module JSON and sidecars now carry `schema_version`, `producer_version`, `generated_by`, and `generated_at`. |
+| 3 | Emit a bundle manifest for compiled JSON output | done | GitHub `#6`. `manifest.json` is optional, deterministic, filename-based, and emitted only when requested via config. |
+| 4 | Generate `oid_index.json` for fast reverse OID lookup | done | GitHub `#5`. `oid_index.json` is optional, derived from emitted module JSON, and emitted only when requested via config. |
+
+---
+
+## Backlog
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | MIB validation / lint mode | planned | `tsmi lint IF-MIB` — report missing imports, undefined types, etc. |
+| 2 | Watch mode | planned | Recompile on file change for local MIB development workflows. |
+| 3 | Plugin system for custom formatters | planned | Allow third-party output formats without forking. |
+| 4 | MIB borrowing (pre-compiled fallback) | planned | Download pre-compiled MIBs from a remote registry as fallback. |

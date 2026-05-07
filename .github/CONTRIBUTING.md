@@ -69,4 +69,4 @@ Pull requests must pass all three CI gates before merge:
 2. **Typecheck** — `mypy trishul_smi`
 3. **Tests** — `pytest` across Python 3.10–3.13
 
-See [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+See [`workflows/ci.yml`](workflows/ci.yml).

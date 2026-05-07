@@ -34,6 +34,7 @@ Follow this checklist for every release. Steps must be completed in order.
 ## 2. Version bump
 
 - [ ] Update `version` in `pyproject.toml`
+- [ ] Update `VERSION` in `trishul_smi/version.py`
 - [ ] Add a new section to `docs/CHANGELOG.md` following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format:
   - Date in `YYYY-MM-DD`
   - `### Added` / `### Changed` / `### Fixed` / `### Removed` as applicable

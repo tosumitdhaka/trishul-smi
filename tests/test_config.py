@@ -36,6 +36,11 @@ class TestDefaults:
         c = CompilerConfig(http_retries=0)
         assert c.http_retries == 0
 
+    def test_sidecar_flags_default_false(self):
+        c = CompilerConfig()
+        assert c.emit_manifest is False
+        assert c.emit_oid_index is False
+
 
 class TestValidators:
     def test_negative_max_mib_size_raises(self):
@@ -69,3 +74,16 @@ class TestValidators:
     def test_empty_formats_raises(self):
         with pytest.raises(ValueError, match="formats"):
             CompilerConfig(formats=[])
+
+    def test_emit_manifest_requires_json_format(self):
+        with pytest.raises(ValueError, match="emit_manifest"):
+            CompilerConfig(formats=["pysnmp"], emit_manifest=True)
+
+    def test_emit_oid_index_requires_json_format(self):
+        with pytest.raises(ValueError, match="emit_oid_index"):
+            CompilerConfig(formats=["pysnmp"], emit_oid_index=True)
+
+    def test_sidecar_flags_allowed_with_json_format(self):
+        c = CompilerConfig(formats=["json", "pysnmp"], emit_manifest=True, emit_oid_index=True)
+        assert c.emit_manifest is True
+        assert c.emit_oid_index is True

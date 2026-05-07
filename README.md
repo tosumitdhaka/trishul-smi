@@ -21,6 +21,8 @@ and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 - **Full import closure** — resolves every transitive dependency automatically
 - **Full OID resolution** — all objects carry absolute numeric OID paths after compile
 - **Two output formats** — structured JSON and pysnmp-compatible Python
+- **Atomic JSON modules + optional sidecars** — each module JSON is usable on its own; `manifest.json` and `oid_index.json` are additive when enabled via the Python API
+- **Versioned JSON IR metadata** — module JSON and optional sidecars carry `schema_version`, `producer_version`, `generated_by`, and `generated_at`
 - **pysmi-parity pysnmp output** — MibTableColumn detection, full TC subtypeSpec, setIndexNames, setOrganization, setRevisions, inline constraint wrappers
 - **Reverse conversion** — `tsmi convert FILE.py` converts a compiled PySNMP module back to JSON
 - **Directory compile mode** — `tsmi compile -d /path/to/mibs` auto-discovers and compiles every MIB file
@@ -57,7 +59,8 @@ Python API:
 ```python
 import asyncio
 from pathlib import Path
-from trishul_smi import MibCompiler, CompilerConfig
+from trishul_smi.compiler import MibCompiler
+from trishul_smi.config import CompilerConfig
 from trishul_smi.reader import FileReader, HttpReader
 
 async def main():
@@ -71,16 +74,26 @@ async def main():
 asyncio.run(main())
 ```
 
+Each emitted `MODULE.json` is a valid standalone artifact. For downstream bundle metadata,
+set `emit_manifest=True` and/or `emit_oid_index=True` on `CompilerConfig`.
+
 ---
 
 ## Documentation
 
 - [CLI Reference](docs/cli.md) — all commands, options, and output format examples
+- [Python API](docs/python-api.md) — embedding `trishul-smi` as a library
 - [Configuration](docs/configuration.md) — `CompilerConfig` fields and defaults
+- [JSON Bundle Contract](docs/json-bundles.md) — atomic module JSON, optional sidecars, and runtime guarantees
 - [Architecture](docs/architecture.md) — package structure, data flow, design principles
 - [Roadmap](docs/roadmap.md) — planned features and known limitations
-- [Contributing](docs/contributing.md) — dev setup, test and lint commands
 - [Changelog](docs/CHANGELOG.md) — version history
+
+## Repository
+
+- [Contributing](.github/CONTRIBUTING.md) — dev setup, quality gates, and repo conventions
+- [Contributors](.github/CONTRIBUTORS.md) — maintainer and contributor credits
+- [Release Checklist](docs/release-checklist.md) — maintainer release process
 
 ---
 

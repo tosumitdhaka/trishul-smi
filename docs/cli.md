@@ -128,10 +128,15 @@ Print the installed version and exit.
 
 One `.json` file per MIB module:
 
+Each module JSON file is individually usable. `manifest.json` and `oid_index.json` are
+optional Python API sidecars; the CLI currently documents module output only.
+
 ```json
 {
   "module": "IF-MIB",
   "language": "SMIv2",
+  "schema_version": "1.0",
+  "producer_version": "<installed trishul-smi version>",
   "generated_by": "trishul-smi",
   "generated_at": "2026-05-06T12:00:00Z",
   "imports": {
@@ -170,6 +175,8 @@ One `.json` file per MIB module:
 }
 ```
 
+`producer_version` reflects the installed package version that produced the artifact.
+
 ### pysnmp (`-f pysnmp`)
 
 One `.py` file per MIB module, loadable by `pysnmp`'s `MibBuilder`:
@@ -182,4 +189,3 @@ mibBuilder = MibBuilder()
 ifMIB = ModuleIdentity((1, 3, 6, 1, 2, 1, 31,))
 mibBuilder.exportSymbols('IF-MIB', **{'ifMIB': ifMIB})
 ```
-

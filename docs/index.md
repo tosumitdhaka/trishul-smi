@@ -9,9 +9,10 @@
 | Document | Description |
 |---|---|
 | [CLI Reference](cli.md) | All commands, options, exit codes, and output format examples |
+| [Python API](python-api.md) | Library usage, compiler orchestration, readers, and result semantics |
 | [Configuration](configuration.md) | `CompilerConfig` fields, defaults, and usage patterns |
+| [JSON Bundle Contract](json-bundles.md) | Atomic module JSON, optional sidecars, and runtime guarantees |
 | [Architecture](architecture.md) | Package structure, module contracts, data flow, and design principles |
-| [Contributing](contributing.md) | Dev setup, test/lint commands, and project conventions |
 | [Roadmap](roadmap.md) | Planned features, known limitations, and shipped status |
 | [Release Checklist](release-checklist.md) | Step-by-step process for cutting a release |
 | [Design Notes](design-notes.md) | Goals, motivation, and design decisions (DD-1 through DD-9) |

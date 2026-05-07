@@ -1,3 +1,7 @@
 """trishul-smi — A clean, modern SMI/MIB compiler."""
 
-__version__ = "0.3.1"
+from trishul_smi.version import VERSION
+
+__version__ = VERSION
+
+__all__ = ["__version__"]
