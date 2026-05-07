@@ -12,8 +12,16 @@ from tests.helpers import MockReader
 from trishul_smi.compiler import MibCompiler
 from trishul_smi.config import CompilerConfig
 from trishul_smi.errors import WriterError
-from trishul_smi.output.json_bundle import MANIFEST_FILENAME, OID_INDEX_FILENAME
+from trishul_smi.models.mib_module import MibModule
+from trishul_smi.models.mib_object import MibObject
+from trishul_smi.output.json_bundle import (
+    MANIFEST_FILENAME,
+    OID_INDEX_FILENAME,
+    JsonModuleArtifact,
+    build_oid_index_bytes,
+)
 from trishul_smi.output.json_fmt import JsonFormatter
+from trishul_smi.output.json_ir import make_json_artifact_metadata
 
 TABLE_MIB = """
 TABLE-MIB DEFINITIONS ::= BEGIN
@@ -252,6 +260,53 @@ class TestOidIndexEmission:
         await compiler.compile("BAD-MIB")
 
         assert not (tmp_path / OID_INDEX_FILENAME).exists()
+
+    def test_oid_index_allows_symbolic_oid_keys(self):
+        module = MibModule(
+            name="HOST-RESOURCES-MIB",
+            language="SMIv2",
+            objects={
+                "hrMIBAdminInfoNode": MibObject(
+                    name="hrMIBAdminInfoNode",
+                    oid="hrMIBAdminInfo.1",
+                    oid_path=[],
+                    object_type="OBJECT-TYPE",
+                    syntax="Integer32",
+                ),
+                "hrSystemUptime": MibObject(
+                    name="hrSystemUptime",
+                    oid="1.3.6.1.2.1.25.1.1",
+                    oid_path=[1, 3, 6, 1, 2, 1, 25, 1, 1],
+                    object_type="OBJECT-TYPE",
+                    syntax="Integer32",
+                ),
+            },
+        )
+
+        payload = json.loads(
+            build_oid_index_bytes(
+                make_json_artifact_metadata(),
+                [
+                    JsonModuleArtifact(
+                        module="HOST-RESOURCES-MIB",
+                        file="HOST-RESOURCES-MIB.json",
+                        module_data=module,
+                    )
+                ],
+            )
+        )
+
+        assert "1.3.6.1.2.1.25.1.1" in payload["oids"]
+        assert "hrMIBAdminInfo.1" in payload["oids"]
+        assert payload["oids"]["hrMIBAdminInfo.1"] == [
+            {
+                "module": "HOST-RESOURCES-MIB",
+                "object": "hrMIBAdminInfoNode",
+                "class": "objecttype",
+                "object_type": "OBJECT-TYPE",
+                "nodetype": "scalar",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_manifest_references_oid_index_when_both_requested(self, tmp_path: Path):

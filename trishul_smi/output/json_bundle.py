@@ -56,8 +56,14 @@ def build_manifest_bytes(
     return orjson.dumps(payload, option=orjson.OPT_INDENT_2)
 
 
-def _oid_sort_key(oid: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in oid.split("."))
+def _oid_sort_key(oid: str) -> tuple[tuple[int, int | str], ...]:
+    parts: list[tuple[int, int | str]] = []
+    for part in oid.split("."):
+        if part.isdigit():
+            parts.append((0, int(part)))
+        else:
+            parts.append((1, part))
+    return tuple(parts)
 
 
 def _oid_index_entry(
