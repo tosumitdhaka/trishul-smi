@@ -220,7 +220,10 @@ class SmiParser:
 Dialect is auto-detected from the MIB source. Grammar text is cached process-wide and
 compiled `Lark` parsers are cached per thread. Tagged ASN.1 type assignments such as
 `[APPLICATION 0] IMPLICIT OCTET STRING` are preserved as the underlying base type plus
-constraint metadata.
+constraint metadata. The parser also performs narrow pre-parse normalization for wrapped
+inline comment continuations seen in real IETF MIBs and accepts `SNMPv2-PDU`-style
+symbolic range bounds, anonymous `CHOICE` members inside `SEQUENCE`, and constrained
+`SEQUENCE OF` forms.
 
 **Async boundary:** `SmiParser.parse()` is CPU-bound sync code. Library callers may offload it
 manually if they want, but the built-in resolver now keeps fetches async and performs parse
@@ -277,8 +280,8 @@ class FormatterProtocol(Protocol):
 
 `json_ir.py` creates one shared metadata block per compile run, `json_contract.py`
 centralizes runtime-visible JSON `class` and `nodetype` semantics, and `json_bundle.py`
-builds optional `manifest.json` and `oid_index.json` sidecars from successfully emitted
-JSON modules.
+builds optional `manifest.json` and `oid_index.json` sidecars from the final emitted JSON
+file set for the compile run.
 
 ---
 
@@ -305,9 +308,9 @@ class MibCompiler:
        content = formatter.format(module)
        write to output_dir/<name><FILE_SUFFIX>
 4. if emit_oid_index and JSON modules were emitted:
-     write output_dir/oid_index.json
+     build from the final emitted JSON file set and write output_dir/oid_index.json
 5. if emit_manifest and JSON modules were emitted:
-     write output_dir/manifest.json
+     build from the same final emitted JSON file set and write output_dir/manifest.json
 6. return list[CompileResult]
 ```
 
@@ -396,8 +399,8 @@ cli/main.py
              JsonFormatter.format(module)     → IF-MIB.json
              PysnmpFormatter.format(module)   → IF-MIB.py
         │
-        ├─ build_oid_index_bytes(...)         → oid_index.json   [optional]
-        └─ build_manifest_bytes(...)          → manifest.json    [optional]
+        ├─ build_oid_index_bytes(...)         → oid_index.json   [optional; final file set]
+        └─ build_manifest_bytes(...)          → manifest.json    [optional; final file set]
 ```
 
 ---

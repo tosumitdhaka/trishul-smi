@@ -1,6 +1,6 @@
 # trishul-smi — Design Notes
 
-> **Status:** updated through the `v0.4.0` runtime contract milestone
+> **Status:** updated through the `v0.4.1` runtime hotfix milestone
 > **Author:** GhaatakJi  
 > **Last updated:** 2026-05-07
 
@@ -297,7 +297,7 @@ trishul_smi/
 {
   "module": "IF-MIB",
   "language": "SMIv2",
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "producer_version": "<installed trishul-smi version>",
   "generated_by": "trishul-smi",
   "generated_at": "2026-05-07T12:00:00Z",
@@ -350,9 +350,12 @@ trishul_smi/
 }
 ```
 
-Module JSON is the atomic usable artifact. As of v0.4.0, optional `manifest.json` and
+Module JSON is the atomic usable artifact. As of v0.4.1, optional `manifest.json` and
 `oid_index.json` sidecars may be emitted for deterministic discovery and faster reverse
-OID lookup, but correctness does not depend on them.
+OID lookup, and they describe the final emitted module file set for a compile run. Runtime
+correctness still does not depend on them. The parser also includes narrow compatibility
+handling for wrapped inline comment continuations and `SNMPv2-PDU`-style constructs found
+in the IETF corpus.
 
 ### 7.2 PySNMP `.py` Output
 

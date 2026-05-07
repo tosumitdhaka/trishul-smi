@@ -82,12 +82,38 @@ class TestSingleModuleResolution:
         resolve_oids([m])
         assert child.oid_path == [1, 3, 6, 1]
 
+    def test_forward_reference_within_module_resolved(self):
+        """Objects may reference later definitions within the same module."""
+        child = _obj("aChild", [1], oid_parent="aRoot")
+        grandchild = _obj("aGrandChild", [1], oid_parent="aChild")
+        root = _obj("aRoot", [1, 3, 6])
+        m = _module(
+            "A-MIB",
+            {"aChild": child, "aGrandChild": grandchild, "aRoot": root},
+        )
+        resolve_oids([m])
+        assert child.oid_path == [1, 3, 6, 1]
+        assert child.oid == "1.3.6.1"
+        assert grandchild.oid_path == [1, 3, 6, 1, 1]
+        assert grandchild.oid == "1.3.6.1.1"
+
     def test_unresolvable_parent_leaves_path_unchanged(self):
         """Object whose parent is not found must not crash; oid_path unchanged."""
         obj = _obj("orphan", [99], oid_parent="noSuchParent")
         m = _module("TEST-MIB", {"orphan": obj})
         resolve_oids([m])
         assert obj.oid_path == [99]
+
+    def test_unresolved_parent_not_registered_as_partial_path(self):
+        """Unresolved local arcs must not become fake absolute paths."""
+        orphan = _obj("orphan", [99], oid_parent="noSuchParent")
+        child = _obj("child", [1], oid_parent="orphan")
+        m = _module("TEST-MIB", {"orphan": orphan, "child": child})
+        resolve_oids([m])
+        assert orphan.oid_path == [99]
+        assert orphan.oid_parent == "noSuchParent"
+        assert child.oid_path == [1]
+        assert child.oid_parent == "orphan"
 
     def test_resolved_oid_string_matches_path(self):
         obj = _obj("sysDescr", [1], oid_parent="system")

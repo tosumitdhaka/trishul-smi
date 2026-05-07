@@ -57,20 +57,31 @@ def resolve_oids(modules: list[MibModule]) -> None:
     name_map: dict[str, list[int]] = dict(WELL_KNOWN_OIDS)
 
     for module in modules:
-        all_objects: list[MibObject] = [
+        pending: list[MibObject] = [
             *module.objects.values(),
             *module.notifications.values(),
         ]
-        for obj in all_objects:
-            abs_path = _resolve_one(obj, name_map)
-            if abs_path is not None:
-                obj.oid_path = abs_path
-                obj.oid = ".".join(str(n) for n in abs_path)
-                obj.oid_parent = None  # mark resolved; makes re-runs idempotent
-            # Always register this object's name so dependents can resolve it.
-            # Use the (possibly updated) oid_path; if still empty, skip.
-            if obj.oid_path:
-                name_map[obj.name] = obj.oid_path
+        while pending:
+            progressed = False
+            next_pending: list[MibObject] = []
+            for obj in pending:
+                abs_path = _resolve_one(obj, name_map)
+                if abs_path is not None:
+                    obj.oid_path = abs_path
+                    obj.oid = ".".join(str(n) for n in abs_path)
+                    obj.oid_parent = None  # mark resolved; makes re-runs idempotent
+                    progressed = True
+
+                # Register only fully resolved objects; unresolved local arcs are
+                # not safe for dependents to consume as absolute paths.
+                if obj.oid_parent is None and obj.oid_path:
+                    name_map[obj.name] = obj.oid_path
+                else:
+                    next_pending.append(obj)
+
+            if not progressed:
+                break
+            pending = next_pending
 
 
 def _resolve_one(obj: MibObject, name_map: dict[str, list[int]]) -> list[int] | None:

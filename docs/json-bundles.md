@@ -14,6 +14,10 @@ or importing `trishul-smi`.
 - Valid bundle shapes include a single JSON file, a directory of JSON files, a directory of
   JSON files plus `manifest.json`, and a directory of JSON files plus both sidecars.
 - Module JSON is the source of truth. Sidecars are derived metadata.
+- When sidecars are emitted, they describe the final emitted JSON file set for that
+  `compile()` run.
+- `oid_path` is the canonical runtime OID representation.
+- `oid`, when emitted, is the matching numeric dotted string derived from `oid_path`.
 - A single module JSON file is therefore a valid degenerate bundle.
 
 ---
@@ -38,6 +42,8 @@ Module JSON remains authoritative for object, type, notification, and module met
 
 - Optional bundle metadata emitted only when `CompilerConfig.emit_manifest=True`.
 - Lists only successfully emitted module JSON files.
+- Lists each final emitted module file at most once, even when multiple requested or
+  discovered source names compile to the same `MODULE.json`.
 - Uses filenames rather than absolute paths so a bundle stays relocatable.
 - References `oid_index.json` in `sidecars` when both sidecars are emitted.
 - Emitted only when at least one JSON module artifact was successfully written.
@@ -51,10 +57,13 @@ Module JSON remains authoritative for object, type, notification, and module met
 - Optional reverse-lookup accelerator emitted only when
   `CompilerConfig.emit_oid_index=True`.
 - Derived from the emitted module JSON files, not an independent source of truth.
-- Maps each OID to a list of entries from day one so duplicate OIDs do not require a
-  future format change.
-- Stores runtime-visible lookup data such as `module`, `object`, `class`, `object_type`,
-  and `nodetype` for `OBJECT-TYPE` entries.
+- Derived from the same final emitted module file set described by `manifest.json`.
+- Uses the canonical numeric dotted runtime OID as each lookup key.
+- Maps each unique OID to one object entry containing runtime-visible lookup data such as
+  `module`, `object`, `class`, `object_type`, and `nodetype` for `OBJECT-TYPE` entries.
+- Alias or duplicate source inputs must not create self-collisions that drop otherwise valid
+  OID entries from the sidecar.
+- Omits ambiguous duplicate OIDs rather than forcing consumers to pick an arbitrary winner.
 - Emitted only when at least one JSON module artifact was successfully written.
 
 `oid_index.json` improves lookup speed, but it is not required for correctness.

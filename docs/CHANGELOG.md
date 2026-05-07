@@ -10,6 +10,37 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.1] — 2026-05-07
+
+### Changed
+
+- **JSON IR schema version `1.1`** — the runtime JSON contract now reflects the `0.4.1`
+  hotfix shape for canonical `oid` emission and object-valued `oid_index.json` entries.
+- **Final emitted file set semantics for sidecars** — `manifest.json` and `oid_index.json`
+  are now derived from the final emitted module file set for a compile run, so overlapping
+  alias inputs no longer create duplicate manifest entries or self-colliding OID-index data.
+
+### Fixed
+
+- **Same-module forward OID references** — `resolve_oids()` now revisits unresolved objects
+  within a module, so definitions such as `MODULE-IDENTITY ::= { laterDefinedNode 1 }`
+  resolve before JSON emission.
+- **Canonical runtime OIDs in module JSON** — `oid_path` remains the authoritative runtime
+  representation, and `oid` is now emitted only when a fully resolved numeric dotted string
+  can be derived from it. Symbolic-relative values such as `hrMIBAdminInfo.1` are no
+  longer emitted in runtime JSON.
+- **`oid_index.json` runtime contract** — sidecar entries are now object-valued rather than
+  singleton arrays, keyed only by canonical numeric OIDs. Ambiguous duplicate OIDs are
+  omitted from the sidecar instead of forcing consumers to pick an arbitrary winner.
+- **Wrapped inline comment continuations in real IETF MIBs** — the parser now normalizes
+  narrow wrapped comment-text continuations before grammar parsing without letting indented
+  standalone `-- ...` comment lines swallow the next assignment or `CHOICE` member,
+  fixing `HPR-MIB`, the dependent `HPR-IP-MIB`, and the remaining `SNMPv2-*` /
+  `HOST-RESOURCES-MIB` parser blockers seen in the local corpus.
+- **`SNMPv2-PDU` compatibility grammar** — symbolic range bounds, anonymous `CHOICE`
+  members inside `SEQUENCE`, and constrained `SEQUENCE (SIZE (...)) OF ...` forms now parse
+  and preserve their runtime constraints in emitted JSON.
+
 ## [0.4.0] — 2026-05-07
 
 ### Added
@@ -125,6 +156,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.3.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.3.0
 [0.3.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.3.1
 [0.4.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.0
+[0.4.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.1
 
 ---
 

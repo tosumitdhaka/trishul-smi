@@ -88,7 +88,8 @@ config = CompilerConfig(
 
 Both sidecar flags default to `False`. They currently do not have dedicated CLI flags.
 When enabled, all JSON artifacts emitted by one `compile()` call share the same
-`generated_at` value.
+`generated_at` value, and sidecars describe the final emitted JSON file set after any
+overlapping alias inputs collapse to the same output file.
 
 ---
 

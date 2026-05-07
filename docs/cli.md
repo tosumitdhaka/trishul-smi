@@ -129,13 +129,14 @@ Print the installed version and exit.
 One `.json` file per MIB module:
 
 Each module JSON file is individually usable. `manifest.json` and `oid_index.json` are
-optional Python API sidecars; the CLI currently documents module output only.
+optional Python API sidecars. When enabled through the Python API, they describe the final
+emitted JSON file set for that compile run. The CLI currently documents module output only.
 
 ```json
 {
   "module": "IF-MIB",
   "language": "SMIv2",
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "producer_version": "<installed trishul-smi version>",
   "generated_by": "trishul-smi",
   "generated_at": "2026-05-06T12:00:00Z",
@@ -176,6 +177,8 @@ optional Python API sidecars; the CLI currently documents module output only.
 ```
 
 `producer_version` reflects the installed package version that produced the artifact.
+`oid_path` is the canonical runtime OID representation, and `oid` is emitted only when the
+matching numeric dotted string can be derived from it.
 
 ### pysnmp (`-f pysnmp`)
 

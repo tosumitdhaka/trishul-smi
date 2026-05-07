@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from trishul_smi.version import get_producer_version
 
-JSON_IR_SCHEMA_VERSION = "1.0"
+JSON_IR_SCHEMA_VERSION = "1.1"
 
 
 def _utc_now_iso() -> str:

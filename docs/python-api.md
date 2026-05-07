@@ -79,6 +79,8 @@ config = CompilerConfig(
 - Both flags default to `False`.
 - Both require `"json"` in `formats`.
 - Sidecars are emitted only after at least one JSON module is successfully written.
+- Sidecars describe the final emitted JSON file set for the compile run, so overlapping
+  source aliases do not create duplicate manifest rows or false duplicate-OID collisions.
 - Module JSON and any emitted sidecars share one `generated_at` value per `compile()` run.
 
 See [JSON Bundle Contract](json-bundles.md) for the runtime guarantees around these files.

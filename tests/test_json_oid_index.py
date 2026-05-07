@@ -138,6 +138,39 @@ badMIB MODULE-IDENTITY
 END
 """
 
+FORWARD_REF_MIB = """
+FORWARD-REF-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+forwardModule MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "Forward Org"
+    CONTACT-INFO "forward@example.com"
+    DESCRIPTION  "Forward reference module."
+    ::= { forwardAdmin 1 }
+forwardAdmin OBJECT IDENTIFIER ::= { 1 290 }
+END
+"""
+
+ALIAS_TARGET_MIB = """
+ALIAS-TARGET-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32 FROM SNMPv2-SMI ;
+aliasTargetMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "Alias Org"
+    CONTACT-INFO "alias@example.com"
+    DESCRIPTION  "Alias target module."
+    ::= { 1 291 }
+aliasValue OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Alias value."
+    ::= { aliasTargetMIB 1 }
+END
+"""
+
 
 class TestOidIndexEmission:
     @pytest.mark.asyncio
@@ -165,26 +198,22 @@ class TestOidIndexEmission:
 
         oid_index = json.loads((tmp_path / OID_INDEX_FILENAME).read_bytes())
         assert "1.260.1.1.1" in oid_index["oids"]
-        assert oid_index["oids"]["1.260.1.1.1"] == [
-            {
-                "module": "TABLE-MIB",
-                "object": "myIndex",
-                "class": "objecttype",
-                "object_type": "OBJECT-TYPE",
-                "nodetype": "column",
-            }
-        ]
-        assert oid_index["oids"]["1.261.2"] == [
-            {
-                "module": "NOTIF-MIB",
-                "object": "linkDown",
-                "class": "notificationtype",
-                "object_type": "NOTIFICATION-TYPE",
-            }
-        ]
+        assert oid_index["oids"]["1.260.1.1.1"] == {
+            "module": "TABLE-MIB",
+            "object": "myIndex",
+            "class": "objecttype",
+            "object_type": "OBJECT-TYPE",
+            "nodetype": "column",
+        }
+        assert oid_index["oids"]["1.261.2"] == {
+            "module": "NOTIF-MIB",
+            "object": "linkDown",
+            "class": "notificationtype",
+            "object_type": "NOTIFICATION-TYPE",
+        }
 
     @pytest.mark.asyncio
-    async def test_oid_index_supports_multiple_entries_per_oid(self, tmp_path: Path):
+    async def test_oid_index_omits_duplicate_oids(self, tmp_path: Path):
         config = CompilerConfig(
             output_dir=tmp_path,
             formats=["json"],
@@ -198,22 +227,19 @@ class TestOidIndexEmission:
         await compiler.compile("DUP-B", "DUP-A")
 
         oid_index = json.loads((tmp_path / OID_INDEX_FILENAME).read_bytes())
-        assert oid_index["oids"]["1.270.1"] == [
-            {
-                "module": "DUP-A",
-                "object": "dupValue",
-                "class": "objecttype",
-                "object_type": "OBJECT-TYPE",
-                "nodetype": "scalar",
-            },
-            {
-                "module": "DUP-B",
-                "object": "dupValue",
-                "class": "objecttype",
-                "object_type": "OBJECT-TYPE",
-                "nodetype": "scalar",
-            },
-        ]
+        assert "1.270.1" not in oid_index["oids"]
+        assert oid_index["oids"]["1.270"] == {
+            "module": "DUP-A",
+            "object": "dupAMIB",
+            "class": "moduleidentity",
+            "object_type": "MODULE-IDENTITY",
+        }
+        assert oid_index["oids"]["1.999"] == {
+            "module": "DUP-B",
+            "object": "dupBMIB",
+            "class": "moduleidentity",
+            "object_type": "MODULE-IDENTITY",
+        }
 
     @pytest.mark.asyncio
     async def test_oid_index_lists_only_successfully_emitted_json_modules(self, tmp_path: Path):
@@ -237,9 +263,7 @@ class TestOidIndexEmission:
         await compiler.compile("TABLE-MIB", "BAD-MIB")
 
         oid_index = json.loads((tmp_path / OID_INDEX_FILENAME).read_bytes())
-        all_modules = {
-            entry["module"] for entries in oid_index["oids"].values() for entry in entries
-        }
+        all_modules = {entry["module"] for entry in oid_index["oids"].values()}
         assert all_modules == {"TABLE-MIB"}
 
     @pytest.mark.asyncio
@@ -261,7 +285,7 @@ class TestOidIndexEmission:
 
         assert not (tmp_path / OID_INDEX_FILENAME).exists()
 
-    def test_oid_index_allows_symbolic_oid_keys(self):
+    def test_oid_index_uses_numeric_runtime_oids_only(self):
         module = MibModule(
             name="HOST-RESOURCES-MIB",
             language="SMIv2",
@@ -269,7 +293,8 @@ class TestOidIndexEmission:
                 "hrMIBAdminInfoNode": MibObject(
                     name="hrMIBAdminInfoNode",
                     oid="hrMIBAdminInfo.1",
-                    oid_path=[],
+                    oid_path=[1],
+                    oid_parent="hrMIBAdminInfo",
                     object_type="OBJECT-TYPE",
                     syntax="Integer32",
                 ),
@@ -297,16 +322,32 @@ class TestOidIndexEmission:
         )
 
         assert "1.3.6.1.2.1.25.1.1" in payload["oids"]
-        assert "hrMIBAdminInfo.1" in payload["oids"]
-        assert payload["oids"]["hrMIBAdminInfo.1"] == [
-            {
-                "module": "HOST-RESOURCES-MIB",
-                "object": "hrMIBAdminInfoNode",
-                "class": "objecttype",
-                "object_type": "OBJECT-TYPE",
-                "nodetype": "scalar",
-            }
-        ]
+        assert "hrMIBAdminInfo.1" not in payload["oids"]
+
+    @pytest.mark.asyncio
+    async def test_forward_reference_module_emits_numeric_runtime_oids(self, tmp_path: Path):
+        config = CompilerConfig(
+            output_dir=tmp_path,
+            formats=["json"],
+            cache_dir=None,
+            emit_oid_index=True,
+        )
+        compiler = MibCompiler(config).add_reader(MockReader({"FORWARD-REF-MIB": FORWARD_REF_MIB}))
+
+        results = await compiler.compile("FORWARD-REF-MIB")
+
+        assert all(result.status == "compiled" for result in results)
+        module_json = json.loads((tmp_path / "FORWARD-REF-MIB.json").read_bytes())
+        assert module_json["objects"]["forwardModule"]["oid"] == "1.290.1"
+        assert module_json["objects"]["forwardModule"]["oid_path"] == [1, 290, 1]
+
+        oid_index = json.loads((tmp_path / OID_INDEX_FILENAME).read_bytes())
+        assert oid_index["oids"]["1.290.1"] == {
+            "module": "FORWARD-REF-MIB",
+            "object": "forwardModule",
+            "class": "moduleidentity",
+            "object_type": "MODULE-IDENTITY",
+        }
 
     @pytest.mark.asyncio
     async def test_manifest_references_oid_index_when_both_requested(self, tmp_path: Path):
@@ -323,6 +364,49 @@ class TestOidIndexEmission:
 
         manifest = json.loads((tmp_path / MANIFEST_FILENAME).read_bytes())
         assert manifest["sidecars"] == {"oid_index": OID_INDEX_FILENAME}
+
+    @pytest.mark.asyncio
+    async def test_sidecars_describe_final_emitted_file_set_when_alias_inputs_overlap(
+        self, tmp_path: Path
+    ):
+        config = CompilerConfig(
+            output_dir=tmp_path,
+            formats=["json"],
+            cache_dir=None,
+            emit_manifest=True,
+            emit_oid_index=True,
+        )
+        compiler = MibCompiler(config).add_reader(
+            MockReader(
+                {
+                    "ALIAS-TARGET-MIB": ALIAS_TARGET_MIB,
+                    "ALIAS-TARGET-MIB-V1SMI": ALIAS_TARGET_MIB,
+                }
+            )
+        )
+
+        results = await compiler.compile("ALIAS-TARGET-MIB", "ALIAS-TARGET-MIB-V1SMI")
+
+        assert all(result.status == "compiled" for result in results)
+        manifest = json.loads((tmp_path / MANIFEST_FILENAME).read_bytes())
+        assert manifest["modules"] == [
+            {"module": "ALIAS-TARGET-MIB", "file": "ALIAS-TARGET-MIB.json"}
+        ]
+
+        oid_index = json.loads((tmp_path / OID_INDEX_FILENAME).read_bytes())
+        assert oid_index["oids"]["1.291"] == {
+            "module": "ALIAS-TARGET-MIB",
+            "object": "aliasTargetMIB",
+            "class": "moduleidentity",
+            "object_type": "MODULE-IDENTITY",
+        }
+        assert oid_index["oids"]["1.291.1"] == {
+            "module": "ALIAS-TARGET-MIB",
+            "object": "aliasValue",
+            "class": "objecttype",
+            "object_type": "OBJECT-TYPE",
+            "nodetype": "scalar",
+        }
 
     @pytest.mark.asyncio
     async def test_oid_index_write_error_raises_writer_error(self, tmp_path: Path):

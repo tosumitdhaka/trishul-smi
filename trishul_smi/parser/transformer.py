@@ -619,7 +619,16 @@ class MibTransformer(Transformer[Token, MibModule]):
         return _SyntaxInfo(str(children[0]), constraint=c)
 
     def sequence_of_type(self, children: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo(f"SEQUENCE OF {children[0]}")
+        constraint = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        member_type = next(
+            (
+                str(child)
+                for child in children
+                if child is not None and not isinstance(child, _ConstraintInfo)
+            ),
+            "",
+        )
+        return _SyntaxInfo(f"SEQUENCE OF {member_type}", constraint=constraint)
 
     def tagged_type(self, children: list[Any]) -> _SyntaxInfo:
         info = next((child for child in children if isinstance(child, _SyntaxInfo)), None)

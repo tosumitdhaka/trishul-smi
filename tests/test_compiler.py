@@ -156,6 +156,33 @@ class TestJsonFormatter:
         assert "ifIndex" in data["objects"]
         assert data["objects"]["ifIndex"]["syntax"] == "Integer32"
 
+    def test_runtime_oid_emitted_from_canonical_path(self):
+        obj = MibObject(
+            name="ifIndex",
+            oid="ifMIB.1",
+            oid_path=[1, 3, 6, 1],
+            oid_parent=None,
+            object_type="OBJECT-TYPE",
+            syntax="Integer32",
+        )
+        m = MibModule(name="IF-MIB", language="SMIv2", objects={"ifIndex": obj})
+        data = json.loads(JsonFormatter().format(m))
+        assert data["objects"]["ifIndex"]["oid"] == "1.3.6.1"
+
+    def test_unresolved_symbolic_oid_omitted_from_json(self):
+        obj = MibObject(
+            name="ifIndex",
+            oid="ifMIB.1",
+            oid_path=[1],
+            oid_parent="ifMIB",
+            object_type="OBJECT-TYPE",
+            syntax="Integer32",
+        )
+        m = MibModule(name="IF-MIB", language="SMIv2", objects={"ifIndex": obj})
+        data = json.loads(JsonFormatter().format(m))
+        assert "oid" not in data["objects"]["ifIndex"]
+        assert data["objects"]["ifIndex"]["oid_path"] == [1]
+
     def test_empty_module_serialises(self):
         data = json.loads(JsonFormatter().format(MibModule(name="EMPTY-MIB", language="SMIv1")))
         assert data["objects"] == {}

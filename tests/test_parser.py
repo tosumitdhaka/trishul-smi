@@ -108,6 +108,108 @@ counter OBJECT-TYPE
 END
 """
 
+WRAPPED_COMMENT_MIB = """
+COMMENT-WRAP-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, Integer32 FROM SNMPv2-SMI ;
+
+commentWrapMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test Org"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Wrapped comment regression fixture."
+    ::= { 1 5 }
+
+WrappedEntry ::= SEQUENCE {
+    first Integer32, -- wrapped
+                     comment
+    second Integer32
+}
+
+END
+"""
+
+SNMPV2_PDU_COMPAT_MIB = """
+SNMPV2-PDU-COMPAT DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+snmpv2PduCompat MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test Org"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "SNMPv2-PDU compatibility regression fixture."
+    ::= { 1 6 }
+
+max-bindings INTEGER ::= 2147483647
+
+BoundedInt ::= INTEGER (0..max-bindings)
+
+PDU ::= SEQUENCE {
+    request-id INTEGER (-214783648..214783647),
+    error-index INTEGER (0..max-bindings),
+    variable-bindings VarBindList
+}
+
+VarBind ::= SEQUENCE {
+    name ObjectName,
+    CHOICE {
+        value ObjectSyntax,
+        unSpecified NULL,
+        noSuchObject [0] IMPLICIT NULL
+    }
+}
+
+VarBindList ::= SEQUENCE (SIZE (0..max-bindings)) OF VarBind
+
+END
+"""
+
+INDENTED_COMMENT_COMPLIANCE_MIB = """
+COMMENT-COMPLIANCE-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-COMPLIANCE FROM SNMPv2-CONF ;
+
+   -- Compliance Statements
+   compSpec MODULE-COMPLIANCE
+       STATUS current
+       DESCRIPTION "Indented standalone comment must not swallow this assignment."
+       ::= { 1 7 }
+
+END
+"""
+
+INDENTED_COMMENT_CHOICE_MIB = """
+COMMENT-CHOICE-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+
+commentChoiceMib MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test Org"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Indented comment regression fixture."
+    ::= { 1 8 }
+
+SimpleSyntax ::=
+    CHOICE {
+        integer-value
+            INTEGER (-2147483648..2147483647),
+        -- OCTET STRINGs with a more restrictive size
+        -- may also be used
+        string-value
+            OCTET STRING (SIZE (0..65535)),
+        objectID-value
+            OBJECT IDENTIFIER
+    }
+
+END
+"""
+
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -162,6 +264,40 @@ class TestSmiParserV1:
         parser = SmiParser(dialect="smiv1")
         mib = parser.parse(MINIMAL_V1)
         assert "sysDescr" in mib.objects
+
+
+class TestParserCompatibilityFixes:
+    def test_wrapped_inline_comment_continuation_parses(self):
+        mib = SmiParser().parse(WRAPPED_COMMENT_MIB)
+
+        assert mib.types["WrappedEntry"].base_type == "SEQUENCE"
+
+    def test_snmpv2_pdu_compat_constructs_parse_and_preserve_constraints(self):
+        mib = SmiParser().parse(SNMPV2_PDU_COMPAT_MIB)
+
+        assert mib.types["BoundedInt"].constraints == {
+            "kind": "range",
+            "data": [[0, "max-bindings"]],
+        }
+        assert mib.types["VarBind"].base_type == "SEQUENCE"
+        assert mib.types["VarBindList"].base_type == "SEQUENCE OF VarBind"
+        assert mib.types["VarBindList"].constraints == {
+            "kind": "size",
+            "data": [[0, "max-bindings"]],
+        }
+
+    def test_indented_standalone_comment_does_not_swallow_module_compliance_assignment(self):
+        mib = SmiParser().parse(INDENTED_COMMENT_COMPLIANCE_MIB)
+
+        assert mib.objects["compSpec"].object_type == "MODULE-COMPLIANCE"
+        assert mib.objects["compSpec"].description == (
+            "Indented standalone comment must not swallow this assignment."
+        )
+
+    def test_indented_standalone_comment_does_not_swallow_choice_fields(self):
+        mib = SmiParser().parse(INDENTED_COMMENT_CHOICE_MIB)
+
+        assert mib.types["SimpleSyntax"].base_type == "CHOICE"
 
 
 class TestSmiParserErrors:

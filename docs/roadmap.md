@@ -83,6 +83,24 @@ Runtime bundle contract and JSON sidecars.
 
 ---
 
+## v0.4.1 — shipped 2026-05-07
+
+Runtime contract hotfixes for downstream bundle consumers.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | Canonical runtime OID emission in JSON | done | Same-module forward references now resolve before JSON emission. Runtime `oid` is emitted only when a numeric dotted value can be derived from `oid_path`. |
+| 2 | tsnmp-compatible `oid_index.json` entry shape | done | `oid_index.json` now maps each unique runtime OID to a single object entry. Ambiguous duplicate OIDs are omitted rather than serialized as arrays. |
+| 3 | Sidecars describe the final emitted file set | done | Overlapping alias inputs now collapse to the final `MODULE.json` file set before `manifest.json` and `oid_index.json` are derived, preventing duplicate manifest rows and false duplicate-OID collisions. |
+| 4 | Wrapped inline comment continuation compatibility | done | Narrow pre-parse normalization handles real IETF wrapped inline comments, fixing `HPR-MIB` and the dependent `HPR-IP-MIB`. |
+| 5 | `SNMPv2-PDU` grammar compatibility | done | Symbolic range bounds, anonymous `CHOICE` members inside `SEQUENCE`, and constrained `SEQUENCE (SIZE (...)) OF ...` forms now parse and preserve constraints. |
+| 6 | Runtime bundle regression coverage | done | Tests now cover forward-reference modules, canonical runtime OIDs, duplicate-OID omission, final emitted file set semantics, and standalone module JSON / optional sidecar behavior. |
+
+`TCPIPX-MIB` remains out of scope for `0.4.1`; the upstream source is malformed and would
+require repair logic rather than standards-compatible parsing.
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |

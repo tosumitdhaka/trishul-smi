@@ -1,12 +1,11 @@
 """Helpers for optional JSON bundle sidecars.
 
-For v0.4.0, module JSON remains the source of truth. Sidecars such as
+For v0.4.1, module JSON remains the source of truth. Sidecars such as
 ``manifest.json`` are additive metadata derived from the emitted module files.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,7 +13,7 @@ import orjson
 
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
-from trishul_smi.output.json_contract import derive_nodetypes, object_class
+from trishul_smi.output.json_contract import derive_nodetypes, object_class, runtime_oid
 from trishul_smi.output.json_ir import JsonArtifactMetadata
 
 MANIFEST_FILENAME = "manifest.json"
@@ -30,6 +29,19 @@ class JsonModuleArtifact:
     module_data: MibModule
 
 
+def _final_artifacts(modules: list[JsonModuleArtifact]) -> list[JsonModuleArtifact]:
+    """Collapse duplicate artifact writes to the final on-disk file set.
+
+    Alias inputs may compile the same module more than once, overwriting the
+    same ``{module}.json`` output file. Sidecars must describe the final output
+    directory contents, so the last artifact for each file wins.
+    """
+    final_by_file: dict[str, JsonModuleArtifact] = {}
+    for artifact in modules:
+        final_by_file[artifact.file] = artifact
+    return sorted(final_by_file.values(), key=lambda artifact: (artifact.module, artifact.file))
+
+
 def build_manifest_bytes(
     artifact_metadata: JsonArtifactMetadata,
     modules: list[JsonModuleArtifact],
@@ -37,6 +49,7 @@ def build_manifest_bytes(
     oid_index_filename: str | None = None,
 ) -> bytes:
     """Return the deterministic ``manifest.json`` payload."""
+    artifacts = _final_artifacts(modules)
     sidecars: dict[str, str] = {}
     if oid_index_filename is not None:
         sidecars["oid_index"] = oid_index_filename
@@ -46,10 +59,7 @@ def build_manifest_bytes(
         "producer_version": artifact_metadata.producer_version,
         "generated_by": artifact_metadata.generated_by,
         "generated_at": artifact_metadata.generated_at,
-        "modules": [
-            {"module": artifact.module, "file": artifact.file}
-            for artifact in sorted(modules, key=lambda artifact: (artifact.module, artifact.file))
-        ],
+        "modules": [{"module": artifact.module, "file": artifact.file} for artifact in artifacts],
     }
     if sidecars:
         payload["sidecars"] = sidecars
@@ -87,16 +97,32 @@ def build_oid_index_bytes(
     modules: list[JsonModuleArtifact],
 ) -> bytes:
     """Return the deterministic ``oid_index.json`` payload."""
-    oid_map: dict[str, list[dict[str, str]]] = defaultdict(list)
+    artifacts = _final_artifacts(modules)
+    oid_map: dict[str, dict[str, str]] = {}
+    duplicate_oids: set[str] = set()
 
-    for artifact in sorted(modules, key=lambda artifact: (artifact.module, artifact.file)):
+    for artifact in artifacts:
         nodetypes = derive_nodetypes(artifact.module_data)
         for obj in artifact.module_data.objects.values():
-            if obj.oid:
-                oid_map[obj.oid].append(_oid_index_entry(artifact.module, obj, nodetypes))
+            oid = runtime_oid(obj)
+            if oid is None:
+                continue
+            _merge_oid_index_entry(
+                oid_map,
+                duplicate_oids,
+                oid,
+                _oid_index_entry(artifact.module, obj, nodetypes),
+            )
         for notif in artifact.module_data.notifications.values():
-            if notif.oid:
-                oid_map[notif.oid].append(_oid_index_entry(artifact.module, notif, nodetypes))
+            oid = runtime_oid(notif)
+            if oid is None:
+                continue
+            _merge_oid_index_entry(
+                oid_map,
+                duplicate_oids,
+                oid,
+                _oid_index_entry(artifact.module, notif, nodetypes),
+            )
 
     payload: dict[str, Any] = {
         "schema_version": artifact_metadata.schema_version,
@@ -104,16 +130,30 @@ def build_oid_index_bytes(
         "generated_by": artifact_metadata.generated_by,
         "generated_at": artifact_metadata.generated_at,
         "oids": {
-            oid: sorted(
-                entries,
-                key=lambda entry: (
-                    entry["module"],
-                    entry["object"],
-                    entry["class"],
-                    entry["object_type"],
-                ),
-            )
-            for oid, entries in sorted(oid_map.items(), key=lambda item: _oid_sort_key(item[0]))
+            oid: entry
+            for oid, entry in sorted(oid_map.items(), key=lambda item: _oid_sort_key(item[0]))
         },
     }
     return orjson.dumps(payload, option=orjson.OPT_INDENT_2)
+
+
+def _merge_oid_index_entry(
+    oid_map: dict[str, dict[str, str]],
+    duplicate_oids: set[str],
+    oid: str,
+    entry: dict[str, str],
+) -> None:
+    """Store a unique runtime OID entry or drop ambiguous duplicates.
+
+    ``oid_index.json`` is an optional accelerator, so ambiguous duplicate OIDs
+    are omitted rather than forcing consumers to pick an arbitrary winner.
+    """
+    if oid in duplicate_oids:
+        return
+
+    if oid in oid_map:
+        duplicate_oids.add(oid)
+        oid_map.pop(oid, None)
+        return
+
+    oid_map[oid] = entry

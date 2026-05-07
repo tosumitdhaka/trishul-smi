@@ -140,10 +140,11 @@ builtin_type : "INTEGER"          [integer_enum | constraint]  -> integer_type
              | "Opaque"                                        -> opaque_type
 
 named_type      : UPPER_ID [constraint | size_constraint]
-sequence_of_type: "SEQUENCE" "OF" UPPER_ID
+sequence_of_type: "SEQUENCE" [size_constraint] "OF" UPPER_ID
 sequence_type   : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
 sequence_field  : LOWER_ID syntax_type
                | LOWER_ID "BITS"   -> sequence_field_bits
+               | syntax_type       -> anonymous_sequence_field
 bits_type       : "BITS" "{" named_bits "}"
 named_bits      : named_bit ("," named_bit)* [","]
 named_bit       : LOWER_ID "(" NUMBER ")"
@@ -160,7 +161,7 @@ constraint       : "(" range_items ")"
 range_items      : range_item ("|" range_item)*
 range_item       : range_bound ".." range_bound  -> range
                  | range_bound                    -> single_value
-range_bound      : SIGNED_NUMBER | HEX_STRING | "MIN" | "MAX"
+range_bound      : SIGNED_NUMBER | HEX_STRING | "MIN" | "MAX" | LOWER_ID | UPPER_ID
 size_constraint  : "(" "SIZE" "(" range_items ")" ")"
 
 

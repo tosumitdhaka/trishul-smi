@@ -16,7 +16,7 @@ import orjson
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.models.mib_type import MibType
-from trishul_smi.output.json_contract import derive_nodetypes, object_class
+from trishul_smi.output.json_contract import derive_nodetypes, object_class, runtime_oid
 from trishul_smi.output.json_ir import JsonArtifactMetadata, make_json_artifact_metadata
 
 # Collapse multi-line integer arrays: [ \n  1,\n  3,\n  ... \n] → [1, 3, ...]
@@ -76,7 +76,6 @@ def _obj_dict(
     module_name: str,
 ) -> dict[str, Any]:
     d: dict[str, Any] = {
-        "oid": o.oid,
         "oid_path": o.oid_path,
         "object_type": o.object_type,
         "class": object_class(o.object_type),
@@ -86,6 +85,9 @@ def _obj_dict(
         "index": o.index,
         "augments": o.augments,
     }
+    oid = runtime_oid(o)
+    if oid is not None:
+        d["oid"] = oid
     if nodetypes is not None and o.object_type == "OBJECT-TYPE":
         d["nodetype"] = nodetypes.get(o.name, "scalar")
     if o.constraints is not None:
