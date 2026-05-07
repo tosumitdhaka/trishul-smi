@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,6 +30,22 @@ from trishul_smi.models import CompileResult
 _cmd = typer.main.get_command(app)
 
 runner = CliRunner()
+
+MINIMAL_V2 = """
+TEST-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, Integer32 FROM SNMPv2-SMI ;
+
+testMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test Org"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "A minimal test MIB."
+    ::= { 1 3 }
+
+END
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +217,34 @@ class TestCompileOutput:
         with _patch_run([r]):
             result = _invoke(["compile", "IF-MIB", "--online", "-v"])
         assert "IF-MIB.json" in result.output
+
+    def test_real_cli_compile_completes_under_asyncio_run(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        mib_dir.mkdir()
+        (mib_dir / "TEST-MIB").write_text(MINIMAL_V2, encoding="utf-8")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "trishul_smi",
+                "compile",
+                "TEST-MIB",
+                "-d",
+                str(mib_dir),
+                "-o",
+                str(out_dir),
+                "--cache-dir",
+                "",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (out_dir / "TEST-MIB.json").is_file()
 
 
 # ---------------------------------------------------------------------------

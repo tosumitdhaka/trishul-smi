@@ -2,11 +2,9 @@
 
 Usage::
 
-    # Singleton pattern: create once, reuse. The Lark grammar is compiled
-    # once per (dialect, algorithm) combination and cached at the *class*
-    # level — shared across all SmiParser instances in the process.
-    # There is no benefit to keeping a single instance; each instance
-    # automatically reuses the process-level grammar cache.
+    # Create parsers freely. Grammar text is cached process-wide, while
+    # compiled Lark parser instances are cached per thread so concurrent
+    # asyncio.to_thread(...) calls do not share mutable parser state.
 
     mib = SmiParser().parse(raw_asn1_text)
 
@@ -21,7 +19,8 @@ from __future__ import annotations
 
 import importlib.resources
 import re
-from typing import ClassVar, Literal
+import threading
+from typing import ClassVar, Literal, cast
 
 from lark import Lark, UnexpectedInput
 
@@ -73,27 +72,45 @@ class SmiParser:
 
     Performance:
         Lark grammar compilation is expensive (~50–200 ms per
-        ``(dialect, algorithm)`` combination). Compiled grammars are
-        stored in ``SmiParser._grammar_cache`` — a *class-level* dict
-        shared across all instances in the same process.
+        ``(dialect, algorithm)`` combination). Grammar source text is
+        cached process-wide, while compiled ``Lark`` instances are cached
+        per thread so concurrent parser use does not share mutable parser
+        state across worker threads.
     """
 
-    _grammar_cache: ClassVar[dict[str, Lark]] = {}
+    _grammar_text_cache: ClassVar[dict[str, str]] = {}
+    _thread_local: ClassVar[threading.local] = threading.local()
 
     def __init__(self, dialect: _DIALECT = "auto") -> None:
         self._dialect = dialect
 
+    @classmethod
+    def _get_thread_parser_cache(cls) -> dict[str, Lark]:
+        cache = getattr(cls._thread_local, "parser_cache", None)
+        if cache is None:
+            cache = {}
+            cls._thread_local.parser_cache = cache
+        return cast(dict[str, Lark], cache)
+
+    @classmethod
+    def _get_grammar(cls, dialect: Literal["smiv2", "smiv1"]) -> str:
+        name = f"{dialect}.lark"
+        if name not in cls._grammar_text_cache:
+            cls._grammar_text_cache[name] = _load_grammar(name)
+        return cls._grammar_text_cache[name]
+
     def _get_parser(self, dialect: Literal["smiv2", "smiv1"], earley: bool = False) -> Lark:
         key = f"{dialect}:{'earley' if earley else 'lalr'}"
-        if key not in SmiParser._grammar_cache:
-            grammar = _load_grammar(f"{dialect}.lark")
-            SmiParser._grammar_cache[key] = Lark(
+        parser_cache = self._get_thread_parser_cache()
+        if key not in parser_cache:
+            grammar = self._get_grammar(dialect)
+            parser_cache[key] = Lark(
                 grammar,
                 parser="earley" if earley else "lalr",
                 propagate_positions=False,
                 # maybe_placeholder removed in Lark >= 1.2 — do not add back.
             )
-        return SmiParser._grammar_cache[key]
+        return parser_cache[key]
 
     def parse(self, text: str) -> MibModule:
         """Parse raw ASN.1 text. Raises ParseError on invalid input."""

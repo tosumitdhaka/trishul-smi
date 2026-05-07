@@ -32,6 +32,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   GitHub community files live under `.github/`, and the new `docs/python-api.md` documents
   library embedding and optional JSON sidecars.
 
+### Fixed
+
+- **Tagged ASN.1 type assignments** — both grammars now accept application-tagged type
+  definitions such as `IpAddress ::= [APPLICATION 0] IMPLICIT OCTET STRING (SIZE (4))`,
+  explicit `SNMPv2-SMI` compiles now succeed, and the transformer preserves the
+  underlying base-type constraints on the emitted `MibType`.
+- **Resolver parse-wave deadlock on real MIB corpora** — resolver waves still fetch
+  concurrently, but now parse fetched modules deterministically after the fetch phase
+  instead of offloading parse through `asyncio.to_thread`, fixing hangs seen in the CLI
+  `asyncio.run()` path on explicit base-MIB and local-corpus compiles.
+
 ## [0.3.1] — 2026-05-06
 
 ### Fixed

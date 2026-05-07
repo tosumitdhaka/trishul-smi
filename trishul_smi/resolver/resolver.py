@@ -7,8 +7,9 @@ The resolver performs a BFS over the MIB import graph:
     1. Start with the requested MIB name(s).
     2. Check the compiled cache (MibCache) — skip fetch+parse on hit.
     3. Fetch all cache-missing MIBs *concurrently* via asyncio.gather.
-    4. Parse each fetched text in a thread pool (asyncio.to_thread) so
-       the event loop stays unblocked during CPU-bound Lark parsing.
+    4. Parse each fetched text synchronously after the fetch wave completes.
+       This keeps the CLI's asyncio.run() path reliable on real MIBs while
+       still allowing concurrent I/O for remote readers.
     5. Collect imports from every module resolved in the current wave
        (cache hits and newly fetched modules); add unseen names to the next
        wave.
@@ -108,17 +109,17 @@ class MibResolver:
                 still_pending.add(name)
 
             if still_pending:
-                # --- Concurrent fetch + parse ---
+                # --- Concurrent fetch, then parse deterministically ---
                 names_ordered = sorted(still_pending)
-                results = await asyncio.gather(
-                    *[self._fetch_and_parse(name) for name in names_ordered],
+                fetch_results = await asyncio.gather(
+                    *[self._reader.fetch(name) for name in names_ordered],
                     return_exceptions=True,
                 )
 
                 # strict=True: asyncio.gather always returns exactly one
                 # result per coroutine, so a length mismatch would be a bug —
                 # fail loudly.
-                for name, result in zip(names_ordered, results, strict=True):
+                for name, result in zip(names_ordered, fetch_results, strict=True):
                     if isinstance(result, MibSizeLimitError):
                         # Propagate immediately — size limit is a config
                         # error, not a per-module failure. Use `raise result`
@@ -136,9 +137,11 @@ class MibResolver:
                         # cleanly.
                         raise result
                     else:
-                        # mypy now knows: not BaseException → must be
-                        # MibModule
-                        module: MibModule = result
+                        try:
+                            module = self._parser.parse(result)
+                        except Exception as exc:  # noqa: BLE001
+                            errors[name] = exc
+                            continue
                         fetched[name] = module
                         if self._cache is not None:
                             self._cache.put(name, module)
@@ -160,9 +163,3 @@ class MibResolver:
             modules=[fetched[name] for name in order],
             errors=errors,
         )
-
-    async def _fetch_and_parse(self, mib_name: str) -> MibModule:
-        """Fetch raw text (I/O-bound, async) then parse in a thread
-        (CPU-bound, off the event loop)."""
-        text: str = await self._reader.fetch(mib_name)
-        return await asyncio.to_thread(self._parser.parse, text)

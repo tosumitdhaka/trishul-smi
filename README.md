@@ -23,10 +23,11 @@ and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 - **Two output formats** — structured JSON and pysnmp-compatible Python
 - **Atomic JSON modules + optional sidecars** — each module JSON is usable on its own; `manifest.json` and `oid_index.json` are additive when enabled via the Python API
 - **Versioned JSON IR metadata** — module JSON and optional sidecars carry `schema_version`, `producer_version`, `generated_by`, and `generated_at`
+- **Tagged ASN.1 type support** — explicit base MIBs such as `SNMPv2-SMI` compile correctly, including application-tagged types like `IpAddress` and `Counter32`
 - **pysmi-parity pysnmp output** — MibTableColumn detection, full TC subtypeSpec, setIndexNames, setOrganization, setRevisions, inline constraint wrappers
 - **Reverse conversion** — `tsmi convert FILE.py` converts a compiled PySNMP module back to JSON
 - **Directory compile mode** — `tsmi compile -d /path/to/mibs` auto-discovers and compiles every MIB file
-- **Concurrent fetching** — parallel async HTTP with retry and timeout
+- **Concurrent fetching** — parallel async HTTP with retry and timeout; parse waves stay deterministic on real MIB corpora
 - **Pluggable readers** — `FileReader`, `HttpReader`, `ZipReader`, composable via `ReaderChain`
 - **Disk cache** — compiled modules cached with mtime-based TTL; atomic writes
 - **Cycle detection** — Kahn's algorithm with actionable error messages

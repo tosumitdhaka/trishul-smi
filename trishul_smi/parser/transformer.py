@@ -356,7 +356,14 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def type_assignment(self, children: list[Any]) -> MibType:
         name = str(children[0])
-        return MibType(name=name, base_type=self._syntax(children) or "")
+        syntax_node = next((c for c in children if isinstance(c, _SyntaxInfo)), None)
+        return MibType(
+            name=name,
+            base_type=syntax_node.value if syntax_node is not None else "",
+            constraints=syntax_node.constraint.to_dict()
+            if syntax_node is not None and syntax_node.constraint is not None
+            else None,
+        )
 
     def value_assignment(self, children: list[Any]) -> MibObject | None:
         name = str(children[0])
@@ -613,6 +620,19 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def sequence_of_type(self, children: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo(f"SEQUENCE OF {children[0]}")
+
+    def tagged_type(self, children: list[Any]) -> _SyntaxInfo:
+        info = next((child for child in children if isinstance(child, _SyntaxInfo)), None)
+        return info if info is not None else _SyntaxInfo("")
+
+    def tag(self, _: list[Any]) -> None:
+        return None
+
+    def tag_class(self, _: list[Any]) -> None:
+        return None
+
+    def tag_mode(self, _: list[Any]) -> None:
+        return None
 
     def status_value(self, children: list[Any]) -> _StatusInfo:
         return _StatusInfo(str(children[0]))

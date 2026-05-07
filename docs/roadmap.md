@@ -79,6 +79,7 @@ Runtime bundle contract and JSON sidecars.
 | 2 | Version the JSON IR for downstream consumers | done | GitHub `#7`. Module JSON and sidecars now carry `schema_version`, `producer_version`, `generated_by`, and `generated_at`. |
 | 3 | Emit a bundle manifest for compiled JSON output | done | GitHub `#6`. `manifest.json` is optional, deterministic, filename-based, and emitted only when requested via config. |
 | 4 | Generate `oid_index.json` for fast reverse OID lookup | done | GitHub `#5`. `oid_index.json` is optional, derived from emitted module JSON, and emitted only when requested via config. |
+| 5 | Stabilize explicit base-MIB and real-corpus compile paths | done | Tagged ASN.1 application types now parse correctly and resolver parse waves no longer hang on explicit `SNMPv2-SMI` or local corpus compiles. |
 
 ---
 

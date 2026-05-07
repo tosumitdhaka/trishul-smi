@@ -6,7 +6,9 @@
 
 ## 1. Overview
 
-`trishul-smi` is a pipeline-based MIB compiler. Raw ASN.1 source text enters one end; structured JSON (and optionally PySNMP `.py` modules) exits the other. Every stage is a distinct, independently testable module with a clean interface.
+`trishul-smi` is a pipeline-based MIB compiler. Raw ASN.1 source text enters one end;
+structured JSON (and optionally PySNMP `.py` modules) exits the other. Every stage is a
+distinct, independently testable module with a clean interface.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -215,15 +217,21 @@ class SmiParser:
 - `smiv1.lark` — complete SMIv1 grammar (RFC 1155/1212/1215), LALR(1)
 - `common.lark` — shared token definitions used by both
 
-Dialect is auto-detected from the MIB source. Grammar is a singleton (compiled once).
+Dialect is auto-detected from the MIB source. Grammar text is cached process-wide and
+compiled `Lark` parsers are cached per thread. Tagged ASN.1 type assignments such as
+`[APPLICATION 0] IMPLICIT OCTET STRING` are preserved as the underlying base type plus
+constraint metadata.
 
-**Async boundary:** `SmiParser.parse()` is CPU-bound sync code. Called from async context via `asyncio.to_thread(parser.parse, raw_text)` to keep the event loop unblocked.
+**Async boundary:** `SmiParser.parse()` is CPU-bound sync code. Library callers may offload it
+manually if they want, but the built-in resolver now keeps fetches async and performs parse
+deterministically after each fetch wave to avoid real-MIB deadlocks under the CLI runtime.
 
 ---
 
 ### 3.4 `resolver/`
 
-Reads `MibModule.imports`, fetches and parses all dependencies in parallel, returns a topologically ordered list.
+Reads `MibModule.imports`, fetches dependencies in parallel, parses each wave
+deterministically, and returns a topologically ordered list.
 
 ```python
 @dataclass
@@ -238,7 +246,7 @@ class MibResolver:
 
 **Algorithm:**
 1. BFS over the import graph — each wave fetched concurrently via `asyncio.gather(return_exceptions=True)`
-2. Parse each fetched text in a thread pool via `asyncio.to_thread`
+2. Parse each fetched text synchronously after the fetch wave completes
 3. Topological sort via Kahn's algorithm (`resolver/dependency.py`) — `sorted()` for deterministic output
 4. `CircularDependencyError` includes the cycle members and propagates immediately
 5. `MibSizeLimitError` propagates immediately; per-module fetch/parse failures are collected in `ResolveResult.errors`
@@ -288,7 +296,7 @@ class MibCompiler:
 **Compile flow:**
 ```
 1. MibResolver.resolve(mib_names)
-   → BFS + asyncio.gather + asyncio.to_thread(SmiParser.parse)
+   → BFS + asyncio.gather(fetch) + synchronous parse wave
    → topological_sort → ResolveResult
 2. if JSON output is enabled:
      create one shared JSON artifact metadata block for the compile run
@@ -438,7 +446,9 @@ No module   → compiler  (except cli)
 
 1. **No `**kwargs` in public APIs** — all options are explicit typed parameters
 2. **No circular imports** — `TYPE_CHECKING` guard for forward references in `errors.py`
-3. **Async I/O, sync logic** — readers and resolver are async; parser uses `asyncio.to_thread`; formatters are sync
+3. **Async I/O, sync parse/format logic** — readers fetch asynchronously; parser and
+   formatters remain synchronous; resolver keeps network I/O concurrent while parsing each
+   fetched wave deterministically
 4. **No pickle** — disk cache uses `orjson` JSON serialization only
 5. **One responsibility per module** — reader fetches, parser parses, resolver resolves, formatter formats
 6. **Fail fast, fail clearly** — typed exceptions with descriptive messages; only `MibNotFoundError` is recoverable at the reader level

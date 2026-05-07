@@ -64,6 +64,11 @@ Follow this checklist for every release. Steps must be completed in order.
   ```
   Both MIBs must show ✅. This catches grammar gaps that unit tests can miss because
   test fixtures are hand-written and may not exercise real-world MIB syntax.
+  If `~/test/mibs/` is available, also explicitly compile `SNMPv2-SMI` from the clean venv:
+  ```bash
+  /tmp/trishul-release-test/bin/trishul-smi compile SNMPv2-SMI --mib-dir ~/test/mibs -f json -f pysnmp --verbose
+  ```
+  This catches tagged ASN.1 type gaps that normal transitive-dependency compiles can hide.
 
 - [ ] Verify wheel has no duplicate entries (caused `0.1.0` PyPI rejection):
   ```bash
@@ -77,10 +82,11 @@ Follow this checklist for every release. Steps must be completed in order.
 
 - [ ] If `~/test/mibs/` (or any local MIB corpus) is available, compile all of them:
   ```bash
-  trishul-smi compile $(ls ~/test/mibs/*.mib ~/test/mibs/*.my 2>/dev/null | xargs -n1 basename | sed 's/\..*//' | sort -u | tr '\n' ' ') \
-    --mib-dir ~/test/mibs -f json -f pysnmp --verbose
+  trishul-smi compile --mib-dir ~/test/mibs -f json -f pysnmp --cache-dir "" --verbose
   ```
   Every MIB in the corpus must show ✅ before tagging.
+  Judge success by the CLI result rows, not by output file count: alias source files such as
+  `*-V1SMI.my` can declare the same canonical module name and overwrite the same artifact path.
 
 ---
 

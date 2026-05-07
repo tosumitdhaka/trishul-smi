@@ -115,11 +115,18 @@ reference_clause : "REFERENCE" QUOTED_STRING
 // ---------------------------------------------------------------------------
 
 syntax_type : builtin_type
+            | tagged_type
             | named_type
             | sequence_of_type
             | sequence_type
             | bits_type
             | choice_type
+
+// Tagged ASN.1 types appear in legacy MIBs as application-specific wrappers.
+tagged_type : tag [tag_mode] syntax_type
+tag         : "[" [tag_class] NUMBER "]"
+tag_class   : "UNIVERSAL" | "APPLICATION" | "PRIVATE"
+tag_mode    : "IMPLICIT" | "EXPLICIT"
 
 builtin_type : "INTEGER"          [integer_enum | constraint]  -> integer_type
              | "OCTET" "STRING"   [size_constraint]            -> octet_string_type

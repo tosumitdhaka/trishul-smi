@@ -204,7 +204,7 @@ surfacing, but is not yet emitted by the compiler.
 [Source: file / zip / http]
         ↓  Reader
 [Raw ASN.1 text]
-        ↓  Parser  (lark EBNF grammar, run via asyncio.to_thread)
+        ↓  Parser  (lark EBNF grammar, sync parse)
 [AST]
         ↓  Transformer
 [MibModule dataclass]

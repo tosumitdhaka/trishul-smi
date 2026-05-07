@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from trishul_smi.errors import ParseError
@@ -65,6 +67,46 @@ END
 """
 
 INVALID_MIB = "this is not a valid MIB"
+
+TAGGED_TYPES_MIB = """
+TAGGED-TYPES-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE
+        FROM SNMPv2-SMI
+    ;
+
+taggedTypesMib MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test Org"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Tagged type regression fixture."
+    ::= { 1 4 }
+
+IpAddress ::=
+    [APPLICATION 0]
+        IMPLICIT OCTET STRING (SIZE (4))
+
+Counter32 ::=
+    [APPLICATION 1]
+        IMPLICIT INTEGER (0..4294967295)
+
+addr OBJECT-TYPE
+    SYNTAX      IpAddress
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Address."
+    ::= { taggedTypesMib 1 }
+
+counter OBJECT-TYPE
+    SYNTAX      Counter32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Counter."
+    ::= { taggedTypesMib 2 }
+
+END
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +228,45 @@ class TestParserErrorPaths:
         ):
             with pytest.raises(ParseError, match="Unexpected error in Earley parse"):
                 parser.parse(MINIMAL_V2)
+
+
+class TestTaggedTypeAssignments:
+    def test_tagged_type_assignments_preserve_underlying_syntax_and_constraints(self):
+        mib = SmiParser().parse(TAGGED_TYPES_MIB)
+
+        assert mib.types["IpAddress"].base_type == "OCTET STRING"
+        assert mib.types["IpAddress"].constraints == {"kind": "size", "data": [[4, 4]]}
+
+        assert mib.types["Counter32"].base_type == "INTEGER"
+        assert mib.types["Counter32"].constraints == {
+            "kind": "range",
+            "data": [[0, 4294967295]],
+        }
+
+    def test_objects_can_reference_tagged_type_assignments(self):
+        mib = SmiParser().parse(TAGGED_TYPES_MIB)
+
+        assert mib.objects["addr"].syntax == "IpAddress"
+        assert mib.objects["counter"].syntax == "Counter32"
+
+
+class TestParserCacheIsolation:
+    def test_compiled_parser_is_reused_within_same_thread(self):
+        parser = SmiParser()
+
+        lalr = parser._get_parser("smiv2", earley=False)
+        assert parser._get_parser("smiv2", earley=False) is lalr
+
+    def test_compiled_parser_cache_is_thread_local(self):
+        parser = SmiParser()
+        main_thread_parser = parser._get_parser("smiv2", earley=False)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            worker_parser = pool.submit(parser._get_parser, "smiv2", False).result()
+            worker_parser_again = pool.submit(parser._get_parser, "smiv2", False).result()
+
+        assert worker_parser is worker_parser_again
+        assert worker_parser is not main_thread_parser
 
 
 class TestMainModule:
