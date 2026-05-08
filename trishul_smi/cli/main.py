@@ -115,6 +115,22 @@ def compile(  # noqa: A001
             help="Output format: json (default) or pysnmp (best-effort). Repeat to write both.",
         ),
     ] = None,
+    emit_manifest: Annotated[
+        bool,
+        typer.Option(
+            "--emit-manifest",
+            help="Emit optional manifest.json bundle metadata alongside JSON output. "
+            "Requires json output.",
+        ),
+    ] = False,
+    emit_oid_index: Annotated[
+        bool,
+        typer.Option(
+            "--emit-oid-index",
+            help="Emit optional oid_index.json reverse-lookup metadata alongside JSON "
+            "output. Requires json output.",
+        ),
+    ] = False,
     mib_dirs: Annotated[
         list[Path] | None,
         typer.Option(
@@ -194,6 +210,8 @@ def compile(  # noqa: A001
             http_timeout=http_timeout,
             http_retries=http_retries,
             no_texts=no_texts,
+            emit_manifest=emit_manifest,
+            emit_oid_index=emit_oid_index,
             **extra,
         )
         compiler = MibCompiler(config)

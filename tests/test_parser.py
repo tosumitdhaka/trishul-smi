@@ -210,6 +210,31 @@ SimpleSyntax ::=
 END
 """
 
+SNMPV2_TC_IMPORTS_VARIANT_MIB = """
+SNMPv2-TC DEFINITIONS ::= BEGIN
+
+IMPORTS
+    INTEGER, OCTET STRING, OBJECT IDENTIFIER
+        FROM SNMPv2-SMI;
+
+TEXTUAL-CONVENTION MACRO ::=
+BEGIN
+    TYPE NOTATION ::=
+                  DisplayPart
+                  "STATUS" Status
+                  "DESCRIPTION" Text
+                  ReferPart
+                  "SYNTAX" Syntax
+END
+
+DisplayString ::= TEXTUAL-CONVENTION
+    STATUS       current
+    DESCRIPTION  "String."
+    SYNTAX       OCTET STRING (SIZE (0..255))
+
+END
+"""
+
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -298,6 +323,17 @@ class TestParserCompatibilityFixes:
         mib = SmiParser().parse(INDENTED_COMMENT_CHOICE_MIB)
 
         assert mib.types["SimpleSyntax"].base_type == "CHOICE"
+
+    def test_snmpv2_tc_variant_with_builtin_import_symbols_parses(self):
+        mib = SmiParser().parse(SNMPV2_TC_IMPORTS_VARIANT_MIB)
+
+        assert mib.name == "SNMPv2-TC"
+        assert mib.imports["SNMPv2-SMI"] == [
+            "INTEGER",
+            "OCTET STRING",
+            "OBJECT IDENTIFIER",
+        ]
+        assert mib.types["DisplayString"].base_type == "OCTET STRING"
 
 
 class TestSmiParserErrors:

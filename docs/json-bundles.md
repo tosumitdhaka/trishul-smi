@@ -94,5 +94,11 @@ asyncio.run(main())
 ```
 
 If both flags are left at their defaults, `trishul-smi` emits only per-module JSON files.
-These sidecars are currently configured through the Python API rather than dedicated CLI
-flags.
+These sidecars may be enabled either through `CompilerConfig` or through the CLI flags
+`--emit-manifest` and `--emit-oid-index`.
+
+## CLI Example
+
+```bash
+tsmi compile IF-MIB --mib-dir /usr/share/snmp/mibs --emit-manifest --emit-oid-index
+```

@@ -111,6 +111,20 @@ Package maturity metadata update.
 
 ---
 
+## v0.4.3 — shipped 2026-05-08
+
+Parser compatibility fix and CLI sidecar parity.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | Accept built-in ASN.1 symbols in `IMPORTS` clauses | done | Multi-token built-ins such as `OCTET STRING` and `OBJECT IDENTIFIER` now parse correctly in `IMPORTS`, fixing bundled `SNMPv2-TC` source variants that still include the `TEXTUAL-CONVENTION MACRO` block. |
+| 2 | Expose JSON sidecar emission on the CLI compile path | done | GitHub `#9`. `tsmi compile` now exposes `--emit-manifest` and `--emit-oid-index`, matching the existing `CompilerConfig` capability while keeping sidecars optional and additive. |
+
+Full MACRO-body parsing remains out of scope; `MACRO ... END` bodies are still handled
+through preprocessing rather than general ASN.1 macro grammar support.
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |

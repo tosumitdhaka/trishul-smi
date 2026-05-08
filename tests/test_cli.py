@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from click.testing import CliRunner
 from trishul_smi.cli.main import _compile_async, app
 from trishul_smi.config import CompilerConfig
 from trishul_smi.models import CompileResult
+from trishul_smi.output.json_bundle import MANIFEST_FILENAME, OID_INDEX_FILENAME
 
 # Compile the Typer app to a Click command ONCE. CliRunner.invoke() needs a
 # Click Command, not a Typer app — passing app directly raises AttributeError.
@@ -146,6 +148,11 @@ class TestCompileArgs:
         result = _invoke(["compile", "IF-MIB", "--online", "-f", "xml"])
         assert result.exit_code == 2
 
+    def test_emit_manifest_requires_json_format(self):
+        result = _invoke(["compile", "IF-MIB", "--online", "-f", "pysnmp", "--emit-manifest"])
+        assert result.exit_code == 2
+        assert "emit_manifest" in result.output
+
     def test_negative_retries_exits_2(self):
         result = _invoke(["compile", "IF-MIB", "--online", "--retries", "-1"])
         assert result.exit_code == 2
@@ -153,6 +160,26 @@ class TestCompileArgs:
     def test_zero_timeout_exits_2(self):
         result = _invoke(["compile", "IF-MIB", "--online", "--timeout", "0"])
         assert result.exit_code == 2
+
+    def test_sidecar_flags_flow_into_config(self):
+        captured: list[CompilerConfig] = []
+
+        def _capture_config(config, *_, **__):
+            captured.append(config)
+            return MagicMock()
+
+        with (
+            patch("trishul_smi.cli.main.MibCompiler", side_effect=_capture_config),
+            _patch_run([_make_result("IF-MIB")]),
+        ):
+            result = _invoke(
+                ["compile", "IF-MIB", "--online", "--emit-manifest", "--emit-oid-index"]
+            )
+
+        assert result.exit_code == 0
+        assert captured
+        assert captured[0].emit_manifest is True
+        assert captured[0].emit_oid_index is True
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +272,45 @@ class TestCompileOutput:
 
         assert result.returncode == 0, result.stdout + result.stderr
         assert (out_dir / "TEST-MIB.json").is_file()
+
+    def test_real_cli_compile_emits_requested_sidecars(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        mib_dir.mkdir()
+        (mib_dir / "TEST-MIB").write_text(MINIMAL_V2, encoding="utf-8")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "trishul_smi",
+                "compile",
+                "TEST-MIB",
+                "-d",
+                str(mib_dir),
+                "-o",
+                str(out_dir),
+                "--cache-dir",
+                "",
+                "--emit-manifest",
+                "--emit-oid-index",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        manifest = json.loads((out_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        oid_index = json.loads((out_dir / OID_INDEX_FILENAME).read_text(encoding="utf-8"))
+        assert manifest["modules"] == [{"module": "TEST-MIB", "file": "TEST-MIB.json"}]
+        assert manifest["sidecars"] == {"oid_index": OID_INDEX_FILENAME}
+        assert oid_index["oids"]["1.3"] == {
+            "module": "TEST-MIB",
+            "object": "testMIB",
+            "class": "moduleidentity",
+            "object_type": "MODULE-IDENTITY",
+        }
 
 
 # ---------------------------------------------------------------------------

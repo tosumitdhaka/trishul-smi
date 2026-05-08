@@ -21,10 +21,10 @@ and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 - **Full import closure** — resolves every transitive dependency automatically
 - **Full OID resolution** — all objects carry absolute numeric OID paths after compile
 - **Two output formats** — structured JSON and pysnmp-compatible Python
-- **Atomic JSON modules + optional sidecars** — each module JSON is usable on its own; `manifest.json` and `oid_index.json` are additive when enabled via the Python API
+- **Atomic JSON modules + optional sidecars** — each module JSON is usable on its own; `manifest.json` and `oid_index.json` are additive when enabled via `CompilerConfig` or the CLI flags `--emit-manifest` / `--emit-oid-index`
 - **Versioned JSON IR metadata** — module JSON and optional sidecars carry `schema_version`, `producer_version`, `generated_by`, and `generated_at`
 - **Deterministic sidecars** — optional `manifest.json` and `oid_index.json` describe the final emitted JSON file set, so overlapping alias inputs do not duplicate or self-poison bundle metadata
-- **Real-world parser compatibility** — wrapped inline comment continuations and `SNMPv2-PDU` compatibility forms seen in the IETF corpus now compile cleanly
+- **Real-world parser compatibility** — wrapped inline comment continuations, `SNMPv2-PDU` compatibility forms, and preserved-source `SNMPv2-TC` variants that import built-in ASN.1 symbols such as `OCTET STRING` and `OBJECT IDENTIFIER` now compile cleanly through the standard macro-stripping path
 - **Tagged ASN.1 type support** — explicit base MIBs such as `SNMPv2-SMI` compile correctly, including application-tagged types like `IpAddress` and `Counter32`
 - **pysmi-parity pysnmp output** — MibTableColumn detection, full TC subtypeSpec, setIndexNames, setOrganization, setRevisions, inline constraint wrappers
 - **Reverse conversion** — `tsmi convert FILE.py` converts a compiled PySNMP module back to JSON
@@ -55,6 +55,9 @@ tsmi compile IF-MIB --mib-dir /usr/share/snmp/mibs
 
 # Fetch from the internet and compile to JSON + pysnmp
 tsmi compile IF-MIB IP-MIB -f json -f pysnmp --online -o ./out
+
+# Emit optional bundle sidecars for downstream JSON consumers
+tsmi compile IF-MIB --online --emit-manifest --emit-oid-index -o ./out
 ```
 
 Python API:
@@ -78,8 +81,9 @@ asyncio.run(main())
 ```
 
 Each emitted `MODULE.json` is a valid standalone artifact. For downstream bundle metadata,
-set `emit_manifest=True` and/or `emit_oid_index=True` on `CompilerConfig`. When enabled,
-sidecars describe the final emitted JSON file set for that compile run.
+set `emit_manifest=True` and/or `emit_oid_index=True` on `CompilerConfig`, or use the CLI
+flags `--emit-manifest` and `--emit-oid-index`. When enabled, sidecars describe the final
+emitted JSON file set for that compile run.
 
 ---
 

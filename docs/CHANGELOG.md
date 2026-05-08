@@ -10,6 +10,30 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.3] — 2026-05-08
+
+### Added
+
+- **CLI sidecar emission flags** — `tsmi compile` now exposes `--emit-manifest` and
+  `--emit-oid-index`, bringing CLI parity to the existing optional JSON bundle sidecars.
+  Both flags remain additive, both still require JSON output, and both describe the final
+  emitted JSON file set for the compile run.
+
+### Fixed
+
+- **`SNMPv2-TC` preserved-source import compatibility** — the parser now accepts
+  built-in ASN.1 symbol names in `IMPORTS` clauses, including multi-token forms such
+  as `OCTET STRING` and `OBJECT IDENTIFIER`, fixing bundled `SNMPv2-TC` variants that
+  still carry the `TEXTUAL-CONVENTION MACRO` source text.
+
+### Known Limitations
+
+- **Full MACRO-body parsing remains out of scope** — `trishul-smi` still handles
+  `MACRO ... END` blocks through preprocessing rather than grammar-level ASN.1 macro
+  parsing. This release fixes the real `SNMPv2-TC` import failure ahead of that
+  preprocessing step; it does not add general support for preserving and parsing
+  arbitrary MACRO notation bodies.
+
 ## [0.4.2] — 2026-05-07
 
 ### Changed
@@ -167,6 +191,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.4.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.0
 [0.4.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.1
 [0.4.2]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.2
+[0.4.3]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.3
 
 ---
 

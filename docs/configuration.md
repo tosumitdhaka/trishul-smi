@@ -1,8 +1,8 @@
 # Configuration Reference
 
 All runtime configuration lives in `CompilerConfig`. Most CLI flags map directly to these
-fields; JSON sidecar emission is currently enabled through the Python API via
-`emit_manifest` and `emit_oid_index`.
+fields, including JSON sidecar emission through `emit_manifest` and `emit_oid_index`
+or the matching CLI flags `--emit-manifest` and `--emit-oid-index`.
 
 ```python
 from pathlib import Path
@@ -86,10 +86,10 @@ config = CompilerConfig(
 )
 ```
 
-Both sidecar flags default to `False`. They currently do not have dedicated CLI flags.
-When enabled, all JSON artifacts emitted by one `compile()` call share the same
-`generated_at` value, and sidecars describe the final emitted JSON file set after any
-overlapping alias inputs collapse to the same output file.
+Both sidecar flags default to `False`. The CLI exposes them directly via
+`--emit-manifest` and `--emit-oid-index`. When enabled, all JSON artifacts emitted by one
+`compile()` call share the same `generated_at` value, and sidecars describe the final
+emitted JSON file set after any overlapping alias inputs collapse to the same output file.
 
 ---
 

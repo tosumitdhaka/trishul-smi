@@ -22,6 +22,8 @@ Compile one or more MIBs and all their transitive dependencies.
 |---|---|---|
 | `-o` / `--output-dir` | `./mibs-output` | Directory to write output files |
 | `-f` / `--format` | `json` | Output format: `json` or `pysnmp`. Repeat for multiple. |
+| `--emit-manifest` | off | Emit optional `manifest.json` bundle metadata alongside JSON output. Requires `json` output. |
+| `--emit-oid-index` | off | Emit optional `oid_index.json` reverse-lookup metadata alongside JSON output. Requires `json` output. |
 | `-d` / `--mib-dir` | — | Local MIB directory. Repeat for multiple. Searched before HTTP. |
 | `--online` | off | Fetch missing MIBs from HTTP sources (pysnmp.com + mibbrowser.online). Off by default. |
 | `-s` / `--source` | — | Custom HTTP URL template (`@mib@` replaced with MIB name). Implies `--online`. Repeat for multiple. |
@@ -47,6 +49,9 @@ tsmi compile IF-MIB --online
 
 # Both formats, custom output directory
 tsmi compile IF-MIB IP-MIB -f json -f pysnmp --online -o ./out
+
+# Emit optional JSON bundle sidecars
+tsmi compile IF-MIB --online --emit-manifest --emit-oid-index
 
 # Local directory first, fall back to HTTP
 tsmi compile IF-MIB -d /usr/share/snmp/mibs --online
@@ -129,8 +134,10 @@ Print the installed version and exit.
 One `.json` file per MIB module:
 
 Each module JSON file is individually usable. `manifest.json` and `oid_index.json` are
-optional Python API sidecars. When enabled through the Python API, they describe the final
-emitted JSON file set for that compile run. The CLI currently documents module output only.
+optional additive sidecars. From the CLI, enable them with `--emit-manifest` and
+`--emit-oid-index`; from the library API, use `CompilerConfig.emit_manifest` and
+`CompilerConfig.emit_oid_index`. When emitted, they describe the final emitted JSON file
+set for that compile run.
 
 ```json
 {

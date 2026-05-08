@@ -232,6 +232,24 @@ class MibTransformer(Transformer[Token, MibModule]):
     def symbol(self, children: list[Any]) -> str:
         return str(children[0])
 
+    def import_symbol(self, children: list[Any]) -> str:
+        return str(children[0])
+
+    def integer_import_symbol(self, _: list[Any]) -> str:
+        return "INTEGER"
+
+    def octet_string_import_symbol(self, _: list[Any]) -> str:
+        return "OCTET STRING"
+
+    def object_identifier_import_symbol(self, _: list[Any]) -> str:
+        return "OBJECT IDENTIFIER"
+
+    def bits_import_symbol(self, _: list[Any]) -> str:
+        return "BITS"
+
+    def null_import_symbol(self, _: list[Any]) -> str:
+        return "NULL"
+
     def module_ref(self, children: list[Any]) -> str:
         return str(children[0])
 

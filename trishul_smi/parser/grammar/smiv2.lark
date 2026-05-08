@@ -37,9 +37,16 @@ imports : "IMPORTS" import_clause+ ";"?
 
 import_clause : symbol_list "FROM" module_ref
 
-symbol_list : symbol ("," symbol)*
+symbol_list : import_symbol ("," import_symbol)*
 
 symbol : UPPER_ID | LOWER_ID
+
+import_symbol : symbol
+              | "INTEGER"               -> integer_import_symbol
+              | "OCTET" "STRING"        -> octet_string_import_symbol
+              | "OBJECT" "IDENTIFIER"   -> object_identifier_import_symbol
+              | "BITS"                  -> bits_import_symbol
+              | "NULL"                  -> null_import_symbol
 
 module_ref : UPPER_ID
 
