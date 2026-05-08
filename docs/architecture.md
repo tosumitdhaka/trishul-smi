@@ -1,6 +1,6 @@
 # trishul-smi — Architecture
 
-> **Last updated:** 2026-05-07
+> **Last updated:** 2026-05-08
 
 ---
 
@@ -367,7 +367,7 @@ trishul-smi convert FILE.py   [OPTIONS]
 trishul-smi version
 ```
 
-**compile:** constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2. MIB names may be omitted to auto-discover every MIB file in `--mib-dir` directories.
+**compile:** constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → optionally enables JSON sidecars via `--emit-manifest` / `--emit-oid-index` → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2. MIB names may be omitted to auto-discover every MIB file in `--mib-dir` directories.
 
 **convert:** reads a compiled PySNMP `.py` file via `PySNMPReader` → emits JSON via `JsonFormatter`. No network or grammar required.
 
@@ -378,7 +378,7 @@ Exit codes: `0` all compiled — `1` any failure — `2` bad option.
 ## 4. Data Flow — End to End
 
 ```
-$ tsmi compile IF-MIB -f json -f pysnmp --online
+$ tsmi compile IF-MIB -f json -f pysnmp --emit-manifest --emit-oid-index --online
 
 cli/main.py
   ├─ CompilerConfig(formats=["json","pysnmp"], ...)

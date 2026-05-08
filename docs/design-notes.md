@@ -1,8 +1,8 @@
 # trishul-smi — Design Notes
 
-> **Status:** updated through the `v0.4.1` runtime hotfix milestone
+> **Status:** updated through the `v0.4.3` release
 > **Author:** GhaatakJi  
-> **Last updated:** 2026-05-07
+> **Last updated:** 2026-05-08
 
 ---
 
@@ -350,12 +350,14 @@ trishul_smi/
 }
 ```
 
-Module JSON is the atomic usable artifact. As of v0.4.1, optional `manifest.json` and
+Module JSON is the atomic usable artifact. As of v0.4.3, optional `manifest.json` and
 `oid_index.json` sidecars may be emitted for deterministic discovery and faster reverse
-OID lookup, and they describe the final emitted module file set for a compile run. Runtime
-correctness still does not depend on them. The parser also includes narrow compatibility
-handling for wrapped inline comment continuations and `SNMPv2-PDU`-style constructs found
-in the IETF corpus.
+OID lookup, either via `CompilerConfig` or the CLI flags `--emit-manifest` and
+`--emit-oid-index`, and they describe the final emitted module file set for a compile run.
+Runtime correctness still does not depend on them. The parser also includes narrow
+compatibility handling for wrapped inline comment continuations, `SNMPv2-PDU`-style
+constructs found in the IETF corpus, and preserved-source `SNMPv2-TC` variants that import
+built-in ASN.1 symbols such as `OCTET STRING` and `OBJECT IDENTIFIER`.
 
 ### 7.2 PySNMP `.py` Output
 
