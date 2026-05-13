@@ -140,6 +140,7 @@ display_hint_clause : "DISPLAY-HINT" QUOTED_STRING
 // ---------------------------------------------------------------------------
 
 type_assignment  : UPPER_ID "::=" syntax_type
+                 | LOWER_ID "::=" syntax_type
 
 value_assignment : LOWER_ID "OBJECT" "IDENTIFIER" "::=" oid_value
                  | LOWER_ID UPPER_ID "::=" scalar_value
@@ -187,7 +188,7 @@ capabilities_module : "SUPPORTS" module_ref "INCLUDES" "{" object_list "}" varia
 
 variation : "VARIATION" LOWER_ID [syntax_clause] [write_syntax_clause] [access_clause] [creation_requires_clause] [defval_clause] description_clause
 
-access_clause            : "ACCESS" access_value
+access_clause            : "ACCESS" variation_access_value
 creation_requires_clause : "CREATION-REQUIRES" "{" object_list "}"
 
 
@@ -213,6 +214,8 @@ reference_clause : "REFERENCE" QUOTED_STRING
 !access_value : "read-only" | "read-write" | "read-create"
               | "not-accessible" | "accessible-for-notify"
               | "write-only"
+
+!variation_access_value : access_value | "not-implemented"
 
 
 // ---------------------------------------------------------------------------
@@ -248,9 +251,9 @@ builtin_type : "INTEGER"       [constraint]                    -> integer_type
              | "Integer32"     [constraint]                    -> integer32_type
              | "NetworkAddress"                                -> network_address_type
 
-named_type : UPPER_ID [constraint | size_constraint]
+named_type : symbol [constraint | size_constraint]
 
-sequence_of_type : "SEQUENCE" [size_constraint] "OF" UPPER_ID
+sequence_of_type : "SEQUENCE" [size_constraint] "OF" symbol
 
 sequence_type : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
 sequence_field : LOWER_ID syntax_type

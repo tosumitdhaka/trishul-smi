@@ -10,6 +10,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.4] — 2026-05-13
+
+### Fixed
+
+- **`AGENT-CAPABILITIES` `ACCESS not-implemented` compatibility** — SMIv2 `VARIATION`
+  clauses now accept `ACCESS not-implemented`, fixing Juniper capability modules such as
+  `JNX-IP-CAPABILITY`, `JNX-SNMPv2-CAPABILITY`, `IPMCAST-MIB-CAPABILITY`, and
+  `MPLS-LSR-STD-CAPABILITY`.
+- **Lowercase local type-reference compatibility** — SMIv2 now accepts lowercase local
+  type names in type assignments and references such as `SYNTAX SEQUENCE OF
+  pgwApnSaccRatingGroupStats` and `SYNTAX pgwApnSaccRatingGroupStats`, fixing
+  `GGSN-MIB` and the remaining StandardMibs local-corpus parser blocker.
+
 ## [0.4.3] — 2026-05-08
 
 ### Added
@@ -192,6 +205,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.4.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.1
 [0.4.2]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.2
 [0.4.3]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.3
+[0.4.4]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.4
 
 ---
 

@@ -125,6 +125,18 @@ through preprocessing rather than general ASN.1 macro grammar support.
 
 ---
 
+## v0.4.4 — release prep 2026-05-13
+
+Vendor/parser hotfixes validated against real MIB corpora.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | Accept `ACCESS not-implemented` in `AGENT-CAPABILITIES` variations | done | Fixes Juniper capability modules that use `VARIATION ... ACCESS not-implemented`, including `JNX-IP-CAPABILITY`, `JNX-SNMPv2-CAPABILITY`, `IPMCAST-MIB-CAPABILITY`, and `MPLS-LSR-STD-CAPABILITY`. |
+| 2 | Accept lowercase local type assignments and references in SMIv2 | done | Fixes vendor MIBs such as `GGSN-MIB` that use lowercase local sequence type names in both `::=` assignments and `SYNTAX` / `SEQUENCE OF` references. |
+| 3 | Revalidate Standard and Juniper real-world corpora | done | `StandardMibs` now compiles locally at `106 compiled`; `JuniperMibs` compiles in online mode at `205 compiled`. |
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |

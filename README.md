@@ -24,7 +24,7 @@ and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 - **Atomic JSON modules + optional sidecars** — each module JSON is usable on its own; `manifest.json` and `oid_index.json` are additive when enabled via `CompilerConfig` or the CLI flags `--emit-manifest` / `--emit-oid-index`
 - **Versioned JSON IR metadata** — module JSON and optional sidecars carry `schema_version`, `producer_version`, `generated_by`, and `generated_at`
 - **Deterministic sidecars** — optional `manifest.json` and `oid_index.json` describe the final emitted JSON file set, so overlapping alias inputs do not duplicate or self-poison bundle metadata
-- **Real-world parser compatibility** — wrapped inline comment continuations, `SNMPv2-PDU` compatibility forms, and preserved-source `SNMPv2-TC` variants that import built-in ASN.1 symbols such as `OCTET STRING` and `OBJECT IDENTIFIER` now compile cleanly through the standard macro-stripping path
+- **Real-world parser compatibility** — wrapped inline comment continuations, `SNMPv2-PDU` compatibility forms, preserved-source `SNMPv2-TC` variants that import built-in ASN.1 symbols such as `OCTET STRING` and `OBJECT IDENTIFIER`, Juniper `AGENT-CAPABILITIES` clauses with `ACCESS not-implemented`, and vendor MIBs that use lowercase local type references now compile cleanly through the standard parser path
 - **Tagged ASN.1 type support** — explicit base MIBs such as `SNMPv2-SMI` compile correctly, including application-tagged types like `IpAddress` and `Counter32`
 - **pysmi-parity pysnmp output** — MibTableColumn detection, full TC subtypeSpec, setIndexNames, setOrganization, setRevisions, inline constraint wrappers
 - **Reverse conversion** — `tsmi convert FILE.py` converts a compiled PySNMP module back to JSON

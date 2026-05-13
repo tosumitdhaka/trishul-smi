@@ -235,6 +235,69 @@ DisplayString ::= TEXTUAL-CONVENTION
 END
 """
 
+AGENT_CAPS_NOT_IMPLEMENTED_ACCESS_MIB = """
+JNX-IP-CAPABILITY DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    AGENT-CAPABILITIES FROM SNMPv2-CONF ;
+
+jnxIpCapability MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Juniper"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Juniper-style AGENT-CAPABILITIES regression fixture."
+    ::= { 1 9 }
+
+jnxIpCaps AGENT-CAPABILITIES
+    PRODUCT-RELEASE "Junos"
+    STATUS          current
+    DESCRIPTION     "Capability statement."
+    SUPPORTS        IP-MIB
+    INCLUDES        { ipGroup }
+    VARIATION       ipSystemStatsInBcastPkts
+        ACCESS          not-implemented
+        DESCRIPTION     "This object is not implemented."
+    ::= { jnxIpCapability 1 }
+
+END
+"""
+
+LOWERCASE_TYPE_REFERENCE_MIB = """
+GGSN-STYLE-TYPE-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Counter64, Unsigned32 FROM SNMPv2-SMI ;
+
+ggsnStyleTypeMib MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Lowercase type reference regression fixture."
+    ::= { 1 10 }
+
+pgwApnSaccRatingGroupStatsTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF pgwApnSaccRatingGroupStats
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Table."
+    ::= { ggsnStyleTypeMib 1 }
+
+pgwApnSaccRatingGroupStatsEntry OBJECT-TYPE
+    SYNTAX      pgwApnSaccRatingGroupStats
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Entry."
+    ::= { pgwApnSaccRatingGroupStatsTable 1 }
+
+pgwApnSaccRatingGroupStats ::= SEQUENCE {
+    pgwRatingGroupIndex Unsigned32,
+    pgwApnSaccRatingGroupUplinkBytes Counter64
+}
+
+END
+"""
+
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -334,6 +397,23 @@ class TestParserCompatibilityFixes:
             "OBJECT IDENTIFIER",
         ]
         assert mib.types["DisplayString"].base_type == "OCTET STRING"
+
+    def test_agent_capabilities_variation_access_not_implemented_parses(self):
+        mib = SmiParser().parse(AGENT_CAPS_NOT_IMPLEMENTED_ACCESS_MIB)
+
+        assert mib.name == "JNX-IP-CAPABILITY"
+        assert mib.objects["jnxIpCaps"].object_type == "AGENT-CAPABILITIES"
+
+    def test_lowercase_type_assignment_and_references_parse(self):
+        mib = SmiParser().parse(LOWERCASE_TYPE_REFERENCE_MIB)
+
+        assert mib.objects["pgwApnSaccRatingGroupStatsTable"].syntax == (
+            "SEQUENCE OF pgwApnSaccRatingGroupStats"
+        )
+        assert mib.objects["pgwApnSaccRatingGroupStatsEntry"].syntax == (
+            "pgwApnSaccRatingGroupStats"
+        )
+        assert mib.types["pgwApnSaccRatingGroupStats"].base_type == "SEQUENCE"
 
 
 class TestSmiParserErrors:
