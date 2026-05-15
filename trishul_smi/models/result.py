@@ -19,3 +19,4 @@ class CompileResult:
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
     is_dependency: bool = False
+    missing_dependencies: list[str] = field(default_factory=list)

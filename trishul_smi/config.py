@@ -45,6 +45,7 @@ class CompilerConfig:
     no_texts: bool = False  # suppress setDescription/setOrganization/setRevisions/TC description
     emit_manifest: bool = False
     emit_oid_index: bool = False
+    dry_run: bool = False
 
     def __post_init__(self) -> None:
         if self.max_mib_size <= 0:

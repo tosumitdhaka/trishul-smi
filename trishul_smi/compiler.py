@@ -159,14 +159,15 @@ class MibCompiler:
         results: list[CompileResult] = []
         emitted_json_modules: list[JsonModuleArtifact] = []
         out_dir = self._config.output_dir
-        try:
-            out_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as _mkdir_exc:
-            from trishul_smi.errors import WriterError
+        if not self._config.dry_run:
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as _mkdir_exc:
+                from trishul_smi.errors import WriterError
 
-            raise WriterError(
-                f"Cannot create output directory {out_dir}: {_mkdir_exc}"
-            ) from _mkdir_exc
+                raise WriterError(
+                    f"Cannot create output directory {out_dir}: {_mkdir_exc}"
+                ) from _mkdir_exc
 
         for module in resolve_result.modules:
             unresolved = sorted(
@@ -189,10 +190,12 @@ class MibCompiler:
                 out_path = out_dir / f"{module.name}{formatter.FILE_SUFFIX}"
                 try:
                     content = formatter.format(module)
-                    if isinstance(content, bytes):
-                        out_path.write_bytes(content)
-                    else:
-                        out_path.write_text(content, encoding="utf-8")
+                    if not self._config.dry_run:
+                        if isinstance(content, bytes):
+                            out_path.write_bytes(content)
+                        else:
+                            out_path.write_text(content, encoding="utf-8")
+                        output_paths.append(out_path)
                     if fmt_name == "json":
                         emitted_json_modules.append(
                             JsonModuleArtifact(
@@ -201,7 +204,6 @@ class MibCompiler:
                                 module_data=module,
                             )
                         )
-                    output_paths.append(out_path)
                 except Exception as _fmt_exc:  # noqa: BLE001
                     msg = f"[{fmt_name}] formatter error for {module.name}: {_fmt_exc}"
                     warnings.append(msg)
@@ -229,6 +231,7 @@ class MibCompiler:
                         f"{', '.join(blocked[module.name])}"
                     ),
                     is_dependency=module.name not in requested_set,
+                    missing_dependencies=blocked[module.name],
                 )
             )
 
@@ -242,11 +245,12 @@ class MibCompiler:
                     status="missing" if isinstance(exc, MibNotFoundError) else "failed",
                     error=str(exc),
                     is_dependency=name not in requested_set,
+                    missing_dependencies=[name] if isinstance(exc, MibNotFoundError) else [],
                 )
             )
 
         oid_index_written = False
-        if self._config.emit_oid_index and emitted_json_modules:
+        if not self._config.dry_run and self._config.emit_oid_index and emitted_json_modules:
             if json_artifact_metadata is None:
                 raise RuntimeError("emit_oid_index requires an active JSON formatter")
             oid_index_path = out_dir / OID_INDEX_FILENAME
@@ -262,7 +266,7 @@ class MibCompiler:
                     f"Cannot write OID index {oid_index_path}: {_oid_index_exc}"
                 ) from _oid_index_exc
 
-        if self._config.emit_manifest and emitted_json_modules:
+        if not self._config.dry_run and self._config.emit_manifest and emitted_json_modules:
             if json_artifact_metadata is None:
                 raise RuntimeError("emit_manifest requires an active JSON formatter")
             manifest_path = out_dir / MANIFEST_FILENAME

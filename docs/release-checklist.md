@@ -7,27 +7,30 @@ Follow this checklist for every release. Steps must be completed in order.
 ## 1. Pre-release verification
 
 - [ ] All CI checks green on `main` (lint, typecheck, tests — Python 3.10–3.13)
-- [ ] Lint passes with zero warnings:
+- [ ] Run the release gate script — it covers lint, format, mypy, tests, coverage, wheel
+  build, duplicate check, and CLI smoke test in one step:
   ```bash
-  ruff check trishul_smi tests
+  .venv/bin/python scripts/run_release_gate.py
   ```
-- [ ] Formatting is clean:
+  All steps must show `[PASS]` and `Overall: PASSED`. Options:
   ```bash
-  ruff format trishul_smi tests --check
-  ```
-- [ ] Type checking passes with zero errors:
-  ```bash
-  mypy trishul_smi
-  ```
-- [ ] Full test suite passes:
-  ```bash
-  pytest
-  ```
-- [ ] Coverage meets the project threshold (≥ 95%):
-  ```bash
-  pytest --cov=trishul_smi --cov-report=term-missing
+  # keep the temporary wheel-test venv for inspection
+  .venv/bin/python scripts/run_release_gate.py --keep-wheel-test-venv
+
+  # emit a JSON report (useful for CI artifact upload)
+  .venv/bin/python scripts/run_release_gate.py --json
+
+  # smoke-test different MIBs
+  .venv/bin/python scripts/run_release_gate.py --smoke-mibs IF-MIB IP-MIB SNMPv2-MIB
   ```
 - [ ] No open issues tagged for this milestone that are not resolved
+- [ ] If `~/test/mibs/` (or any local MIB corpus) is available, compile all of them:
+  ```bash
+  .venv/bin/trishul-smi compile --mib-dir ~/test/mibs -f json -f pysnmp --cache-dir "" --verbose
+  ```
+  Every MIB in the corpus must show ✅ before tagging.
+  Judge success by the CLI result rows, not by output file count: alias source files such as
+  `*-V1SMI.my` can declare the same canonical module name and overwrite the same artifact path.
 
 ---
 
@@ -47,46 +50,12 @@ Follow this checklist for every release. Steps must be completed in order.
 
 ## 3. Final checks
 
-- [ ] Run the full quality gate on a clean install:
+- [ ] Re-run the release gate after the version bump to confirm the new version flows through
+  correctly (wheel name, `trishul-smi version` output):
   ```bash
-  pip install -e ".[dev]"
-  ruff check trishul_smi tests
-  ruff format trishul_smi tests --check
-  mypy trishul_smi
-  pytest --cov=trishul_smi
+  .venv/bin/pip install -e ".[dev]"
+  .venv/bin/python scripts/run_release_gate.py
   ```
-- [ ] Smoke-test the CLI end-to-end **from a clean venv** (not the dev install):
-  ```bash
-  python -m venv /tmp/trishul-release-test
-  /tmp/trishul-release-test/bin/pip install dist/trishul_smi-x.y.z-py3-none-any.whl
-  /tmp/trishul-release-test/bin/trishul-smi version
-  /tmp/trishul-release-test/bin/trishul-smi compile IF-MIB IP-MIB -f json -f pysnmp --online --verbose
-  ```
-  Both MIBs must show ✅. This catches grammar gaps that unit tests can miss because
-  test fixtures are hand-written and may not exercise real-world MIB syntax.
-  If `~/test/mibs/` is available, also explicitly compile `SNMPv2-SMI` from the clean venv:
-  ```bash
-  /tmp/trishul-release-test/bin/trishul-smi compile SNMPv2-SMI --mib-dir ~/test/mibs -f json -f pysnmp --verbose
-  ```
-  This catches tagged ASN.1 type gaps that normal transitive-dependency compiles can hide.
-
-- [ ] Verify wheel has no duplicate entries (caused `0.1.0` PyPI rejection):
-  ```bash
-  python -c "
-  import zipfile, collections
-  z = zipfile.ZipFile('dist/trishul_smi-x.y.z-py3-none-any.whl')
-  dupes = [n for n, c in collections.Counter(z.namelist()).items() if c > 1]
-  print('DUPLICATES:', dupes or 'none')
-  "
-  ```
-
-- [ ] If `~/test/mibs/` (or any local MIB corpus) is available, compile all of them:
-  ```bash
-  trishul-smi compile --mib-dir ~/test/mibs -f json -f pysnmp --cache-dir "" --verbose
-  ```
-  Every MIB in the corpus must show ✅ before tagging.
-  Judge success by the CLI result rows, not by output file count: alias source files such as
-  `*-V1SMI.my` can declare the same canonical module name and overwrite the same artifact path.
 
 ---
 

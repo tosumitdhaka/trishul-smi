@@ -11,6 +11,7 @@ from tests.helpers import MockReader
 from trishul_smi.compiler import MibCompiler
 from trishul_smi.config import CompilerConfig
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
+from trishul_smi.models import CompileResult
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.output.json_fmt import JsonFormatter
@@ -1412,6 +1413,181 @@ END
 """
         src = self._src(bare_notif)
         assert "bareNotif.setObjects(" not in src
+
+
+# ---------------------------------------------------------------------------
+# v0.4.5 — missing_dependencies field and dry_run mode
+# ---------------------------------------------------------------------------
+
+_MISSING_DEP_MIB = """
+MISSING-DEP-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    SomeSymbol FROM GHOST-MIB ;
+missingDepMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Imports from a MIB that can never be found."
+    ::= { 1 500 }
+END
+"""
+
+
+class TestMissingDependencies:
+    """CompileResult.missing_dependencies is populated correctly."""
+
+    @pytest.mark.asyncio
+    async def test_missing_mib_has_self_in_missing_dependencies(self, tmp_path: Path):
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({}))
+        results = await compiler.compile("GHOST-MIB")
+        r = next(x for x in results if x.name == "GHOST-MIB")
+        assert r.status == "missing"
+        assert r.missing_dependencies == ["GHOST-MIB"]
+
+    @pytest.mark.asyncio
+    async def test_blocked_module_lists_missing_deps(self, tmp_path: Path):
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"MISSING-DEP-MIB": _MISSING_DEP_MIB}))
+        results = await compiler.compile("MISSING-DEP-MIB")
+        r = next(x for x in results if x.name == "MISSING-DEP-MIB")
+        assert r.status == "failed"
+        assert "GHOST-MIB" in r.missing_dependencies
+
+    @pytest.mark.asyncio
+    async def test_compiled_module_has_empty_missing_dependencies(self, tmp_path: Path):
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        results = await compiler.compile("TEST-MIB")
+        r = next(x for x in results if x.name == "TEST-MIB")
+        assert r.status == "compiled"
+        assert r.missing_dependencies == []
+
+    @pytest.mark.asyncio
+    async def test_missing_dependencies_default_empty(self):
+        r = CompileResult(name="X", status="compiled")
+        assert r.missing_dependencies == []
+
+    @pytest.mark.asyncio
+    async def test_blocked_chain_lists_correct_missing_dep(self, tmp_path: Path):
+        """DOWNSTREAM blocked by UPSTREAM blocked by GHOST; each lists its own blocker."""
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(
+            MockReader(
+                {
+                    "MISSING-DEP-MIB": _MISSING_DEP_MIB,
+                    "DOWNSTREAM-MIB": DOWNSTREAM_IMPORTING_UPSTREAM.replace(
+                        "UPSTREAM-MIB", "MISSING-DEP-MIB"
+                    ).replace("upstreamMIB", "missingDepMIB"),
+                }
+            )
+        )
+        results = await compiler.compile("DOWNSTREAM-MIB")
+        by_name = {r.name: r for r in results}
+        assert "GHOST-MIB" in by_name["MISSING-DEP-MIB"].missing_dependencies
+        assert "MISSING-DEP-MIB" in by_name["DOWNSTREAM-MIB"].missing_dependencies
+
+
+class TestDryRun:
+    """CompilerConfig.dry_run=True: full resolve/parse, no file writes."""
+
+    @pytest.mark.asyncio
+    async def test_dry_run_no_output_files(self, tmp_path: Path):
+        config = CompilerConfig(
+            output_dir=tmp_path / "out", cache_dir=None, formats=["json"], dry_run=True
+        )
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        results = await compiler.compile("TEST-MIB")
+        assert not (tmp_path / "out").exists()
+        r = next(x for x in results if x.name == "TEST-MIB")
+        assert r.output_paths == []
+
+    @pytest.mark.asyncio
+    async def test_dry_run_status_still_compiled(self, tmp_path: Path):
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"], dry_run=True)
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        results = await compiler.compile("TEST-MIB")
+        r = next(x for x in results if x.name == "TEST-MIB")
+        assert r.status == "compiled"
+
+    @pytest.mark.asyncio
+    async def test_dry_run_detects_missing_dependency(self, tmp_path: Path):
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"], dry_run=True)
+        compiler = MibCompiler(config).add_reader(MockReader({"MISSING-DEP-MIB": _MISSING_DEP_MIB}))
+        results = await compiler.compile("MISSING-DEP-MIB")
+        r = next(x for x in results if x.name == "MISSING-DEP-MIB")
+        assert r.status == "failed"
+        assert "GHOST-MIB" in r.missing_dependencies
+        assert not any(f.exists() for f in tmp_path.iterdir()) if tmp_path.exists() else True
+
+    @pytest.mark.asyncio
+    async def test_dry_run_no_manifest_or_oid_index(self, tmp_path: Path):
+        config = CompilerConfig(
+            output_dir=tmp_path,
+            cache_dir=None,
+            formats=["json"],
+            dry_run=True,
+            emit_manifest=True,
+            emit_oid_index=True,
+        )
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        await compiler.compile("TEST-MIB")
+        assert not (tmp_path / "manifest.json").exists()
+        assert not (tmp_path / "oid_index.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_dry_run_false_writes_files(self, tmp_path: Path):
+        config = CompilerConfig(
+            output_dir=tmp_path, cache_dir=None, formats=["json"], dry_run=False
+        )
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        results = await compiler.compile("TEST-MIB")
+        r = next(x for x in results if x.name == "TEST-MIB")
+        assert len(r.output_paths) == 1
+        assert r.output_paths[0].exists()
+
+
+class TestPublicApiExports:
+    """trishul_smi top-level exports are discoverable."""
+
+    def test_mibcompiler_importable(self):
+        from trishul_smi import MibCompiler as _MibCompiler
+
+        assert _MibCompiler is MibCompiler
+
+    def test_compilerconfig_importable(self):
+        from trishul_smi import CompilerConfig as _Config
+
+        assert _Config is CompilerConfig
+
+    def test_compileresult_importable(self):
+        from trishul_smi import CompileResult as _Result
+
+        assert _Result is CompileResult
+
+    def test_reader_classes_importable(self):
+        from trishul_smi import FileReader, HttpReader, ZipReader
+
+        assert FileReader is not None
+        assert HttpReader is not None
+        assert ZipReader is not None
+
+    def test_error_classes_importable(self):
+        from trishul_smi import (
+            CircularDependencyError,
+            MibCacheError,
+            MibNotFoundError,
+            ParseError,
+            TrishulError,
+            WriterError,
+        )
+
+        assert issubclass(MibNotFoundError, TrishulError)
+        assert issubclass(ParseError, TrishulError)
+        assert issubclass(CircularDependencyError, TrishulError)
+        assert issubclass(WriterError, TrishulError)
+        assert issubclass(MibCacheError, TrishulError)
 
 
 class TestV030BaseLibExplicitRequest:

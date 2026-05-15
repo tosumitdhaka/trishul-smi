@@ -10,6 +10,26 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.5] — 2026-05-15
+
+### Added
+
+- **`CompileResult.missing_dependencies`** — new `list[str]` field (default `[]`) that names
+  the missing modules directly on the result, eliminating the need for callers to parse
+  `error` strings. For `status="failed"` (blocked) results it lists the unresolved non-base
+  imports; for `status="missing"` results it contains the module name itself.
+- **`CompilerConfig.dry_run`** — new `bool` flag (default `False`). When `True`, the compiler
+  resolves and parses all modules normally (so `missing_dependencies` detection is accurate)
+  but skips all file writes: no module JSON, no `manifest.json`, no `oid_index.json`,
+  and no output-directory creation. `output_paths` is empty on every result.
+- **Public Python API exports from `trishul_smi`** — `MibCompiler`, `CompilerConfig`,
+  `CompileResult`, `FileReader`, `HttpReader`, `ZipReader`, and the full error hierarchy
+  (`TrishulError`, `MibNotFoundError`, `ParseError`, `CircularDependencyError`,
+  `WriterError`, `MibCacheError`) are now importable directly from `trishul_smi` without
+  reaching into internal submodules.
+
+---
+
 ## [0.4.4] — 2026-05-13
 
 ### Fixed
@@ -205,6 +225,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.4.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.1
 [0.4.2]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.2
 [0.4.3]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.3
+[0.4.5]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.5
 [0.4.4]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.4
 
 ---

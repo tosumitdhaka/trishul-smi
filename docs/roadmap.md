@@ -137,6 +137,18 @@ Vendor/parser hotfixes validated against real MIB corpora.
 
 ---
 
+## v0.4.5 — shipped 2026-05-15
+
+Python API and dry-run improvements.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | `CompileResult.missing_dependencies` field | done | `list[str]` naming missing deps directly on the result; callers no longer need to parse `error` strings. |
+| 2 | `CompilerConfig.dry_run` flag | done | Resolve and parse as normal but skip all file writes; `output_paths` is always empty. Enables pre-flight validation without output side-effects. |
+| 3 | Public top-level API exports from `trishul_smi` | done | `MibCompiler`, `CompilerConfig`, `CompileResult`, `FileReader`, `HttpReader`, `ZipReader`, and full error hierarchy now importable from the package root. |
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |
