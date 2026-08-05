@@ -136,7 +136,7 @@ tag_class   : "UNIVERSAL" | "APPLICATION" | "PRIVATE"
 tag_mode    : "IMPLICIT" | "EXPLICIT"
 
 builtin_type : "INTEGER"          [integer_enum | constraint]  -> integer_type
-             | "OCTET" "STRING"   [size_constraint]            -> octet_string_type
+             | "OCTET" "STRING"   [size_constraint | constraint] -> octet_string_type
              | "OBJECT" "IDENTIFIER"                           -> oid_type
              | "NULL"                                          -> null_type
              | "NetworkAddress"                                -> network_address_type
@@ -152,7 +152,8 @@ sequence_type   : "SEQUENCE" "{" sequence_field ("," sequence_field)* "}"
 sequence_field  : LOWER_ID syntax_type
                | LOWER_ID "BITS"   -> sequence_field_bits
                | syntax_type       -> anonymous_sequence_field
-bits_type       : "BITS" "{" named_bits "}"
+bits_type       : "BITS" "{" named_bits "}"                  -> bits_type
+                | "BIT" "STRING" "{" named_bits "}"          -> bit_string_type
 named_bits      : named_bit ("," named_bit)* [","]
 named_bit       : LOWER_ID "(" NUMBER ")"
 

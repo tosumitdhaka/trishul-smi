@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
-from lark import Token, Transformer, Tree
+from lark import Token, Transformer, Tree, v_args
 
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
@@ -94,6 +94,42 @@ class _ConstraintInfo:
         return {"kind": self.kind, "data": self.data}
 
 
+def _as_size(c: _ConstraintInfo | None) -> _ConstraintInfo | None:
+    """Reinterpret a bare range constraint as a size constraint.
+
+    Vendor MIBs sometimes write ``OCTET STRING (0..30)`` instead of the
+    standard ``OCTET STRING (SIZE (0..30))``. For an octet string the only
+    sensible reading of a bare range is a length (size) constraint, so a
+    ``range`` becomes ``size`` and a ``union`` of ranges becomes a union of
+    sizes. ``size``/``enum``/``bits`` constraints are returned unchanged.
+    """
+    if c is None:
+        return None
+    if c.kind == "range":
+        return _ConstraintInfo(kind="size", data=c.data)
+    if c.kind == "union":
+        return _ConstraintInfo(
+            kind="union",
+            data=[_as_size(m) if isinstance(m, _ConstraintInfo) else m for m in c.data],
+        )
+    return c
+
+
+def _is_bare_range(c: _ConstraintInfo | None) -> bool:
+    """True if ``c`` came from a bare ``(0..30)`` constraint rather than a
+    proper ``(SIZE (0..30))``. ``size_constraint`` only ever produces ``size``
+    or a union of ``size`` members; ``constraint`` produces ``range`` or a
+    union of ``range`` members. So a bare range is: kind ``range``, or a
+    ``union`` containing any ``range`` member."""
+    if c is None:
+        return False
+    if c.kind == "range":
+        return True
+    if c.kind == "union":
+        return any(isinstance(m, _ConstraintInfo) and m.kind == "range" for m in c.data)
+    return False
+
+
 @dataclass
 class _DisplayHintInfo:
     value: str
@@ -147,6 +183,13 @@ def _resolve_oid(components: list[Any]) -> tuple[str, list[int], str | None]:
 
 class MibTransformer(Transformer[Token, MibModule]):
     """Walks the Lark parse tree and builds a MibModule."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Non-fatal warnings collected while transforming (e.g. non-standard
+        # vendor syntax accepted leniently). Attached to the MibModule at the
+        # end of module_definition (which runs last, bottom-up).
+        self.warnings: list[str] = []
 
     def start(self, children: list[Any]) -> MibModule:
         return cast(MibModule, children[0])
@@ -207,6 +250,7 @@ class MibTransformer(Transformer[Token, MibModule]):
             lastupdated=lastupdated,
             revisions=revisions,
             description=description,
+            warnings=list(self.warnings),
         )
 
     def module_name(self, children: list[Any]) -> str:
@@ -573,9 +617,18 @@ class MibTransformer(Transformer[Token, MibModule]):
         c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
         return _SyntaxInfo("INTEGER", constraint=c)
 
-    def octet_string_type(self, children: list[Any]) -> _SyntaxInfo:
+    @v_args(meta=True)
+    def octet_string_type(self, meta: Any, children: list[Any]) -> _SyntaxInfo:
         c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
-        return _SyntaxInfo("OCTET STRING", constraint=c)
+        # Lenient: a bare range like "OCTET STRING (0..30)" (non-standard but
+        # common in vendor MIBs) is treated as a size constraint.
+        if _is_bare_range(c):
+            line = getattr(meta, "line", "?")
+            self.warnings.append(
+                f"line {line}: OCTET STRING range written without SIZE keyword "
+                f"— treated as size constraint (non-standard)"
+            )
+        return _SyntaxInfo("OCTET STRING", constraint=_as_size(c))
 
     def oid_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("OBJECT IDENTIFIER")
@@ -606,9 +659,18 @@ class MibTransformer(Transformer[Token, MibModule]):
         c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
         return _SyntaxInfo("TimeTicks", constraint=c)
 
-    def opaque_type(self, children: list[Any]) -> _SyntaxInfo:
+    @v_args(meta=True)
+    def opaque_type(self, meta: Any, children: list[Any]) -> _SyntaxInfo:
         c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
-        return _SyntaxInfo("Opaque", constraint=c)
+        # Lenient: a bare range like "Opaque (0..30)" is treated as a size
+        # constraint, matching OCTET STRING handling.
+        if _is_bare_range(c):
+            line = getattr(meta, "line", "?")
+            self.warnings.append(
+                f"line {line}: Opaque range written without SIZE keyword "
+                f"— treated as size constraint (non-standard)"
+            )
+        return _SyntaxInfo("Opaque", constraint=_as_size(c))
 
     def integer32_type(self, children: list[Any]) -> _SyntaxInfo:
         c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
@@ -624,6 +686,17 @@ class MibTransformer(Transformer[Token, MibModule]):
         return _SyntaxInfo("Gauge")
 
     def bits_type(self, _: list[Any]) -> _SyntaxInfo:
+        return _SyntaxInfo("BITS")
+
+    @v_args(meta=True)
+    def bit_string_type(self, meta: Any, children: list[Any]) -> _SyntaxInfo:
+        # Non-standard ASN.1 spelling "BIT STRING { ... }" used in place of the
+        # SMIv2 "BITS { ... }". Accepted leniently as an alias.
+        line = getattr(meta, "line", "?")
+        self.warnings.append(
+            f"line {line}: 'BIT STRING {{ ... }}' used instead of "
+            f"'BITS {{ ... }}' — accepted as alias (non-standard)"
+        )
         return _SyntaxInfo("BITS")
 
     def sequence_type(self, _: list[Any]) -> _SyntaxInfo:

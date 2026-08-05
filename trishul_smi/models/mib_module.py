@@ -25,6 +25,8 @@ class MibModule:
     revisions: list[dict[str, str]] = field(default_factory=list)
     description: str | None = None
     source_text: str | None = None  # original raw ASN.1, kept for debugging
+    # Non-fatal parser warnings (e.g. non-standard vendor syntax accepted leniently).
+    warnings: list[str] = field(default_factory=list)
 
     def all_imports(self) -> list[str]:
         """Return flat list of all imported MIB module names."""

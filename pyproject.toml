@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trishul-smi"
-version = "0.4.5"
+version = "0.4.6"
 description = "A clean, modern SMI/MIB compiler"
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,6 +41,7 @@ dev = [
     "pytest-cov>=4.0",
     "mypy>=1.9",
     "ruff>=0.4",
+    "click>=8.0",
 ]
 
 [project.scripts]

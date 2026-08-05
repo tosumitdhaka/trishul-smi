@@ -238,7 +238,7 @@ tag_class   : "UNIVERSAL" | "APPLICATION" | "PRIVATE"
 tag_mode    : "IMPLICIT" | "EXPLICIT"
 
 builtin_type : "INTEGER"       [constraint]                    -> integer_type
-             | "OCTET" "STRING" [size_constraint]              -> octet_string_type
+             | "OCTET" "STRING" [size_constraint | constraint] -> octet_string_type
              | "OBJECT" "IDENTIFIER"                           -> oid_type
              | "NULL"                                          -> null_type
              | "IpAddress"                                     -> ip_address_type
@@ -247,7 +247,7 @@ builtin_type : "INTEGER"       [constraint]                    -> integer_type
              | "Gauge32"       [constraint]                    -> gauge32_type
              | "Unsigned32"    [constraint]                    -> unsigned32_type
              | "TimeTicks"     [constraint]                    -> timeticks_type
-             | "Opaque"        [size_constraint]               -> opaque_type
+             | "Opaque"        [size_constraint | constraint]  -> opaque_type
              | "Integer32"     [constraint]                    -> integer32_type
              | "NetworkAddress"                                -> network_address_type
 
@@ -260,7 +260,8 @@ sequence_field : LOWER_ID syntax_type
                | LOWER_ID "BITS"   -> sequence_field_bits
                | syntax_type       -> anonymous_sequence_field
 
-bits_type : "BITS" "{" named_bits "}"
+bits_type : "BITS" "{" named_bits "}"                  -> bits_type
+          | "BIT" "STRING" "{" named_bits "}"          -> bit_string_type
 named_bits : named_bit ("," named_bit)* [","]
 named_bit  : LOWER_ID "(" NUMBER ")"
 

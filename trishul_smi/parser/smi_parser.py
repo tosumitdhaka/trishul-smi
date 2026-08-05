@@ -173,7 +173,7 @@ class SmiParser:
             parser_cache[key] = Lark(
                 grammar,
                 parser="earley" if earley else "lalr",
-                propagate_positions=False,
+                propagate_positions=True,
                 # maybe_placeholder removed in Lark >= 1.2 — do not add back.
             )
         return parser_cache[key]

@@ -340,7 +340,7 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
         if r.status == "compiled":
             icon = "[green]✅[/green]"
             if r.warnings:
-                detail = "[yellow]" + "; ".join(r.warnings) + "[/yellow]"
+                detail = f"[yellow]{len(r.warnings)} warning(s)[/yellow]"
             elif verbose:
                 detail = "  ".join(str(p) for p in r.output_paths)
             else:
@@ -366,6 +366,14 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     if warned:
         parts.append(f"[yellow]{len(warned)} with warnings[/yellow]")
     console.print("  ".join(parts))
+
+    # Full warning details (kept out of the table for readability).
+    if warned:
+        console.print()
+        for r in warned:
+            console.print(f"[cyan]{r.name}[/cyan] [yellow]({len(r.warnings)} warning(s)):[/yellow]")
+            for w in r.warnings:
+                console.print(f"  [yellow]•[/yellow] {w}")
 
 
 # ---------------------------------------------------------------------------

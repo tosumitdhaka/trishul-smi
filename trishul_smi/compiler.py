@@ -184,7 +184,10 @@ class MibCompiler:
             if module.name in blocked:
                 continue
             output_paths: list[Path] = []
-            warnings: list[str] = []
+            # Seed with parser-level warnings (non-standard syntax accepted leniently).
+            # Surfaced in the CLI via CompileResult.warnings; not logged here to avoid
+            # noisy duplicate output for modules with many warnings.
+            warnings: list[str] = list(module.warnings)
 
             for fmt_name, formatter in self._formatters.items():
                 out_path = out_dir / f"{module.name}{formatter.FILE_SUFFIX}"

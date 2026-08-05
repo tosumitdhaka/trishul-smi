@@ -1,6 +1,6 @@
 # trishul-smi — Architecture
 
-> **Last updated:** 2026-05-15
+> **Last updated:** 2026-08-05
 
 ---
 
@@ -224,6 +224,19 @@ constraint metadata. The parser also performs narrow pre-parse normalization for
 inline comment continuations seen in real IETF MIBs and accepts `SNMPv2-PDU`-style
 symbolic range bounds, anonymous `CHOICE` members inside `SEQUENCE`, and constrained
 `SEQUENCE OF` forms.
+
+**Lenient vendor-syntax handling:** real-world vendor MIBs (Ericsson, Cisco, and others)
+frequently use non-standard ASN.1 shorthand that strict validators like libsmi reject. The
+parser accepts two such forms and records a non-fatal warning on `MibModule.warnings` (with
+the source line number) rather than failing:
+- `OCTET STRING (0..30)` — bare range without the `SIZE` keyword; reinterpreted as a size
+  constraint (the only sensible reading for an octet string's length).
+- `BIT STRING { start(1), ... }` — the ASN.1 singular form; accepted as an alias for the
+  SMIv2 `BITS { ... }` construct.
+
+Warnings flow through the full pipeline: transformer → `MibModule.warnings` → cache
+(serialised so cached and fresh compiles are consistent) → `CompileResult.warnings` → CLI
+(per-module warning count in the result table, full details below it).
 
 **Async boundary:** `SmiParser.parse()` is CPU-bound sync code. Library callers may offload it
 manually if they want, but the built-in resolver now keeps fetches async and performs parse

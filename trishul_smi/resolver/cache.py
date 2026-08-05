@@ -73,6 +73,7 @@ def _module_to_bytes(module: MibModule) -> bytes:
         "lastupdated": module.lastupdated,
         "revisions": module.revisions,
         "description": module.description,
+        "warnings": module.warnings,
     }
     return orjson.dumps(payload, option=orjson.OPT_INDENT_2)
 
@@ -119,6 +120,7 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
         lastupdated=d.get("lastupdated"),
         revisions=d.get("revisions") or [],
         description=d.get("description"),
+        warnings=d.get("warnings") or [],
     )
 
 

@@ -149,6 +149,17 @@ Python API and dry-run improvements.
 
 ---
 
+## v0.4.6 — shipped 2026-08-05
+
+Vendor MIB compatibility and parser warnings.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | Lenient parsing of non-standard vendor `OCTET STRING` / `BIT STRING` syntax | done | `OCTET STRING (0..30)` (bare range, no `SIZE`) reinterpreted as size constraint; `BIT STRING { ... }` accepted as `BITS` alias. Fixes Ericsson and other vendor MIBs rejected by libsmi. |
+| 2 | `MibModule.warnings` field + CLI surfacing | done | Non-fatal warnings for leniently-accepted non-standard syntax, with source line numbers. Round-trips through cache; CLI shows per-module count + full details. |
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |

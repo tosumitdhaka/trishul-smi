@@ -1536,3 +1536,129 @@ END
         m = _parse(self.MIB)
         assert "testAgent" in m.objects
         assert m.objects["testAgent"].object_type == "AGENT-CAPABILITIES"
+
+
+# ---------------------------------------------------------------------------
+# Lenient parsing of non-standard vendor syntax (warns, does not fail)
+# ---------------------------------------------------------------------------
+
+
+class TestNonStandardSyntaxWarnings:
+    """Vendor MIBs use non-standard shorthand that strict SMIv2 (and libsmi)
+    reject. The parser accepts these leniently and records a non-fatal warning
+    on the module with the source line number."""
+
+    _HEADER = """
+VENDOR-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+vMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Vendor test."
+    ::= { 1 900 }
+
+"""
+
+    def test_bare_octet_string_range_warns_and_is_size(self):
+        """`OCTET STRING (0..30)` (no SIZE keyword) → size constraint + warning."""
+        mib = (
+            self._HEADER
+            + """
+BareOctet ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Bare range."
+    SYNTAX  OCTET STRING (0..30)
+
+END
+"""
+        )
+        m = _parse(mib)
+        tc = m.types["BareOctet"]
+        assert tc.constraints is not None
+        assert tc.constraints["kind"] == "size"
+        assert tc.constraints["data"] == [[0, 30]]
+        # exactly one warning, referencing the OCTET STRING line
+        octet_warnings = [w for w in m.warnings if "OCTET STRING" in w]
+        assert len(octet_warnings) == 1
+        assert "without SIZE" in octet_warnings[0]
+        assert "line " in octet_warnings[0]
+
+    def test_standard_size_constraint_does_not_warn(self):
+        """`OCTET STRING (SIZE (0..30))` is standard → no warning."""
+        mib = (
+            self._HEADER
+            + """
+StdOctet ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Standard size."
+    SYNTAX  OCTET STRING (SIZE (0..30))
+
+END
+"""
+        )
+        m = _parse(mib)
+        assert m.types["StdOctet"].constraints["kind"] == "size"
+        assert not any("OCTET STRING" in w for w in m.warnings)
+
+    def test_bit_string_alias_warns(self):
+        """`BIT STRING { ... }` (singular) accepted as alias for BITS + warning."""
+        mib = (
+            self._HEADER
+            + """
+BitsAlt ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Bit string alias."
+    SYNTAX  BIT STRING { start(1), stop(2) }
+
+END
+"""
+        )
+        m = _parse(mib)
+        assert m.types["BitsAlt"].base_type == "BITS"
+        bit_warnings = [w for w in m.warnings if "BIT STRING" in w]
+        assert len(bit_warnings) == 1
+        assert "alias" in bit_warnings[0]
+
+    def test_standard_bits_does_not_warn(self):
+        """`BITS { ... }` is standard → no BIT STRING warning."""
+        mib = (
+            self._HEADER
+            + """
+StdBits ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Standard bits."
+    SYNTAX  BITS { start(1), stop(2) }
+
+END
+"""
+        )
+        m = _parse(mib)
+        assert m.types["StdBits"].base_type == "BITS"
+        assert not any("BIT STRING" in w for w in m.warnings)
+
+    def test_warning_line_number_is_accurate(self):
+        """The reported line number points at the OCTET STRING line in source."""
+        mib = (
+            self._HEADER
+            + """
+
+
+LateOctet ::= TEXTUAL-CONVENTION
+    STATUS  current
+    DESCRIPTION "Late."
+    SYNTAX  OCTET STRING (0..5)
+
+END
+"""
+        )
+        m = _parse(mib)
+        octet_warnings = [w for w in m.warnings if "OCTET STRING" in w]
+        assert len(octet_warnings) == 1
+        # The SYNTAX line is the only line containing OCTET STRING; locate it.
+        src_lines = mib.splitlines()
+        octet_line = next(i + 1 for i, ln in enumerate(src_lines) if "OCTET STRING (0..5)" in ln)
+        assert f"line {octet_line}" in octet_warnings[0]

@@ -10,6 +10,37 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.6] — 2026-08-05
+
+### Fixed
+
+- **Vendor MIB compatibility** — two non-standard but common ASN.1 shorthand forms that
+  strict validators (libsmi, `smilint`) reject are now accepted leniently instead of
+  failing to parse. These appear in Ericsson and other vendor MIBs:
+  - `OCTET STRING (0..30)` — a bare range written without the `SIZE` keyword (standard SMIv2
+    requires `OCTET STRING (SIZE (0..30))`). Reinterpreted as a size constraint, the only
+    sensible reading for an octet string's length. Same leniency applies to `Opaque`.
+  - `BIT STRING { start(1), ... }` — the ASN.1 singular form, accepted as an alias for the
+    SMIv2 `BITS { ... }` construct.
+
+### Added
+
+- **`MibModule.warnings`** — new `list[str]` field (default `[]`) carrying non-fatal parser
+  warnings. Populated when non-standard vendor syntax is accepted leniently; each warning
+  includes the source line number (e.g. `line 129: OCTET STRING range written without SIZE
+  keyword — treated as size constraint (non-standard)`).
+- **Warning pipeline** — warnings now flow transformer → `MibModule.warnings` → `MibCache`
+  (serialised so cached and fresh compiles are consistent) → `CompileResult.warnings` → CLI.
+  The CLI shows a per-module warning count in the result table and lists full details below
+  it; the summary line reports `N with warnings`.
+
+### Changed
+
+- `SmiParser` now builds Lark parsers with `propagate_positions=True` so transformer methods
+  can attach accurate source line numbers to warnings.
+
+---
+
 ## [0.4.5] — 2026-05-15
 
 ### Added
@@ -429,3 +460,4 @@ First public release.
 See [roadmap.md](roadmap.md) for the full list of planned v0.2.0 improvements.
 
 [0.1.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.1.0
+[0.4.6]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.6
