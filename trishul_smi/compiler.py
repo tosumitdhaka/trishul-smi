@@ -154,6 +154,14 @@ class MibCompiler:
 
         requested_set = set(mib_names)
         resolved_names = {module.name for module in resolve_result.modules}
+        # Misnamed files are re-keyed by the resolver to their DECLARED name
+        # (resolve_result.aliases). A module requested under an alias is still
+        # an explicit request — the result is just named by its declared name.
+        explicit_declared = {
+            declared
+            for requested, declared in resolve_result.aliases.items()
+            if requested in requested_set
+        }
         blocked: dict[str, list[str]] = {}
 
         results: list[CompileResult] = []
@@ -170,11 +178,18 @@ class MibCompiler:
                 ) from _mkdir_exc
 
         for module in resolve_result.modules:
+            # Map each import through the alias table first: a dependent may
+            # import a misnamed file by its REQUESTED name, which the resolver
+            # re-keyed to the declared name (resolve_result.aliases).
             unresolved = sorted(
                 dep
                 for dep in module.all_imports()
-                if dep not in BASE_MIBS
-                and (dep in resolve_result.errors or dep in blocked or dep not in resolved_names)
+                if (target := resolve_result.aliases.get(dep, dep)) not in BASE_MIBS
+                and (
+                    target in resolve_result.errors
+                    or target in blocked
+                    or target not in resolved_names
+                )
             )
             if unresolved:
                 blocked[module.name] = unresolved
@@ -218,7 +233,9 @@ class MibCompiler:
                     status="compiled",
                     output_paths=output_paths,
                     warnings=warnings,
-                    is_dependency=module.name not in requested_set,
+                    is_dependency=(
+                        module.name not in requested_set and module.name not in explicit_declared
+                    ),
                 )
             )
 
@@ -233,7 +250,9 @@ class MibCompiler:
                         f"Unresolved non-base imports for {module.name}: "
                         f"{', '.join(blocked[module.name])}"
                     ),
-                    is_dependency=module.name not in requested_set,
+                    is_dependency=(
+                        module.name not in requested_set and module.name not in explicit_declared
+                    ),
                     missing_dependencies=blocked[module.name],
                 )
             )

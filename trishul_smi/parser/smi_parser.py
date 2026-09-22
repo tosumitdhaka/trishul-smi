@@ -31,24 +31,102 @@ from trishul_smi.parser.transformer import MibTransformer
 
 _DIALECT = Literal["smiv2", "smiv1", "auto"]
 
-# Pre-compiled pattern for word-boundary dialect detection.
-# Matches any SMIv2 marker as a whole token (not as a substring of e.g. SNMPv2-TC-v1).
-_SMIv2_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9\-])(" + "|".join(re.escape(m) for m in SMIv2_MARKERS) + r")(?![A-Za-z0-9\-])"
+# Dialect detection pattern: SMIv2 markers recognised only as IMPORTS targets
+# ("FROM SNMPv2-SMI"). The word-boundary lookarounds keep e.g. "SNMPv2-SMI-v1"
+# (the SMIv1 compatibility shim) from matching — the transformer records
+# language the same way ("SMIv2" iff an imported module is an SMIv2 marker).
+_FROM_SMIV2_PATTERN = re.compile(
+    r"\bFROM\b\s*(?<![A-Za-z0-9\-])("
+    + "|".join(re.escape(m) for m in SMIv2_MARKERS)
+    + r")(?![A-Za-z0-9\-])"
+)
+
+# Fallback for root SMIv2 modules (SNMPv2-SMI itself) that have no IMPORTS
+# clause at all: SMIv2-only construct keywords. An SMIv1 module never
+# contains these as grammar tokens, and detection runs on the masked copy,
+# so mentions inside strings/comments cannot trigger the fallback.
+_SMIV2_CONSTRUCT_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9\-])("
+    "MODULE-IDENTITY|OBJECT-IDENTITY|NOTIFICATION-TYPE|MODULE-COMPLIANCE"
+    "|AGENT-CAPABILITIES|MAX-ACCESS"
+    r")(?![A-Za-z0-9\-])"
 )
 
 # Strip MACRO body content before LALR parsing.
 # MACRO..END blocks contain free-form ASN.1 notation that is not valid grammar input.
 # We reduce each to "MACRO-NAME MACRO ::= BEGIN END" (preserving newlines for line numbers).
-_MACRO_BODY_RE = re.compile(r"\bMACRO\b(.*?)\bEND\b", re.DOTALL)
+# Matching runs on a quote/comment-masked copy of the text (see
+# _mask_quotes_and_comments) so the words MACRO/END inside DESCRIPTION strings
+# or -- comments can neither start nor end a match (issue #11). The "::= BEGIN"
+# anchor additionally stops a module name containing "MACRO" (e.g. X-MACRO-MIB)
+# from being mistaken for a macro assignment.
+_MACRO_BODY_RE = re.compile(r"\bMACRO\b\s*::=\s*BEGIN(.*?)\bEND\b", re.DOTALL)
 _WRAPPED_COMMENT_TEXT_RE = re.compile(r"[a-z][A-Za-z0-9\-]*(?:[ \t]+[A-Za-z0-9][A-Za-z0-9\-]*)*")
 
 
+def _mask_quotes_and_comments(text: str) -> str:
+    """Blank out string-literal and comment contents while keeping length.
+
+    Every character inside a double-quoted string or a ``--`` comment is
+    replaced by a space; newlines are kept so line numbers (and macro-body
+    newline preservation) stay correct. The result has the same length as
+    *text*, so match spans found on it index directly into the original.
+
+    Mirrors the grammar tokenization (smiv1.lark / smiv2.lark):
+      QUOTED_STRING : /"(?:[^\\"]|\\[\\s\\S])*"/   double-quoted, may span
+                                                    lines, backslash escapes any
+                                                    following character
+      COMMENT       : /--[^\n]*/                   runs to end of line
+    """
+    chars = list(text)
+    length = len(text)
+    index = 0
+    in_quote = False
+    while index < length:
+        char = text[index]
+        if in_quote:
+            if char == "\\" and index + 1 < length:
+                chars[index] = " "
+                chars[index + 1] = " "
+                index += 2
+                continue
+            if char == '"':
+                in_quote = False
+                chars[index] = " "
+                index += 1
+                continue
+            if char not in "\r\n":
+                chars[index] = " "
+            index += 1
+            continue
+        if char == '"':
+            in_quote = True
+            chars[index] = " "
+            index += 1
+            continue
+        if char == "-" and index + 1 < length and text[index + 1] == "-":
+            while index < length and text[index] not in "\r\n":
+                chars[index] = " "
+                index += 1
+            continue
+        index += 1
+    return "".join(chars)
+
+
 def _strip_macro_bodies(text: str) -> str:
+    masked = _mask_quotes_and_comments(text)
+
     def _keep_newlines(m: re.Match[str]) -> str:
         return "MACRO ::= BEGIN" + "".join(c for c in m.group(1) if c in "\r\n") + "END"
 
-    return _MACRO_BODY_RE.sub(_keep_newlines, text)
+    parts: list[str] = []
+    last = 0
+    for match in _MACRO_BODY_RE.finditer(masked):
+        parts.append(text[last : match.start()])
+        parts.append(_keep_newlines(match))
+        last = match.end()
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def _split_line_ending(line: str) -> tuple[str, str]:
@@ -123,8 +201,23 @@ def _load_grammar(name: str) -> str:
 
 
 def _detect_dialect(text: str) -> Literal["smiv2", "smiv1"]:
-    """Heuristic: scan text for SMIv2-specific IMPORTS module names."""
-    if _SMIv2_PATTERN.search(text):
+    """Heuristic: SMIv2 iff an IMPORTS clause references an SMIv2 module.
+
+    Root SMIv2 modules (SNMPv2-SMI itself) import nothing, so when a module
+    has no IMPORTS clause at all we fall back to SMIv2-only construct
+    keywords — an SMIv1 module never contains them as grammar tokens.
+
+    Detection runs on a quote/comment-masked copy of *text* and only
+    recognises SMIv2 marker modules as ``FROM <module>`` import targets
+    (issue #24). This mirrors the transformer's language decision — "SMIv2"
+    iff any imported module is an SMIv2 marker (transformer.py) — so a
+    comment or DESCRIPTION merely mentioning "SNMPv2-SMI" can no longer
+    force the v2 grammar onto an SMIv1 module.
+    """
+    masked = _mask_quotes_and_comments(text)
+    if _FROM_SMIV2_PATTERN.search(masked):
+        return "smiv2"
+    if not re.search(r"\bFROM\b", masked) and _SMIV2_CONSTRUCT_PATTERN.search(masked):
         return "smiv2"
     return "smiv1"
 

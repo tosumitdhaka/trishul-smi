@@ -483,14 +483,30 @@ class MibTransformer(Transformer[Token, MibModule]):
 
     def trap_type_assignment(self, children: list[Any]) -> MibObject:
         name = str(children[0])
-        number = next(
-            (str(c) for c in children if isinstance(c, Token) and c.type == "NUMBER"), "0"
+        # Child order is fixed by the grammar rule: [name, enterprise,
+        # optional VARIABLES/DESCRIPTION/REFERENCE clauses..., trap number].
+        # The ENTERPRISE value is the first LOWER_ID/NUMBER token after the
+        # name (symbolic reference or numeric value); the trailing "::="
+        # NUMBER is the trap's subidentifier.
+        enterprise_token = next(
+            (c for c in children[1:] if isinstance(c, Token) and c.type in ("LOWER_ID", "NUMBER")),
+            None,
         )
+        number_token = next(
+            (c for c in reversed(children) if isinstance(c, Token) and c.type == "NUMBER"),
+            None,
+        )
+        number = str(number_token) if number_token is not None else "0"
+        enterprise = str(enterprise_token) if enterprise_token is not None else None
         return MibObject(
             name=name,
             oid=number,
             oid_path=[int(number)],
             object_type="TRAP-TYPE",
+            enterprise=enterprise,
+            trap_number=int(number),
+            oid_parent=enterprise,
+            description=self._description(children),
             members=self._members(children),
         )
 

@@ -10,6 +10,49 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.7] — 2026-09-22
+
+### Fixed
+
+- **Quote/comment-aware macro stripping** — the words `MACRO`/`END` inside `DESCRIPTION`
+  strings or `--` comments can no longer trigger macro-body stripping, which previously
+  swallowed module content or injected a bare `END` token. The tightened
+  `MACRO ::= BEGIN` anchor also stops module names containing `MACRO` (e.g. `X-MACRO-MIB`)
+  from being mistaken for macro assignments (#11).
+- **SMIv1 TRAP-TYPE completeness** — `TRAP-TYPE` definitions now retain `ENTERPRISE`
+  (symbolic or numeric), the full resolved OID (enterprise chain + trap number),
+  `DESCRIPTION`, and the `VARIABLES` list in compiled JSON output; all fields round-trip
+  through the compiled-module cache (#13).
+- **Declared-name reconciliation for misnamed files** — a module whose declared name
+  differs from the name it was requested under is re-keyed by its declared name, recorded
+  as an alias, and surfaced with a pysmi-style warning. Fixes phantom fetches,
+  falsely-blocked dependents (importing either the requested or the declared name),
+  inconsistent `CompileResult` naming / `is_dependency`, and cache misses on later runs
+  (#21).
+
+### Changed
+
+- **Imports-driven dialect detection** — dialect is decided from `FROM` import targets on
+  a quote/comment-masked copy of the source, so a comment or `DESCRIPTION` mentioning
+  `SNMPv2-SMI` can no longer force the SMIv2 grammar onto an SMIv1 module. Root SMIv2
+  modules without any imports (e.g. `SNMPv2-SMI` itself) fall back to SMIv2-only
+  construct keywords (part of #24; remaining #24 items planned for v0.4.10).
+
+### Added
+
+- `MibObject.enterprise` and `MibObject.trap_number` model fields, serialised through
+  the compiled-module cache.
+
+### Known Limitations
+
+- Two requested files declaring the same module name compile once under that name; the
+  earlier-fetched duplicate is silently dropped (warning/alias surfacing is planned for
+  the v0.4.9 robustness release).
+- Requesting both a misnamed file and its declared name in one call can yield a
+  contradictory `compiled` + `missing` result pair for the same module.
+
+---
+
 ## [0.4.6] — 2026-08-05
 
 ### Fixed
@@ -461,3 +504,4 @@ See [roadmap.md](roadmap.md) for the full list of planned v0.2.0 improvements.
 
 [0.1.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.1.0
 [0.4.6]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.6
+[0.4.7]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.7

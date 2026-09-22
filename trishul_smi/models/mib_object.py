@@ -21,3 +21,5 @@ class MibObject:
     oid_parent: str | None = None  # leading name arc before numeric arcs, e.g. "ifMIB"
     constraints: dict[str, Any] | None = None  # inline SYNTAX constraint (range/size/enum/bits)
     members: list[str] | None = None  # OBJECTS/NOTIFICATIONS clause members (groups, notifications)
+    enterprise: str | None = None  # TRAP-TYPE: ENTERPRISE ref (symbolic name or numeric value)
+    trap_number: int | None = None  # TRAP-TYPE: assignment subidentifier (last OID arc)

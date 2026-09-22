@@ -1,6 +1,6 @@
 # trishul-smi — Architecture
 
-> **Last updated:** 2026-08-05
+> **Last updated:** 2026-09-22
 
 ---
 
@@ -217,7 +217,10 @@ class SmiParser:
 - `smiv1.lark` — complete SMIv1 grammar (RFC 1155/1212/1215), LALR(1)
 - `common.lark` — shared token definitions used by both
 
-Dialect is auto-detected from the MIB source. Grammar text is cached process-wide and
+Dialect is auto-detected from the MIB source: SMIv2 iff an IMPORTS clause references an
+SMIv2 module (recognised as `FROM` targets on a quote/comment-masked copy, so mentions in
+comments or descriptions cannot flip it); import-less root modules (e.g. `SNMPv2-SMI`
+itself) fall back to SMIv2-only construct keywords. Grammar text is cached process-wide and
 compiled `Lark` parsers are cached per thread. Tagged ASN.1 type assignments such as
 `[APPLICATION 0] IMPLICIT OCTET STRING` are preserved as the underlying base type plus
 constraint metadata. The parser also performs narrow pre-parse normalization for wrapped

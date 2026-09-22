@@ -49,6 +49,8 @@ def _module_to_bytes(module: MibModule) -> bytes:
             "augments": o.augments,
             "constraints": o.constraints,
             "members": o.members,
+            "enterprise": o.enterprise,
+            "trap_number": o.trap_number,
         }
 
     def _typ(t: MibType) -> dict[str, Any]:
@@ -96,6 +98,8 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
             augments=o.get("augments"),
             constraints=o.get("constraints"),
             members=o.get("members"),
+            enterprise=o.get("enterprise"),
+            trap_number=o.get("trap_number"),
         )
 
     def _typ(t: dict[str, Any]) -> MibType:

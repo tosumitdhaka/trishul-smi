@@ -160,6 +160,19 @@ Vendor MIB compatibility and parser warnings.
 
 ---
 
+## v0.4.7 — shipped 2026-09-22
+
+Real-world MIB correctness.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | Quote/comment-aware macro stripping | done | `MACRO` in DESCRIPTION strings or comments no longer destroys modules or injects bare `END`; `::= BEGIN` anchor stops `X-MACRO-MIB`-style names from matching. (#11) |
+| 2 | SMIv1 TRAP-TYPE ENTERPRISE / OID / DESCRIPTION | done | Symbolic + numeric ENTERPRISE, full OID resolution (enterprise chain + trap number), VARIABLES, description; cache round-trip included. (#13) |
+| 3 | Declared vs requested name reconciliation | done | Resolver re-keys by declared name + alias record + pysmi-style warning; compiler blocked-deps computation is alias-aware. (#21) |
+| 4 | Imports-driven dialect detection | done | FROM-anchored on a quote/comment-masked copy; construct-keyword fallback for import-less root SMIv2 modules. (Part of #24; remainder → v0.4.10.) |
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |

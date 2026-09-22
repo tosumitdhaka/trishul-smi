@@ -68,6 +68,23 @@ def _resolve_member(name: str, this_module: str, name_to_mod: dict[str, str]) ->
     return {"module": mod, "object": name}
 
 
+def _enterprise_ref(
+    enterprise: str,
+    this_module: str,
+    name_to_mod: dict[str, str],
+) -> dict[str, Any]:
+    """Encode a TRAP-TYPE ENTERPRISE reference in the ``{module, object}`` shape.
+
+    Symbolic enterprises are attributed to the module that defines them via
+    the import reverse map (same convention as members). Numeric enterprises
+    have no owning module, so ``module`` is ``None`` and ``object`` holds the
+    numeric value.
+    """
+    if enterprise.isdigit():
+        return {"module": None, "object": enterprise}
+    return _resolve_member(enterprise, this_module, name_to_mod)
+
+
 def _obj_dict(
     o: MibObject,
     no_texts: bool,
@@ -94,6 +111,10 @@ def _obj_dict(
         d["constraints"] = o.constraints
     if o.members is not None:
         d["members"] = [_resolve_member(m, module_name, name_to_mod) for m in o.members]
+    if o.enterprise is not None:
+        d["enterprise"] = _enterprise_ref(o.enterprise, module_name, name_to_mod)
+    if o.trap_number is not None:
+        d["trap_number"] = o.trap_number
     if not no_texts:
         d["description"] = _norm_desc(o.description)
     return d

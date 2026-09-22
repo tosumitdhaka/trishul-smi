@@ -196,7 +196,7 @@ creation_requires_clause : "CREATION-REQUIRES" "{" object_list "}"
 // TRAP-TYPE (SMIv1 compat)
 // ---------------------------------------------------------------------------
 
-trap_type_assignment : (UPPER_ID | LOWER_ID) "TRAP-TYPE" "ENTERPRISE" LOWER_ID [trap_variables_clause] [description_clause] [reference_clause] "::=" NUMBER
+trap_type_assignment : (UPPER_ID | LOWER_ID) "TRAP-TYPE" "ENTERPRISE" (LOWER_ID | NUMBER) [trap_variables_clause] [description_clause] [reference_clause] "::=" NUMBER
 
 trap_variables_clause : "VARIABLES" "{" object_list "}"
 
