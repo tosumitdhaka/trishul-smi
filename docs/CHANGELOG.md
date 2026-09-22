@@ -10,6 +10,74 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.10] — 2026-09-22
+
+### Deprecated
+
+- **pysnmp `.py` output format** (#24; resolves the posture question in #14) — constructing
+  `PysnmpFormatter` emits a `DeprecationWarning` and `--format pysnmp` prints a CLI
+  deprecation notice. The format is frozen (no behavior fixes; known escaping/`_pyid`
+  gaps accepted as-is); use the JSON bundle output (`--format json`, optionally
+  `--emit-manifest` / `--emit-oid-index`). Removal is targeted at **v0.5.0**. `tsmi
+  convert` (reading existing pysnmp `.py` files) is unaffected.
+
+### Added
+
+- **Offline cache fallback** — when a source is merely not-found (`MibNotFoundError`),
+  the resolver serves a warm, non-expired cache entry with a "source unavailable"
+  warning, restoring offline/air-gapped compiles lost to v0.4.9's fetch-first
+  fingerprinting. Transport failures (`NetworkError`) never fall back.
+- **`--reproducible`** — new `CompilerConfig.reproducible` flag + CLI option pins
+  `generated_at` to a fixed epoch, making module JSON, `manifest.json`, and
+  `oid_index.json` byte-identical across runs.
+- **Bundle compatibility policy (#16)** — documented in architecture.md: `schema_version`
+  bumps only on breaking IR changes; `producer_version` always equals the package
+  version; consumers accept `schema_version` ≤ their highest supported version and must
+  reject higher. Contract tests pin the metadata block and the 1.1 ↔ ≥ 0.4.0 pairing.
+
+### Fixed
+
+- **Alias skip-path discard is now warned** — a successfully-fetched file whose declared
+  name was already claimed by an earlier file in the wave emits a collision warning on
+  the surviving module (was silent first-wins).
+- **Nested-zip aggregate cap is recoverable** — budget exhaustion logs a warning and
+  yields `MibNotFoundError` (the reader chain falls through to the next source) instead
+  of aborting the whole compile; per-entry `max_mib_size` overruns remain fatal.
+- **Non-UTF-8 MIB files** — local files that are not valid UTF-8 are decoded losslessly
+  as latin-1 with a logged warning (was silent `errors="replace"` corruption).
+- **`ReaderChain`** no longer relies on an `assert` that vanishes under `python -O`.
+- **Failed `compile()` no longer poisons the compiler** — a `compile()` rejected before
+  any work (no readers registered) leaves `add_reader()` usable; the documented
+  `RuntimeError` guard applies only after a real compile.
+
+### Removed
+
+- **`MibModule.source_text`** (never populated; Python-API removal).
+- **`JsonFormatter.set_artifact_metadata()`** (dead API since v0.4.9's per-run formatters).
+- **`parser/grammar/common.lark`** (imported by neither grammar; terminals triplicated).
+
+### Changed
+
+- **Lazy `HttpReader` imports** — `import trishul_smi` no longer pulls httpx into the
+  process (PEP 562 lazy attribute in both `trishul_smi` and `trishul_smi.reader`);
+  `from trishul_smi import HttpReader` still works.
+- **`add_reader()` now actually raises `RuntimeError`** after `compile()` has been
+  invoked (was documented but unimplemented).
+- `_compact_int_arrays` safety invariant documented + adversarial regression tests
+  (emitted bytes unchanged).
+
+### Known Limitations
+
+- **Offline-fallback staleness edge case**: if a cached misnamed alias is served offline
+  in the same wave in which the genuine module's source becomes fetchable, the stale
+  cached entry wins and the fresh fetch is discarded (with warnings). Narrow, disclosed
+  by three explicit warnings, tracked for v0.5.0.
+- FileReader (latin-1 decode) and HttpReader (UTF-8 decode) produce different
+  fingerprints for the same non-UTF-8 bytes — a cache entry written via one misses via
+  the other.
+
+---
+
 ## [0.4.9] — 2026-09-22
 
 ### Fixed
@@ -598,3 +666,4 @@ See [roadmap.md](roadmap.md) for the full list of planned v0.2.0 improvements.
 [0.4.7]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.7
 [0.4.8]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.8
 [0.4.9]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.9
+[0.4.10]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.10

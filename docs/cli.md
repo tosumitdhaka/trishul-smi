@@ -189,6 +189,11 @@ matching numeric dotted string can be derived from it.
 
 ### pysnmp (`-f pysnmp`)
 
+> **Deprecated (v0.4.10).** The pysnmp `.py` output format will be removed in v0.5.0.
+> Use the JSON bundle output (`-f json`, optionally with `--emit-manifest` /
+> `--emit-oid-index`) instead. `tsmi convert` (reading existing pysnmp `.py` files) is
+> unaffected.
+
 One `.py` file per MIB module, loadable by `pysnmp`'s `MibBuilder`:
 
 ```python

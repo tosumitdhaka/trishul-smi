@@ -54,7 +54,6 @@ class ReaderChain:
         """Try each reader in order; raise the last MibNotFoundError if all fail."""
         # last_exc is MibNotFoundError | None rather than narrowing to
         # MibNotFoundError upfront, which would require a dummy construction.
-        # We assert before re-raise so mypy is satisfied and the intent is clear.
         last_exc: MibNotFoundError | None = None
         for reader in self._readers:
             try:
@@ -62,5 +61,11 @@ class ReaderChain:
             except MibNotFoundError as exc:
                 last_exc = exc
                 # continue to next reader
-        assert last_exc is not None  # guaranteed: loop ran ≥1 iteration
+        # Guaranteed: the constructor requires >= 1 reader, so the loop always
+        # runs at least one iteration and every iteration either returns or
+        # sets last_exc. Use an explicit raise of the last exception rather
+        # than `assert last_exc is not None`, which silently disappears under
+        # `python -O` and would leave the chain returning None (issue #24).
+        if last_exc is None:  # pragma: no cover - unreachable by construction
+            raise MibNotFoundError(f"MIB '{mib_name}' not found")
         raise last_exc

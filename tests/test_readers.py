@@ -64,6 +64,39 @@ class TestFileReader:
         text = await reader.fetch("X-MIB")
         assert text
 
+    @pytest.mark.asyncio
+    async def test_latin1_file_decodes_losslessly_with_warning(self, tmp_path: Path, caplog):
+        """Old vendor MIBs are sometimes latin-1: the bytes must round-trip
+        losslessly (no silent U+FFFD replacement) and a decode-fallback
+        warning naming the file must be logged (issue #24)."""
+        import logging
+
+        text = "IF-MIB définition vérrouillé"
+        raw = text.encode("latin-1")
+        (tmp_path / "LATIN-MIB.mib").write_bytes(raw)
+        reader = FileReader(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="trishul_smi.reader"):
+            decoded = await reader.fetch("LATIN-MIB")
+
+        assert decoded == text
+        assert decoded.encode("latin-1") == raw  # byte round-trip preserved
+        assert any("LATIN-MIB.mib" in r.message and "latin-1" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_utf8_file_no_decode_warning(self, tmp_path: Path, caplog):
+        """A valid UTF-8 file must decode without emitting a fallback warning."""
+        import logging
+
+        (tmp_path / "UTF8-MIB.mib").write_text("IF-MIB définition", encoding="utf-8")
+        reader = FileReader(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="trishul_smi.reader"):
+            text = await reader.fetch("UTF8-MIB")
+
+        assert text == "IF-MIB définition"
+        assert not any("latin-1" in r.message for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # ZipReader

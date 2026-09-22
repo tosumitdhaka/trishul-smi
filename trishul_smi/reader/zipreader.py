@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 import zipfile
 from pathlib import Path
 
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
 from trishul_smi.reader.base import AbstractReader
+
+_logger = logging.getLogger(__name__)
 
 # Extensions tried when looking for a MIB entry inside a ZIP.
 _MIB_SUFFIXES = {"", ".mib", ".txt", ".my"}
@@ -18,6 +21,19 @@ _MIB_SUFFIXES = {"", ".mib", ".txt", ".my"}
 # reads are deliberately excluded from the aggregate — only nested-archive
 # extraction bytes count.
 _NESTED_AGGREGATE_MULTIPLIER = 4
+
+
+class _NestedScanBudgetError(Exception):
+    """Internal sentinel: the aggregate nested-archive cap was reached.
+
+    Raised by ``_NestedScanBudget.charge()`` in place of MibSizeLimitError:
+    the 4x aggregate cap is a per-fetch heuristic, not a config error, so an
+    archive of many small nested zips must degrade to a recoverable
+    ``MibNotFoundError`` (the ReaderChain falls through to the next
+    reader/source) rather than kill the entire compile. Per-entry
+    ``max_mib_size`` overruns remain MibSizeLimitError — those are real
+    config errors.
+    """
 
 
 class _NestedScanBudget:
@@ -35,11 +51,15 @@ class _NestedScanBudget:
         self._used = 0
 
     def charge(self, size: int) -> None:
-        """Account for *size* nested-archive bytes; raise past the cap."""
+        """Account for *size* nested-archive bytes; raise past the cap.
+
+        Raises ``_NestedScanBudgetError`` (recoverable miss), NOT
+        ``MibSizeLimitError`` (fatal config error) — see that class.
+        """
         self._used += size
         if self._used > self._limit:
-            raise MibSizeLimitError(
-                "nested-archive scan exceeds aggregate limit "
+            raise _NestedScanBudgetError(
+                f"nested-archive scan exceeds aggregate limit "
                 f"{self._limit} bytes "
                 f"({_NESTED_AGGREGATE_MULTIPLIER} x max_size)"
             )
@@ -61,6 +81,12 @@ class ZipReader(AbstractReader):
     ``4 x max_size`` (``_NESTED_AGGREGATE_MULTIPLIER``) — per-entry bounds
     alone leave unbounded time/temp-file churn for archives holding many small
     nested zips. MIB-entry (leaf) reads do not count toward the aggregate.
+
+    Aggregate-cap trip is a RECOVERABLE miss: the budget raises
+    ``_NestedScanBudgetError`` (an internal sentinel) and ``fetch()``
+    converts it into ``MibNotFoundError``, so the ReaderChain falls through to
+    the next reader/source. Per-entry ``max_mib_size`` overruns remain FATAL
+    (``MibSizeLimitError``) — those are real config errors (L4).
     """
 
     def __init__(self, *zip_paths: str | Path, max_size: int = 10 * 1024 * 1024) -> None:
@@ -70,7 +96,17 @@ class ZipReader(AbstractReader):
     async def fetch(self, mib_name: str) -> str:
         budget = _NestedScanBudget(self._max_size)
         for zip_path in self._zip_paths:
-            result = self._search_zip(zip_path, mib_name, budget)
+            try:
+                result = self._search_zip(zip_path, mib_name, budget)
+            except _NestedScanBudgetError:
+                # Aggregate nested-archive cap tripped mid-search: stop
+                # scanning for this fetch and treat it as a recoverable
+                # not-found — the ReaderChain falls through to the next
+                # reader/source. The warning naming the offending archive and
+                # budget was already logged at the charge site. Per-entry
+                # size-limit overruns (MibSizeLimitError) are NOT caught here
+                # — they stay fatal.
+                break
             if result is not None:
                 return result
         raise MibNotFoundError(
@@ -119,7 +155,21 @@ class ZipReader(AbstractReader):
                         )
                     # Nested-archive extraction bytes count toward the aggregate
                     # cap (per-entry bound alone leaves many-small-zips churn).
-                    budget.charge(len(data))
+                    # A trip here is recoverable: log it and let fetch() turn
+                    # it into MibNotFoundError so the chain falls through.
+                    try:
+                        budget.charge(len(data))
+                    except _NestedScanBudgetError:
+                        _logger.warning(
+                            "nested-archive aggregate scan budget exceeded "
+                            "(%d bytes) while scanning %s in %s; aborting "
+                            "fetch of %r",
+                            budget._limit,
+                            entry,
+                            zip_path,
+                            mib_name,
+                        )
+                        raise
                     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                         tmp.write(data)
                         tmp_path = Path(tmp.name)

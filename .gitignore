@@ -128,3 +128,4 @@ local_settings.py
 *.prof
 *.lprof
 .claude/settings.local.json
+.cortexkit/

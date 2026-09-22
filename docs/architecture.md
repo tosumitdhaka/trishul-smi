@@ -65,7 +65,6 @@ trishul_smi/
 │
 ├── parser/
 │   ├── grammar/
-│   │   ├── common.lark    ← shared token definitions
 │   │   ├── smiv2.lark     ← complete SMIv2 grammar (RFC 2578)
 │   │   └── smiv1.lark     ← complete SMIv1 grammar (RFC 1155)
 │   ├── _constants.py      ← parser constants and helpers
@@ -91,7 +90,7 @@ trishul_smi/
 │   ├── json_contract.py   ← shared JSON class/nodetype semantics
 │   ├── json_bundle.py     ← optional manifest.json / oid_index.json builders
 │   ├── json_fmt.py        ← JsonFormatter  (FILE_SUFFIX = ".json")
-│   └── pysnmp_fmt.py      ← PysnmpFormatter (Jinja2, FILE_SUFFIX = ".py")
+│   └── pysnmp_fmt.py      ← PysnmpFormatter (Jinja2, FILE_SUFFIX = ".py") — DEPRECATED since v0.4.10, removal targeted at v0.5.0
 │
 ├── convert/
 │   └── pysnmp_reader.py   ← PySNMPReader: compiled .py → MibModule (ast-based)
@@ -104,10 +103,12 @@ tests/
 ├── helpers.py             ← model builder helpers
 ├── test_cli.py
 ├── test_compiler.py
+├── test_compat_policy.py
 ├── test_config.py
 ├── test_convert.py
 ├── test_errors.py
 ├── test_httpreader.py
+├── test_init.py
 ├── test_json_bundle.py
 ├── test_json_ir.py
 ├── test_json_oid_index.py
@@ -115,6 +116,7 @@ tests/
 ├── test_oid_resolver.py
 ├── test_parser.py
 ├── test_readers.py
+├── test_reproducible.py
 ├── test_resolver.py
 └── test_transformer.py
 ```
@@ -136,7 +138,6 @@ class MibModule:
     objects: dict[str, MibObject]
     types: dict[str, MibType]
     notifications: dict[str, MibObject]
-    source_text: str | None = None
     lastupdated: str | None = None     # SMIv2 date string from MODULE-IDENTITY
     organization: str | None = None
     contactinfo: str | None = None
@@ -215,7 +216,6 @@ class SmiParser:
 **Grammar strategy:** two independent complete files (Lark does not support grammar rule overriding via imports):
 - `smiv2.lark` — complete SMIv2 grammar (RFC 2578/2579/2580), LALR(1)
 - `smiv1.lark` — complete SMIv1 grammar (RFC 1155/1212/1215), LALR(1)
-- `common.lark` — shared token definitions used by both
 
 Dialect is auto-detected from the MIB source: SMIv2 iff an IMPORTS clause references an
 SMIv2 module (recognised as `FROM` targets on a quote/comment-masked copy, so mentions in
@@ -391,6 +391,42 @@ trishul-smi version
 **convert:** reads a compiled PySNMP `.py` file via `PySNMPReader` → emits JSON via `JsonFormatter`. No network or grammar required.
 
 Exit codes: `0` all compiled — `1` any failure — `2` bad option.
+
+---
+
+### 3.10 Bundle compatibility policy
+
+The JSON IR emitted by trishul-smi — module `*.json` files plus the optional
+`manifest.json` and `oid_index.json` sidecars — is consumed by downstream tools
+such as `trishul-snmp`. This section pins down the version-compatibility
+contract between producer (this package) and consumers.
+
+- **(a) Required metadata block.** Every emitted module JSON and every sidecar
+  carries the same four-field metadata block: `schema_version`,
+  `producer_version`, `generated_by`, and `generated_at`. These fields have been
+  present on every artifact since v0.4.0.
+- **(b) `schema_version` semantics.** `schema_version` is bumped ONLY when the
+  JSON IR changes in a way that breaks existing consumers: field removals,
+  renames, or changed types/semantics of existing fields. Purely additive
+  changes — new optional keys that older consumers can safely ignore — do NOT
+  bump `schema_version`.
+- **(c) `producer_version`.** `producer_version` always equals the trishul-smi
+  package version that produced the artifact (see `trishul_smi/version.py`).
+  Consumers may use it for diagnostics and bug triage, but compatibility is
+  decided by `schema_version` alone.
+- **(d) Consumer acceptance rules.** A consumer SHOULD accept any bundle whose
+  `schema_version` is less than or equal to its highest supported version, and
+  MUST reject bundles whose `schema_version` is higher. Within an accepted
+  version, consumers SHOULD ignore unknown (additive) fields rather than
+  failing.
+- **(e) Version pairing.** The single source of truth for the current schema
+  version is the `JSON_IR_SCHEMA_VERSION` constant in
+  `trishul_smi/output/json_ir.py`; the contract tests
+  (`tests/test_compat_policy.py`) pin emitted artifacts to that constant.
+
+  | `schema_version` | Producer |
+  |---|---|
+  | `1.1` | trishul-smi ≥ 0.4.0 |
 
 ---
 

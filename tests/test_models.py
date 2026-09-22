@@ -14,7 +14,6 @@ class TestMibModule:
         assert m.objects == {}
         assert m.types == {}
         assert m.notifications == {}
-        assert m.source_text is None
 
     def test_all_imports_empty(self):
         m = MibModule(name="X", language="SMIv2")

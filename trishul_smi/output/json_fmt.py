@@ -20,6 +20,22 @@ from trishul_smi.output.json_contract import derive_nodetypes, object_class, run
 from trishul_smi.output.json_ir import JsonArtifactMetadata, make_json_artifact_metadata
 
 # Collapse multi-line integer arrays: [ \n  1,\n  3,\n  ... \n] → [1, 3, ...]
+#
+# SAFETY INVARIANT — this regex rewrites the SERIALIZED bytes, so it may only
+# fire on structural JSON, never inside a string value. It is safe because:
+#   * orjson (OPT_INDENT_2) escapes every control character inside string
+#     values — a literal newline becomes the two bytes b"\\n" — so the byte
+#     sequence b"[\n" (open bracket + LF) cannot appear inside a string.
+#   * _norm_desc additionally collapses whitespace in MIB description text
+#     before serialisation, so description content never carries a raw LF
+#     next to a bracket.
+#   * The pattern is anchored on b"[\n" and accepts only lines of bare digit
+#     runs, so it matches exactly the arrays orjson indents for numeric
+#     fields (oid_path, index, constraints, members, ...). Non-numeric arrays
+#     (e.g. string members) never match and are left untouched.
+# If orjson's string-escaping ever changed to emit raw newlines inside
+# strings, this rewrite would corrupt description text — that invariant is
+# pinned by tests/test_json_fmt.py::TestCompactIntArrays.
 _INT_ARRAY_RE = re.compile(r"\[\n(?:\s+\d+,?\n)+\s*\]")
 
 # SMIv2 revision dates: "200003060000Z" or "9912160000Z" → ISO 8601.
@@ -145,10 +161,6 @@ class JsonFormatter:
     ) -> None:
         self._no_texts = no_texts
         self._artifact_metadata = artifact_metadata or make_json_artifact_metadata()
-
-    def set_artifact_metadata(self, artifact_metadata: JsonArtifactMetadata) -> None:
-        """Refresh the shared metadata used for subsequent JSON renders."""
-        self._artifact_metadata = artifact_metadata
 
     def format(self, module: MibModule) -> bytes:
         """Return UTF-8 JSON bytes for *module*."""

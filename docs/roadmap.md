@@ -201,6 +201,21 @@ Runtime robustness & concurrency.
 
 ---
 
+## v0.4.10 — shipped 2026-09-22
+
+Output contracts, determinism & pysnmp deprecation.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | pysnmp `.py` deprecation | done | `DeprecationWarning` + CLI notice; frozen; removal targeted at v0.5.0; `tsmi convert` unaffected. (#24; answers #14) |
+| 2 | JSON bundle compatibility policy | done | `schema_version`/`producer_version` contract documented (architecture.md) + contract tests. (#16) |
+| 3 | `--reproducible` byte-identical outputs | done | Epoch-pinned `generated_at` across module JSON + sidecars. (#23 item 8) |
+| 4 | Offline cache fallback | done | Serves warm non-expired entries on true not-found, with warning; transport failures never fall back. (v0.4.9 review residue) |
+| 5 | Dead-code sweep | done | `source_text`, `set_artifact_metadata`, `common.lark` removed; `add_reader` guard implemented; lazy httpx imports. (#23 items 3/4/5/7) |
+| 6 | Robustness nits | done | Alias skip-path warning; aggregate-cap recoverable; latin-1 decode; `chain.py` raise; `_compact_int_arrays` invariant + tests. (#24 nits) |
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |

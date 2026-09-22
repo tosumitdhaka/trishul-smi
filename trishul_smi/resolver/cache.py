@@ -8,10 +8,12 @@ Cache layout:
 
 Invalidation:
     File mtime vs CompilerConfig.cache_ttl_days. When cache_ttl_days=0
-    entries never expire. Note: since the fetch-first fingerprint design
-    (issue #12), a warm cache alone no longer serves a compile when the
-    source is unreachable — the source is always fetched first so its
-    fingerprint can be checked.
+    entries never expire. Under the fetch-first fingerprint design
+    (issue #12) the source is always fetched first so its fingerprint
+    can be checked. When the source is merely not-found
+    (MibNotFoundError), the resolver falls back to a fingerprint-less
+    cache lookup so offline compiles still work (with a "source
+    unavailable" warning); transport failures never fall back.
 
 Fingerprint invalidation (issue #12):
     Each entry additionally records ``source_fingerprint`` — the sha256 hex
@@ -48,8 +50,11 @@ from trishul_smi.models.mib_type import MibType
 
 
 def _module_to_bytes(module: MibModule, source_fingerprint: str | None = None) -> bytes:
-    """Serialise MibModule to orjson bytes. source_text is intentionally
-    excluded from the cache to keep files small."""
+    """Serialise MibModule to orjson bytes for the disk cache.
+
+    Only the parsed model fields below are stored — raw ASN.1 source text is
+    never cached (the MibModule no longer carries it).
+    """
 
     def _obj(o: MibObject) -> dict[str, Any]:
         return {

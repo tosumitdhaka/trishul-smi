@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from trishul_smi.errors import CircularDependencyError, MibSizeLimitError
+from trishul_smi.errors import (
+    CircularDependencyError,
+    MibNotFoundError,
+    MibSizeLimitError,
+    NetworkError,
+)
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.parser.smi_parser import SmiParser
@@ -106,6 +111,15 @@ class MockReader(AbstractReader):
         if mib_name not in self._texts:
             raise MibNotFoundError(mib_name)
         return self._texts[mib_name]
+
+
+class NetworkErrorReader(AbstractReader):
+    """Raises NetworkError for every request — simulates a reachable but
+    broken source (transport failure), which must NOT trigger the offline
+    cache fallback (only a true MibNotFoundError may)."""
+
+    async def fetch(self, mib_name: str) -> str:
+        raise NetworkError(f"GET {mib_name} failed")
 
 
 # ---------------------------------------------------------------------------
@@ -497,3 +511,111 @@ class TestAliasEdgeCases:
         assert result.ok
         assert result.errors == {}
         assert [m.name for m in result.modules] == ["B-MIB"]
+
+    @pytest.mark.asyncio
+    async def test_alias_skip_path_warns_instead_of_silent_discard(self):
+        """v0.4.9-review L2: when a genuinely-fetchable requested file is
+        skipped because an earlier file in the wave already declared its name,
+        the discard must surface a collision warning on the surviving module —
+        the parse path is last-wins + warns, the skip path was silent
+        first-wins. The discarded file's fetch must still have happened."""
+        misnamed = MINIMAL_V2.replace("TEST-MIB", "B-MIB").replace("testMIB", "bMIB")
+
+        class CountingReader(MockReader):
+            def __init__(self, texts: dict[str, str]) -> None:
+                super().__init__(texts)
+                self.fetched: list[str] = []
+
+            async def fetch(self, mib_name: str) -> str:
+                self.fetched.append(mib_name)
+                return await super().fetch(mib_name)
+
+        reader = CountingReader({"A": misnamed, "B-MIB": misnamed})
+        resolver = MibResolver(reader, SmiParser())
+
+        result = await resolver.resolve(["A", "B-MIB"])
+
+        assert result.ok
+        assert result.errors == {}
+        assert [m.name for m in result.modules] == ["B-MIB"]
+        # B-MIB was genuinely fetched (its content discarded, not skipped).
+        assert reader.fetched == ["A", "B-MIB"]
+        module = result.modules[0]
+        assert any(
+            w == "Module requested as 'B-MIB' was fetched but discarded; "
+            "'B-MIB' was already supplied by 'A'."
+            for w in module.warnings
+        )
+
+
+class TestOfflineCacheFallback:
+    """v0.4.9-review M1: a warm cache must serve a compile when the source is
+    unreachable, without weakening freshness when the source is reachable."""
+
+    @pytest.mark.asyncio
+    async def test_warm_cache_serves_unreachable_source(self, tmp_path: Path):
+        """MibNotFoundError from the source + a warm cache entry → the cached
+        module is served with status 'cached' and a source-unavailable
+        warning."""
+        cache = MibCache(tmp_path, ttl_days=7)
+        cache.put("IF-MIB", _make_module("IF-MIB"))
+        reader = MockReader({})  # IF-MIB genuinely unreachable
+        resolver = MibResolver(reader, SmiParser(), cache=cache)
+
+        result = await resolver.resolve(["IF-MIB"])
+
+        assert result.ok
+        assert result.errors == {}
+        assert result.cached == {"IF-MIB"}
+        assert [m.name for m in result.modules] == ["IF-MIB"]
+        assert any(
+            w == "serving cached 'IF-MIB'; source unavailable" for w in result.modules[0].warnings
+        )
+
+    @pytest.mark.asyncio
+    async def test_network_error_does_not_trigger_fallback(self, tmp_path: Path):
+        """A transport failure (NetworkError) must NOT fall back to cache —
+        only a true not-found (MibNotFoundError) may. A reachable-but-broken
+        source must never be masked by stale cache (v0.3.1 #4 semantics)."""
+        cache = MibCache(tmp_path, ttl_days=7)
+        cache.put("IF-MIB", _make_module("IF-MIB"))
+        resolver = MibResolver(NetworkErrorReader(), SmiParser(), cache=cache)
+
+        result = await resolver.resolve(["IF-MIB"])
+
+        assert not result.ok
+        assert isinstance(result.errors["IF-MIB"], NetworkError)
+        assert result.cached == set()
+        assert result.modules == []
+
+    @pytest.mark.asyncio
+    async def test_cold_cache_unreachable_still_missing(self, tmp_path: Path):
+        """Cold cache + unreachable source → unchanged missing behavior."""
+        cache = MibCache(tmp_path, ttl_days=7)  # empty
+        resolver = MibResolver(MockReader({}), SmiParser(), cache=cache)
+
+        result = await resolver.resolve(["MISSING-MIB"])
+
+        assert "MISSING-MIB" in result.errors
+        assert isinstance(result.errors["MISSING-MIB"], MibNotFoundError)
+        assert result.modules == []
+        assert result.cached == set()
+
+    @pytest.mark.asyncio
+    async def test_expired_entry_not_resurrected(self, tmp_path: Path):
+        """A TTL-expired cache entry must NOT be resurrected by the offline
+        fallback — the TTL still applies to fingerprint-less gets."""
+        cache = MibCache(tmp_path, ttl_days=1)
+        cache.put("IF-MIB", _make_module("IF-MIB"))
+        path = tmp_path / "compiled" / "IF-MIB.json"
+        old_time = time.time() - 2 * 86_400
+        os.utime(path, (old_time, old_time))
+
+        resolver = MibResolver(MockReader({}), SmiParser(), cache=cache)
+
+        result = await resolver.resolve(["IF-MIB"])
+
+        assert "IF-MIB" in result.errors
+        assert isinstance(result.errors["IF-MIB"], MibNotFoundError)
+        assert result.modules == []
+        assert result.cached == set()

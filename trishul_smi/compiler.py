@@ -86,6 +86,9 @@ class MibCompiler:
             )
 
         self._readers: list[FetchProtocol] = []
+        # Set on the first compile() call; add_reader() raises RuntimeError
+        # afterwards (readers are snapshotted into a ReaderChain per run).
+        self._compiled: bool = False
         # Parser is a singleton per compiler — grammar compiled on first parse.
         self._parser = SmiParser()
         # Compiled-module cache (None when cache_dir is None).
@@ -111,6 +114,11 @@ class MibCompiler:
             RuntimeError: if called after compile() has already been invoked
                 (readers are snapshotted into a ReaderChain at compile time).
         """
+        if self._compiled:
+            raise RuntimeError(
+                "Cannot add readers after compile() has been invoked; "
+                "readers are snapshotted into a ReaderChain at compile time."
+            )
         self._readers.append(reader)
         return self
 
@@ -142,6 +150,11 @@ class MibCompiler:
         if not self._readers:
             raise RuntimeError("No readers registered. Call add_reader() before compile().")
 
+        # Set only after the guard above: a compile() that fails validation
+        # must not permanently poison add_reader() with a misleading
+        # "already compiled" error.
+        self._compiled = True
+
         chain = ReaderChain(*self._readers)
         resolver = MibResolver(chain, self._parser, self._cache)
         resolve_result = await resolver.resolve(list(mib_names))
@@ -150,14 +163,16 @@ class MibCompiler:
         json_artifact_metadata: JsonArtifactMetadata | None = None
         formatters = self._formatters
         if any(isinstance(formatter, JsonFormatter) for formatter in self._formatters.values()):
-            json_artifact_metadata = make_json_artifact_metadata()
+            json_artifact_metadata = make_json_artifact_metadata(
+                reproducible=self._config.reproducible
+            )
             # Per-run formatter instances (issue #20): JsonFormatter is
             # stateful — it holds the run's artifact metadata — and mutating
-            # the SHARED instances via set_artifact_metadata() would race
-            # between concurrent compile() calls on one MibCompiler (last
-            # metadata wins; run A's module JSONs could carry run B's
-            # generated_at). Build fresh instances with this run's metadata
-            # baked in at construction instead. FormatterProtocol is unchanged.
+            # the SHARED instances after construction would race between
+            # concurrent compile() calls on one MibCompiler (last metadata
+            # wins; run A's module JSONs could carry run B's generated_at).
+            # Build fresh instances with this run's metadata baked in at
+            # construction instead. FormatterProtocol is unchanged.
             # Only exact JsonFormatter instances (the compiler's own defaults
             # from _make_formatter) are rebuilt; a user-supplied subclass that
             # overrides format() keeps its own behaviour.

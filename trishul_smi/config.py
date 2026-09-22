@@ -74,6 +74,9 @@ class CompilerConfig:
     emit_manifest: bool = False
     emit_oid_index: bool = False
     dry_run: bool = False
+    # Pin generated_at to a fixed epoch so repeated runs over the same source
+    # (and version) emit byte-identical module JSON + sidecars.
+    reproducible: bool = False
 
     def __post_init__(self) -> None:
         if self.max_mib_size <= 0:

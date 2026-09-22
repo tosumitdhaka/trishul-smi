@@ -12,17 +12,23 @@ per ``fetch()`` call is capped at ``4 x max_size``: an archive holding many
 small nested zips must trip the aggregate guard rather than causing unbounded
 time/temp-file churn (bounded memory, unbounded work). MIB-entry (leaf)
 reads never count toward the aggregate.
+
+Aggregate-cap trips are RECOVERABLE (v0.4.9-review L4): the budget raises an
+internal sentinel and ``fetch()`` surfaces ``MibNotFoundError`` so the
+ReaderChain falls through to the next reader/source. Only per-entry
+``max_mib_size`` overruns remain fatal (``MibSizeLimitError``).
 """
 
 from __future__ import annotations
 
 import io
+import logging
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from trishul_smi.errors import MibSizeLimitError
+from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
 from trishul_smi.reader.zipreader import ZipReader
 
 MINIMAL_MIB = """TEST-MIB DEFINITIONS ::= BEGIN
@@ -88,9 +94,12 @@ class TestNestedArchiveSizeLimit:
         assert "TEST-MIB" in text
 
     @pytest.mark.asyncio
-    async def test_many_small_nested_zips_trip_aggregate_cap(self, tmp_path: Path):
+    async def test_many_small_nested_zips_trip_aggregate_cap(self, tmp_path: Path, caplog):
         """Per-entry bounds alone leave an archive of many small nested zips
         unbounded in aggregate work; the 4 x max_size per-fetch cap must trip.
+        The trip is a recoverable miss (MibNotFoundError + warning), NOT a
+        fatal MibSizeLimitError — the 4x aggregate is a heuristic, so a
+        legitimate bundle must degrade to the ReaderChain fall-through (L4).
         """
         max_size = 512
         inner_zip = _zip_bytes({"UNRELATED-MIB.mib": b""})
@@ -101,8 +110,31 @@ class TestNestedArchiveSizeLimit:
         outer.write_bytes(_zip_bytes({f"inner{i}.zip": inner_zip for i in range(20)}))
 
         reader = ZipReader(outer, max_size=max_size)
-        with pytest.raises(MibSizeLimitError, match="aggregate"):
-            await reader.fetch("IF-MIB")
+        with caplog.at_level(logging.WARNING, logger="trishul_smi.reader.zipreader"):
+            with pytest.raises(MibNotFoundError):
+                await reader.fetch("IF-MIB")
+        # The warning names the budget and the archive being scanned.
+        assert any("aggregate" in r.message and "inner" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_aggregate_cap_falls_through_reader_chain(self, tmp_path: Path):
+        """An aggregate-cap trip must surface as MibNotFoundError so the
+        ReaderChain falls through to the next reader/source (L4)."""
+        from trishul_smi.reader.chain import ReaderChain
+        from trishul_smi.reader.localfile import FileReader
+
+        max_size = 512
+        inner_zip = _zip_bytes({"UNRELATED-MIB.mib": b""})
+        outer = tmp_path / "outer.zip"
+        outer.write_bytes(_zip_bytes({f"inner{i}.zip": inner_zip for i in range(20)}))
+
+        fallback = tmp_path / "fallback"
+        fallback.mkdir()
+        (fallback / "IF-MIB.mib").write_text(MINIMAL_MIB)
+
+        chain = ReaderChain(ZipReader(outer, max_size=max_size), FileReader(fallback))
+        text = await chain.fetch("IF-MIB")
+        assert "TEST-MIB" in text
 
     @pytest.mark.asyncio
     async def test_handful_of_nested_zips_stays_under_aggregate_cap(self, tmp_path: Path):

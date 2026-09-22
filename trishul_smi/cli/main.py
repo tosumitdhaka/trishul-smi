@@ -187,6 +187,14 @@ def compile(  # noqa: A001
             "Structural metadata (OIDs, dates, types) is always preserved.",
         ),
     ] = False,
+    reproducible: Annotated[
+        bool,
+        typer.Option(
+            "--reproducible",
+            help="Pin generated_at to a fixed epoch so repeated compiles of the "
+            "same source produce byte-identical output files.",
+        ),
+    ] = False,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show per-module output paths."),
@@ -212,12 +220,23 @@ def compile(  # noqa: A001
             no_texts=no_texts,
             emit_manifest=emit_manifest,
             emit_oid_index=emit_oid_index,
+            reproducible=reproducible,
             **extra,
         )
         compiler = MibCompiler(config)
     except ValueError as exc:
         err.print(f"[bold red]Configuration error:[/bold red] {exc}")
         raise typer.Exit(2) from exc
+
+    # pysnmp output deprecation (issue #24): visible one-line notice on stderr,
+    # consistent with the CLI's other warning prints. The format is frozen and
+    # will be removed in v0.5.0; output is still produced — deprecation, not removal.
+    if "pysnmp" in config.formats:
+        err.print(
+            "[yellow]DeprecationWarning:[/yellow] pysnmp output is deprecated and "
+            "will be removed in v0.5.0. Use the JSON bundle output instead: "
+            "--format json (optionally with --emit-manifest / --emit-oid-index)."
+        )
 
     use_http = online or bool(sources)
 

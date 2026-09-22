@@ -1,4 +1,4 @@
-"""pysnmp output formatter — best-effort, frozen.
+"""pysnmp output formatter — deprecated, frozen, removal planned for v0.5.0.
 
 This formatter is not actively developed. For production pysnmp output use
 pysmi (https://github.com/lextudio/pysmi), which is maintained by the pysnmp
@@ -8,10 +8,17 @@ feature changes.
 Generates a Python module that can be loaded by pysnmp\'s MibBuilder.
 
 Output file: {output_dir}/{ModuleName}.py
+
+Deprecated since v0.4.10 (issue #24): constructing ``PysnmpFormatter`` emits a
+``DeprecationWarning``; the format is frozen — known escaping and ``_pyid``
+keyword-collision gaps are accepted as-is — and will be removed in v0.5.0.
+Migrate to the JSON bundle output instead (``--format json``, optionally with
+``--emit-manifest`` / ``--emit-oid-index`` for the bundle sidecars).
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from jinja2 import BaseLoader, Environment
@@ -401,11 +408,23 @@ def _make_env() -> Environment:
 
 
 class PysnmpFormatter:
-    """Renders a MibModule as a pysnmp-compatible Python module."""
+    """Renders a MibModule as a pysnmp-compatible Python module.
+
+    Deprecated (issue #24): constructing this formatter emits a
+    ``DeprecationWarning``. The output is frozen and will be removed in
+    v0.5.0; use the JSON bundle output (``--format json``) instead.
+    """
 
     FILE_SUFFIX = ".py"
 
     def __init__(self, no_texts: bool = False) -> None:
+        warnings.warn(
+            "PysnmpFormatter (pysnmp .py output) is deprecated and will be removed "
+            "in v0.5.0. Use the JSON bundle output instead: --format json, "
+            "optionally with --emit-manifest / --emit-oid-index.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._env = _make_env()
         self._tmpl = self._env.from_string(_TEMPLATE)
         self._no_texts = no_texts

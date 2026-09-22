@@ -30,6 +30,12 @@ Error handling
 - Failed modules' transitive dependencies are not explored: if module A
   fails to fetch or parse, A's imports are never queued. Callers should
   not assume all reachable dependencies will appear in ResolveResult.errors.
+- A true source not-found (MibNotFoundError) first checks the disk cache:
+  a warm (non-expired) entry is served with a "source unavailable" warning,
+  so offline/air-gapped compiles keep working (L1). Only genuine not-found
+  gets this fallback — transport failures (NetworkError and friends) always
+  surface as per-module errors and never mask stale cache behind a
+  reachable-but-broken source.
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ import asyncio
 import hashlib
 from dataclasses import dataclass, field
 
-from trishul_smi.errors import MibSizeLimitError
+from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.parser._constants import BASE_MIBS
 from trishul_smi.parser.smi_parser import SmiParser
@@ -78,6 +84,8 @@ class ResolveResult:
 
     These modules were loaded from ``MibCache`` rather than re-parsed, so
     callers can surface a distinct ``cached`` status instead of ``compiled``.
+    Includes modules served by the offline fallback (a warm cache entry used
+    because the source was unreachable — L1).
     """
 
     @property
@@ -98,7 +106,9 @@ class MibResolver:
         cache:  Optional MibCache. When provided, compiled modules are read
                 from / written to disk, skipping re-parse on subsequent runs
                 (the source is still fetched so its content fingerprint can
-                be checked — issue #12).
+                be checked — issue #12). When the source is unreachable
+                (MibNotFoundError), a warm cache entry is served instead of
+                failing the compile (offline fallback, L1).
     """
 
     def __init__(
@@ -216,6 +226,21 @@ class MibResolver:
                         # requested and cannot be fetched). The declared-name
                         # copy is authoritative — skip so we do not report the
                         # module as both compiled and missing (issue #25).
+                        # A successfully-fetched file skipped here would
+                        # otherwise have its content silently discarded
+                        # (first-wins, no warning) — inconsistent with the
+                        # parse path, which warns and is last-wins. Surface a
+                        # collision warning on the surviving module (L2).
+                        if isinstance(result, str):
+                            survivor = fetched[name]
+                            supplier = declared_by.get(name, "another requested file")
+                            warning = (
+                                f"Module requested as {name!r} was fetched but "
+                                f"discarded; {name!r} was already supplied by "
+                                f"{supplier!r}."
+                            )
+                            if warning not in survivor.warnings:
+                                survivor.warnings.append(warning)
                         continue
                     if isinstance(result, MibSizeLimitError):
                         # Propagate immediately — size limit is a config
@@ -227,6 +252,32 @@ class MibResolver:
                         # "No active exception to re-raise".
                         raise result
                     elif isinstance(result, Exception):
+                        # A genuine not-found first checks the disk cache:
+                        # when the source is unreachable but a warm (non-
+                        # expired) entry exists, serve it rather than failing
+                        # the compile (offline fallback, L1). The fingerprint
+                        # check is intentionally skipped — there is no fetched
+                        # source to fingerprint, and the TTL still applies.
+                        # Transport failures (NetworkError and friends) are
+                        # NOT not-found: a reachable-but-broken source must
+                        # never be masked by stale cache, so they fall through
+                        # to the per-module error collection unchanged.
+                        if isinstance(result, MibNotFoundError) and self._cache is not None:
+                            cached_module = self._cache.get(name)
+                            if cached_module is not None:
+                                warning = f"serving cached {name!r}; source unavailable"
+                                if warning not in cached_module.warnings:
+                                    cached_module.warnings.append(warning)
+                                self._record_module(
+                                    fetched,
+                                    declared_by,
+                                    resolved_this_wave,
+                                    name,
+                                    cached_module,
+                                )
+                                self._reconcile_name(aliases, name, cached_module)
+                                cached.add(cached_module.name)
+                                continue
                         errors[name] = result
                     elif isinstance(result, BaseException):
                         # KeyboardInterrupt / SystemExit must not be silently

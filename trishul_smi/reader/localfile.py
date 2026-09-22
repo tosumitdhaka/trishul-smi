@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
 from trishul_smi.reader.base import AbstractReader
+
+_logger = logging.getLogger("trishul_smi.reader")
 
 _EXTENSIONS = ["", ".mib", ".txt", ".my"]
 
@@ -30,7 +33,18 @@ class FileReader(AbstractReader):
                     raise MibSizeLimitError(
                         f"{candidate} exceeds size limit of {self._max_size} bytes"
                     )
-                return data.decode("utf-8", errors="replace")
+                try:
+                    return data.decode("utf-8")
+                except UnicodeDecodeError:
+                    # Old vendor MIBs are sometimes latin-1. latin-1 maps every
+                    # byte 1:1, so re-decoding is lossless — the round-trip
+                    # bytes are preserved instead of being silently replaced
+                    # with U+FFFD (issue #24).
+                    _logger.warning(
+                        "%s is not valid UTF-8; falling back to latin-1 decode",
+                        candidate,
+                    )
+                    return data.decode("latin-1")
         raise MibNotFoundError(
             f"MIB '{mib_name}' not found in directories: " + ", ".join(str(d) for d in self._dirs)
         )

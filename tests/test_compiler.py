@@ -18,6 +18,11 @@ from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.pysnmp_fmt import PysnmpFormatter, _pysnmp_obj_class
 from trishul_smi.reader.chain import ReaderChain
 
+# Legacy pysnmp-output tests construct PysnmpFormatter, which is deprecated
+# (v0.4.10). The deprecation contract itself is pinned in
+# tests/test_pysnmp_deprecation.py; here we only silence the expected noise.
+pytestmark = pytest.mark.filterwarnings("ignore:PysnmpFormatter:DeprecationWarning")
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -415,6 +420,39 @@ class TestMibCompiler:
             .add_reader(MockReader({}))
             .add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
         )
+        results = await compiler.compile("TEST-MIB")
+        assert any(r.status == "compiled" and r.name == "TEST-MIB" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_add_reader_after_compile_raises(self, tmp_path: Path):
+        """Issue #23 item 3 — the add_reader() docstring promise is now real:
+        adding a reader after compile() has been invoked raises RuntimeError."""
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+
+        await compiler.compile("TEST-MIB")
+
+        with pytest.raises(RuntimeError, match="after compile"):
+            compiler.add_reader(MockReader({"OTHER-MIB": MINIMAL_V2}))
+
+    def test_add_reader_before_compile_is_allowed(self):
+        config = CompilerConfig(cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config)
+        returned = compiler.add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        assert returned is compiler
+        assert len(compiler._readers) == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_compile_does_not_poison_add_reader(self, tmp_path: Path):
+        """A compile() that fails validation (no readers registered) must not
+        set the compiled flag — add_reader stays usable afterwards (review L1)."""
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config)
+
+        with pytest.raises(RuntimeError, match="No readers registered"):
+            await compiler.compile("TEST-MIB")
+
+        compiler.add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
         results = await compiler.compile("TEST-MIB")
         assert any(r.status == "compiled" and r.name == "TEST-MIB" for r in results)
 
