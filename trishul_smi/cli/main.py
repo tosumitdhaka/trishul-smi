@@ -39,7 +39,7 @@ from rich.console import Console
 from rich.table import Table
 
 from trishul_smi.compiler import MibCompiler
-from trishul_smi.config import CompilerConfig
+from trishul_smi.config import CompilerConfig, validate_mib_name
 from trishul_smi.models import CompileResult
 
 app = typer.Typer(
@@ -143,7 +143,7 @@ def compile(  # noqa: A001
         bool,
         typer.Option(
             "--online",
-            help="Fetch missing MIBs from HTTP sources (pysnmp.com + circitor.fr). "
+            help="Fetch missing MIBs from HTTP sources (mibs.pysnmp.com + mibbrowser.online). "
             "Off by default — use --mib-dir for local-only operation.",
         ),
     ] = False,
@@ -257,6 +257,25 @@ def compile(  # noqa: A001
             )
             raise typer.Exit(2)
         console.print(f"[dim]Discovered {len(resolved_names)} MIBs from --mib-dir[/dim]")
+
+    # MIB-name validation choke point (issue #22): every name that reaches the
+    # compiler — explicit CLI args AND --mib-dir auto-discovered stems — flows
+    # through resolved_names, so this single loop covers both entry paths.
+    # Names are later interpolated into filesystem paths (FileReader) and HTTP
+    # URL templates (HttpReader); rejecting anything outside the allowlist here
+    # prevents path/URL escapes. Report each offender as a clear per-name usage
+    # error (exit 2), never an unhandled crash.
+    invalid_names: list[str] = []
+    for name in resolved_names:
+        try:
+            validate_mib_name(name)
+        except ValueError as exc:
+            invalid_names.append(str(exc))
+    if invalid_names:
+        for msg in invalid_names:
+            err.print(f"[bold red]Error:[/bold red] {msg}")
+        err.print("No MIBs were compiled — fix the invalid name(s) and retry.")
+        raise typer.Exit(2)
 
     console.print(
         f"[bold]Compiling[/bold] {', '.join(resolved_names)} → "

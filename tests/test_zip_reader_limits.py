@@ -1,0 +1,106 @@
+"""Issue #17: ZipReader must bound nested-archive reads by max_mib_size.
+
+A small outer ZIP containing a highly-compressed nested archive must not be
+fully decompressed into memory before the limit check runs (zip-bomb DoS).
+Both MIB entries and nested-ZIP entries are read with a bounded
+``max_size + 1`` read at every recursion depth, and oversized content raises
+MibSizeLimitError. The limit is always a positive int (CompilerConfig
+validates ``max_mib_size > 0``); there is no unlimited/None mode to mirror.
+"""
+
+from __future__ import annotations
+
+import io
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from trishul_smi.errors import MibSizeLimitError
+from trishul_smi.reader.zipreader import ZipReader
+
+MINIMAL_MIB = """TEST-MIB DEFINITIONS ::= BEGIN
+END
+"""
+
+
+def _zip_bytes(entries: dict[str, bytes], compress_type: int = zipfile.ZIP_DEFLATED) -> bytes:
+    """Build an in-memory ZIP archive (no temp files needed)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=compress_type) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content, compress_type=compress_type)
+    return buf.getvalue()
+
+
+class TestNestedArchiveSizeLimit:
+    @pytest.mark.asyncio
+    async def test_oversized_nested_archive_raises_size_limit(self, tmp_path: Path):
+        """A nested archive whose *uncompressed* bytes exceed the limit must
+        raise MibSizeLimitError even though it compresses to a tiny blob in
+        the outer ZIP — the exact zip-bomb shape from issue #17.
+        """
+        max_size = 512
+        blob = b"\x00" * (max_size * 2)
+        # Stored (not deflated) so the inner archive's file bytes stay large.
+        inner_zip = _zip_bytes({"BIG-MIB.mib": blob}, compress_type=zipfile.ZIP_STORED)
+        assert len(inner_zip) > max_size  # decompressed nested archive exceeds limit
+        outer = tmp_path / "outer.zip"
+        outer.write_bytes(_zip_bytes({"inner.zip": inner_zip}))  # deflates to a tiny outer
+
+        reader = ZipReader(outer, max_size=max_size)
+        with pytest.raises(MibSizeLimitError):
+            await reader.fetch("BIG-MIB")
+
+    @pytest.mark.asyncio
+    async def test_oversized_mib_entry_inside_nested_archive(self, tmp_path: Path):
+        """An oversized MIB entry *inside* a nested archive must hit the same
+        per-entry size check as a top-level one.
+        """
+        max_size = 512
+        big_mib = b"x" * 1024
+        inner_zip = _zip_bytes({"BIG-MIB.mib": big_mib})
+        assert len(inner_zip) <= max_size  # the archive itself passes; the entry trips
+        outer = tmp_path / "outer.zip"
+        outer.write_bytes(_zip_bytes({"inner.zip": inner_zip}))
+
+        reader = ZipReader(outer, max_size=max_size)
+        with pytest.raises(MibSizeLimitError):
+            await reader.fetch("BIG-MIB")
+
+    @pytest.mark.asyncio
+    async def test_nested_archive_under_limit_extracts(self, tmp_path: Path):
+        """Regression: a nested archive within the limit still extracts and
+        decodes a valid MIB.
+        """
+        inner_zip = _zip_bytes({"IF-MIB.mib": MINIMAL_MIB.encode()})
+        outer = tmp_path / "outer.zip"
+        outer.write_bytes(_zip_bytes({"inner.zip": inner_zip}))
+
+        reader = ZipReader(outer, max_size=1024 * 1024)
+        text = await reader.fetch("IF-MIB")
+        assert "TEST-MIB" in text
+
+    @pytest.mark.asyncio
+    async def test_oversized_archive_at_max_depth_still_bounded(self, tmp_path: Path):
+        """An oversized nested archive encountered at the deepest recursion
+        level (depth 4) is still caught by the bounded read — it raises
+        MibSizeLimitError instead of recursing into the unbounded read or
+        being silently dropped by the depth guard.
+        """
+        max_size = 512
+        blob = b"\x00" * (max_size * 2)
+        leaf_zip = _zip_bytes({"payload.bin": blob}, compress_type=zipfile.ZIP_STORED)
+        assert len(leaf_zip) > max_size
+
+        # Wrap the oversized archive in 5 ZIP levels so the bounded read that
+        # trips the limit happens at _depth == 4 (the max level that reads).
+        current = leaf_zip
+        for _ in range(5):
+            current = _zip_bytes({"nested.zip": current})
+        outer = tmp_path / "outer.zip"
+        outer.write_bytes(current)
+
+        reader = ZipReader(outer, max_size=max_size)
+        with pytest.raises(MibSizeLimitError):
+            await reader.fetch("IF-MIB")

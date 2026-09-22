@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from trishul_smi.config import CompilerConfig
+from trishul_smi.config import MIB_NAME_PATTERN, CompilerConfig, validate_mib_name
 
 
 class TestDefaults:
@@ -87,3 +87,47 @@ class TestValidators:
         c = CompilerConfig(formats=["json", "pysnmp"], emit_manifest=True, emit_oid_index=True)
         assert c.emit_manifest is True
         assert c.emit_oid_index is True
+
+
+class TestValidateMibName:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "IF-MIB",
+            "mib-802.1ap",  # lowercase + dots — real corpus stems must pass
+            "SNMPv2-SMI",
+            "lower-case.name",
+            "A1",
+            "a_1.b-c",
+            "x" * 100,  # no length cap — only the character set is checked
+        ],
+    )
+    def test_valid_names_accepted(self, name: str):
+        validate_mib_name(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "../../etc/passwd",  # path traversal
+            "foo/bar",  # path separator
+            "foo?x=1",  # URL query chars
+            "@evil",  # URL-special leading char
+            ":",  # not alphanumeric
+            ".hidden",  # leading dot
+            "..",  # relative path
+            "foo bar",  # whitespace
+            "foo#frag",  # URL fragment
+            "",  # empty
+        ],
+    )
+    def test_invalid_names_raise(self, name: str):
+        with pytest.raises(ValueError, match=r"Invalid MIB name"):
+            validate_mib_name(name)
+
+    def test_invalid_name_message_is_actionable(self):
+        with pytest.raises(ValueError, match=r"allowed|must match") as exc_info:
+            validate_mib_name("../../etc/passwd")
+        assert "../../etc/passwd" in str(exc_info.value)
+
+    def test_pattern_matches_issue_spec(self):
+        assert MIB_NAME_PATTERN == r"^[A-Za-z0-9][A-Za-z0-9._-]*$"

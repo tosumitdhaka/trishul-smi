@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import typer
 from click.testing import CliRunner
 
@@ -156,6 +157,14 @@ class TestCompileArgs:
     def test_negative_retries_exits_2(self):
         result = _invoke(["compile", "IF-MIB", "--online", "--retries", "-1"])
         assert result.exit_code == 2
+
+    def test_online_help_names_real_sources(self):
+        """--online help must advertise the actual default sources."""
+        result = _invoke(["compile", "--help"])
+        assert result.exit_code == 0
+        assert "mibs.pysnmp.com" in result.output
+        assert "mibbrowser.online" in result.output
+        assert "circitor" not in result.output
 
     def test_zero_timeout_exits_2(self):
         result = _invoke(["compile", "IF-MIB", "--online", "--timeout", "0"])
@@ -367,6 +376,49 @@ class TestMibDir:
             result = _invoke(["compile", "IF-MIB", "-d", str(fake_dir), "--online"])
         assert result.exit_code == 0
         assert "not a directory" in result.output or "Warning" in result.output
+
+
+# ---------------------------------------------------------------------------
+# compile — MIB name validation (#22)
+# ---------------------------------------------------------------------------
+
+
+class TestMibNameValidation:
+    def test_path_traversal_name_rejected(self):
+        """compile ../../etc/passwd -d . must exit 2 and never run a reader."""
+        with patch("trishul_smi.cli.main._compile_async") as compile_run:
+            result = _invoke(["compile", "../../etc/passwd", "-d", "."])
+        assert result.exit_code == 2
+        assert "../../etc/passwd" in result.output
+        assert "Invalid MIB name" in result.output
+        compile_run.assert_not_called()
+
+    @pytest.mark.parametrize("bad_name", ["foo/bar", "foo?x=1", "@evil", ":"])
+    def test_invalid_names_rejected(self, bad_name: str):
+        result = _invoke(["compile", bad_name, "--online"])
+        assert result.exit_code == 2
+        assert "Invalid MIB name" in result.output
+        assert bad_name in result.output
+
+    @pytest.mark.parametrize("valid_name", ["mib-802.1ap", "SNMPv2-SMI", "lower-case.name"])
+    def test_odd_but_valid_names_accepted(self, valid_name: str):
+        """Validation must not be the failure point for legal odd names."""
+        with _patch_run([_make_result(valid_name)]):
+            result = _invoke(["compile", valid_name, "--online"])
+        assert result.exit_code == 0
+
+    def test_discovered_bad_stem_reports_per_name_error(self, tmp_path: Path):
+        """A --mib-dir stem outside the allowlist is a clear error, not a crash."""
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        (mib_dir / "weird name.my").write_text("", encoding="utf-8")
+
+        result = _invoke(["compile", "-d", str(mib_dir)])
+
+        assert result.exit_code == 2
+        assert "Invalid MIB name" in result.output
+        assert "'weird name'" in result.output
+        assert "Traceback" not in result.output
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # Source-controlled producer version used by emitted artifacts.
-VERSION = "0.4.7"
+VERSION = "0.4.8"
 
 
 def get_producer_version() -> str:

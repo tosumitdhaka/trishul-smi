@@ -196,7 +196,7 @@ class FetchProtocol(Protocol):
 
 **Key contracts:**
 - `FileReader` — reads from local filesystem directories, enforces `max_mib_size`
-- `HttpReader` — `httpx.AsyncClient`, `tenacity` retry with exponential backoff, `async with` context manager; in-memory TTL cache per process
+- `HttpReader` — `httpx.AsyncClient` (follows redirects), `tenacity` retry with exponential backoff, `async with` context manager; responses are consumed as a stream with an early abort once the byte count exceeds `max_mib_size`; 404/410 on the GET is authoritative for `MibNotFoundError`, other non-2xx and transport failures map to `NetworkError`
 - `ZipReader` — reads MIBs from in-memory ZIP archives
 - `ReaderChain` — tries each reader in order; **only `MibNotFoundError` triggers fallback**, all other errors propagate immediately
 
@@ -383,7 +383,7 @@ trishul-smi convert FILE.py   [OPTIONS]
 trishul-smi version
 ```
 
-**compile:** constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → optionally enables JSON sidecars via `--emit-manifest` / `--emit-oid-index` → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2. MIB names may be omitted to auto-discover every MIB file in `--mib-dir` directories.
+**compile:** constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → optionally enables JSON sidecars via `--emit-manifest` / `--emit-oid-index` → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2. MIB names may be omitted to auto-discover every MIB file in `--mib-dir` directories. Explicit and discovered names are validated against a safe-character allowlist (`^[A-Za-z0-9][A-Za-z0-9._-]*$`); invalid names exit with code 2 before any fetch.
 
 **convert:** reads a compiled PySNMP `.py` file via `PySNMPReader` → emits JSON via `JsonFormatter`. No network or grammar required.
 

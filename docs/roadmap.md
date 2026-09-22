@@ -173,6 +173,19 @@ Real-world MIB correctness.
 
 ---
 
+## v0.4.8 — shipped 2026-09-22
+
+Fetch-layer limits & input hardening.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | ZipReader nested-archive size enforcement | done | Bounded reads at every depth; `MibSizeLimitError` before extraction. (#17) |
+| 2 | HttpReader fetch semantics rework | done | Streaming consume with early abort; HEAD pre-check and dead ETag/304 machinery removed; GET authoritative for not-found; redirects followed. (#18) |
+| 3 | CLI MIB-name validation | done | Allowlist `^[A-Za-z0-9][A-Za-z0-9._-]*$`, exit 2, covers explicit + discovered names; surfaced a junk-named `$.mib` (real content: UUID-TC-MIB) in the local corpus, since renamed. (#22) |
+| 4 | `--online` help text fix | done | Names the real default sources (`mibs.pysnmp.com` + `mibbrowser.online`). (#23 item 2; remainder of #23 → v0.4.10) |
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |

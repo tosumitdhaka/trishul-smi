@@ -1,11 +1,39 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 # Single source of truth for valid output format names.
 # compiler.py imports this to build _FORMATTER_CLASSES — add new formats here.
 VALID_FORMATS: frozenset[str] = frozenset({"json", "pysnmp"})
+
+# Allowlist for MIB names accepted from the CLI (issue #22). Names flow into
+# filesystem paths (FileReader: directory / f"{name}{ext}") and HTTP URL
+# templates (HttpReader: template.replace("@mib@", name)), so anything that
+# could escape a directory or steer a URL is rejected up front. Discovered
+# --mib-dir stems must pass too (e.g. "mib-802.1ap"), hence dots, underscores,
+# and hyphens are allowed; a leading dot is not (it permits hidden / relative
+# names like ".."). No leading dot, no path separators, no URL-special chars.
+MIB_NAME_PATTERN: str = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+_MIB_NAME_RE: re.Pattern[str] = re.compile(MIB_NAME_PATTERN)
+
+
+def validate_mib_name(name: str) -> None:
+    """Validate a MIB name against the allowlist.
+
+    Raises
+    ------
+    ValueError
+        If *name* starts with a non-alphanumeric character or contains
+        anything outside ``[A-Za-z0-9._-]`` (e.g. path separators or
+        URL-special characters).
+    """
+    if not _MIB_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"Invalid MIB name {name!r}: must match {MIB_NAME_PATTERN} "
+            "(start with a letter or digit; then only letters, digits, '.', '_', '-')."
+        )
 
 
 @dataclass

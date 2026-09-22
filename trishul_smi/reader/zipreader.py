@@ -16,6 +16,11 @@ class ZipReader(AbstractReader):
 
     Handles nested ZIPs — `data = b""` is initialised before the read loop,
     fixing the pysmi NameError-on-nested-ZIP bug.
+
+    Size guard (issue #17): every read — MIB entries and nested ZIP entries,
+    at every recursion depth — is bounded to ``max_size + 1`` bytes, and
+    oversized content raises MibSizeLimitError, so a highly-compressed nested
+    archive cannot be fully decompressed into memory (zip-bomb DoS).
     """
 
     def __init__(self, *zip_paths: str | Path, max_size: int = 10 * 1024 * 1024) -> None:
@@ -48,7 +53,7 @@ class ZipReader(AbstractReader):
                     if p.stem == mib_name and p.suffix.lower() in _MIB_SUFFIXES:
                         data: bytes = b""  # initialised before read — no NameError
                         with zf.open(entry) as fh:
-                            data = fh.read()
+                            data = fh.read(self._max_size + 1)
                         if len(data) > self._max_size:
                             raise MibSizeLimitError(
                                 f"{entry} in {zip_path} exceeds limit {self._max_size}"
@@ -60,7 +65,11 @@ class ZipReader(AbstractReader):
                         continue
                     data = b""  # reset before each nested read
                     with zf.open(entry) as fh:
-                        data = fh.read()
+                        data = fh.read(self._max_size + 1)
+                    if len(data) > self._max_size:
+                        raise MibSizeLimitError(
+                            f"{entry} in {zip_path} exceeds limit {self._max_size}"
+                        )
                     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                         tmp.write(data)
                         tmp_path = Path(tmp.name)

@@ -1,10 +1,15 @@
 """Tests for HttpReader using pytest-httpx to intercept HTTP calls.
 
 Each test class covers a distinct behavioural contract:
-  TestHttpReaderBasic     — happy path, 404, size limits, CM guard
-  TestHttpReaderETag      — ETag / 304 / disk-cache interaction
-  TestHttpReaderFallback  — multiple source URLs, all-fail path
-  TestHttpReaderCache     — atomic write, no stale .tmp files
+  TestHttpReaderBasic       — happy path, streaming size limit, CM guard
+  TestHttpReaderNoHead      — GET is authoritative; HEAD is never sent
+  TestHttpReaderErrorMap    — not-found vs transport/server error mapping
+  TestHttpReaderFallback    — multiple source URLs, all-fail path
+  TestHttpReaderCache       — atomic write, no stale .tmp files
+
+The reader performs a single streaming GET per fetch: there is no HEAD
+pre-check and no ETag/304 machinery (both removed in the fetch-semantics
+rework), so no test registers HEAD responses.
 """
 
 from __future__ import annotations
@@ -31,46 +36,81 @@ _MINIMAL = "IF-MIB DEFINITIONS ::= BEGIN\nEND\n"
 class TestHttpReaderBasic:
     @pytest.mark.asyncio
     async def test_successful_fetch_returns_text(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
         httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text=_MINIMAL)
         async with HttpReader(_TEMPLATE) as reader:
             result = await reader.fetch("IF-MIB")
         assert result == _MINIMAL
 
     @pytest.mark.asyncio
-    async def test_head_404_raises_mib_not_found(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=404)
-        async with HttpReader(_TEMPLATE) as reader:
-            with pytest.raises(MibNotFoundError, match="IF-MIB"):
-                await reader.fetch("IF-MIB")
-
-    @pytest.mark.asyncio
     async def test_get_404_raises_mib_not_found(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
         httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=404)
         async with HttpReader(_TEMPLATE) as reader:
             with pytest.raises(MibNotFoundError, match="404"):
                 await reader.fetch("IF-MIB")
 
     @pytest.mark.asyncio
-    async def test_content_length_exceeds_limit_raises(self, httpx_mock: HTTPXMock):
+    async def test_get_410_raises_mib_not_found(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=410)
+        async with HttpReader(_TEMPLATE) as reader:
+            with pytest.raises(MibNotFoundError, match="410"):
+                await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_malformed_content_length_is_ignored(self, httpx_mock: HTTPXMock):
+        """A malformed Content-Length must not be parsed as a network error."""
         httpx_mock.add_response(
             url=_IF_MIB_URL,
-            method="HEAD",
-            status_code=200,
-            headers={"content-length": "2048"},
+            method="GET",
+            headers={"content-length": "abc"},
+            text=_MINIMAL,
+        )
+        async with HttpReader(_TEMPLATE) as reader:
+            result = await reader.fetch("IF-MIB")
+        assert result == _MINIMAL
+
+    @pytest.mark.asyncio
+    async def test_streamed_body_exceeds_limit_raises(self, httpx_mock: HTTPXMock):
+        """Streaming counts the real body — no HEAD/Content-Length pre-check."""
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text="x" * 1024)
+        async with HttpReader(_TEMPLATE, max_size=512) as reader:
+            with pytest.raises(MibSizeLimitError):
+                await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_lying_content_length_cannot_bypass_limit(self, httpx_mock: HTTPXMock):
+        """A small Content-Length on a large chunked body must still trip the cap."""
+        httpx_mock.add_response(
+            url=_IF_MIB_URL,
+            method="GET",
+            headers={"content-length": "10"},
+            text="x" * 1024,
         )
         async with HttpReader(_TEMPLATE, max_size=512) as reader:
             with pytest.raises(MibSizeLimitError):
                 await reader.fetch("IF-MIB")
 
     @pytest.mark.asyncio
-    async def test_response_body_exceeds_limit_raises(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
-        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text="x" * 1024)
+    async def test_body_exactly_at_limit_succeeds(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text="x" * 512)
+        async with HttpReader(_TEMPLATE, max_size=512) as reader:
+            result = await reader.fetch("IF-MIB")
+        assert result == "x" * 512
+
+    @pytest.mark.asyncio
+    async def test_body_one_byte_over_limit_raises(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text="x" * 513)
         async with HttpReader(_TEMPLATE, max_size=512) as reader:
             with pytest.raises(MibSizeLimitError):
                 await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_unlimited_max_size_accepts_large_body(self, httpx_mock: HTTPXMock):
+        """max_size=None disables the cap but keeps the streaming path."""
+        body = "x" * 20_000
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text=body)
+        async with HttpReader(_TEMPLATE, max_size=None) as reader:
+            result = await reader.fetch("IF-MIB")
+        assert result == body
 
     @pytest.mark.asyncio
     async def test_context_manager_required(self):
@@ -81,83 +121,82 @@ class TestHttpReaderBasic:
 
 
 # ---------------------------------------------------------------------------
-# ETag / 304 caching
+# GET is authoritative: HEAD is never sent
 # ---------------------------------------------------------------------------
 
 
-class TestHttpReaderETag:
+class TestHttpReaderNoHead:
     @pytest.mark.asyncio
-    async def test_304_with_disk_cache_returns_cached_content(
-        self, httpx_mock: HTTPXMock, tmp_path: Path
-    ):
-        """304 response + matching disk cache → no second GET needed."""
-        cache_dir = tmp_path / "cache"
+    @pytest.mark.parametrize("head_status", [404, 405])
+    async def test_head_failure_does_not_block_get(self, httpx_mock: HTTPXMock, head_status: int):
+        """Servers that mishandle HEAD (404/405 on HEAD, 200 on GET) must work.
 
-        # First fetch: HEAD + GET — writes disk cache
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
+        The failing HEAD response is registered as optional: if the reader ever
+        regresses to sending HEAD, the fetch fails on it and this test errors.
+        """
         httpx_mock.add_response(
             url=_IF_MIB_URL,
-            method="GET",
-            text=_MINIMAL,
-            headers={"etag": '"abc123"'},
+            method="HEAD",
+            status_code=head_status,
+            is_optional=True,
         )
-        # Second fetch (same reader, ETag in memory): HEAD + GET 304 — reads disk cache
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
-        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=304)
-
-        async with HttpReader(_TEMPLATE, cache_dir=cache_dir, cache_ttl_days=0) as reader:
-            first = await reader.fetch("IF-MIB")  # populates ETag + disk cache
-            second = await reader.fetch("IF-MIB")  # 304 → disk cache hit
-
-        assert first == _MINIMAL
-        assert second == _MINIMAL
-
-    @pytest.mark.asyncio
-    async def test_304_without_disk_cache_falls_back_to_unconditional_get(
-        self, httpx_mock: HTTPXMock
-    ):
-        """304 + no cache_dir → stale ETag cleared, unconditional GET issued."""
-        # First fetch: HEAD + GET (no disk cache_dir)
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
-        httpx_mock.add_response(
-            url=_IF_MIB_URL,
-            method="GET",
-            text=_MINIMAL,
-            headers={"etag": '"abc123"'},
-        )
-        # Second fetch: HEAD + GET 304 + retry (HEAD + unconditional GET)
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
-        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=304)
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
         httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text=_MINIMAL)
 
-        async with HttpReader(_TEMPLATE, cache_ttl_days=0) as reader:  # no cache_dir
-            await reader.fetch("IF-MIB")
+        async with HttpReader(_TEMPLATE) as reader:
             result = await reader.fetch("IF-MIB")
 
         assert result == _MINIMAL
+        assert {r.method for r in httpx_mock.get_requests()} == {"GET"}
+
+
+# ---------------------------------------------------------------------------
+# Error mapping: not-found vs transport/server failure
+# ---------------------------------------------------------------------------
+
+
+class TestHttpReaderErrorMap:
+    @pytest.mark.asyncio
+    async def test_get_404_is_not_found_not_network_error(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=404)
+        async with HttpReader(_TEMPLATE) as reader:
+            with pytest.raises(MibNotFoundError, match="404"):
+                await reader.fetch("IF-MIB")
 
     @pytest.mark.asyncio
-    async def test_etag_header_sent_on_second_request(self, httpx_mock: HTTPXMock, tmp_path: Path):
-        """If-None-Match header must be present on the second GET."""
-        cache_dir = tmp_path / "cache"
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
+    async def test_server_error_is_network_error_not_not_found(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=500)
+        async with HttpReader(_TEMPLATE) as reader:
+            with pytest.raises(NetworkError, match="500"):
+                await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_redirect_is_followed_not_network_error(self, httpx_mock: HTTPXMock):
+        """A redirect to an existing MIB must resolve, not be classified as a
+        network failure — 3xx is transport plumbing, and the GET response
+        after redirects is authoritative."""
         httpx_mock.add_response(
             url=_IF_MIB_URL,
             method="GET",
-            text=_MINIMAL,
-            headers={"etag": '"abc123"'},
+            status_code=301,
+            headers={"Location": "https://backup.example.com/IF-MIB"},
         )
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
-        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=304)
+        httpx_mock.add_response(
+            url="https://backup.example.com/IF-MIB", method="GET", text=_MINIMAL
+        )
+        async with HttpReader(_TEMPLATE) as reader:
+            result = await reader.fetch("IF-MIB")
+        assert result == _MINIMAL
 
-        async with HttpReader(_TEMPLATE, cache_dir=cache_dir, cache_ttl_days=0) as reader:
-            await reader.fetch("IF-MIB")
-            await reader.fetch("IF-MIB")
-
-        requests = httpx_mock.get_requests()
-        second_get = next(r for r in requests[2:] if r.method == "GET")
-        assert second_get.headers.get("if-none-match") == '"abc123"'
+    @pytest.mark.asyncio
+    async def test_transport_error_raises_network_error(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_exception(
+            httpx.ConnectError("connection reset"),
+            url=_IF_MIB_URL,
+            method="GET",
+        )
+        async with HttpReader(_TEMPLATE, retries=1) as reader:
+            with pytest.raises(NetworkError, match="HTTP fetch failed"):
+                await reader.fetch("IF-MIB")
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +210,15 @@ class TestHttpReaderFallback:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_second_source_on_404(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=404)
-        httpx_mock.add_response(url=self._BACKUP_URL, method="HEAD", status_code=200)
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=404)
+        httpx_mock.add_response(url=self._BACKUP_URL, method="GET", text=_MINIMAL)
+        async with HttpReader(_TEMPLATE, self._BACKUP) as reader:
+            result = await reader.fetch("IF-MIB")
+        assert result == _MINIMAL
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_second_source_on_410(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=410)
         httpx_mock.add_response(url=self._BACKUP_URL, method="GET", text=_MINIMAL)
         async with HttpReader(_TEMPLATE, self._BACKUP) as reader:
             result = await reader.fetch("IF-MIB")
@@ -180,35 +226,15 @@ class TestHttpReaderFallback:
 
     @pytest.mark.asyncio
     async def test_all_sources_404_raises_mib_not_found(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=404)
-        httpx_mock.add_response(url=self._BACKUP_URL, method="HEAD", status_code=404)
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=404)
+        httpx_mock.add_response(url=self._BACKUP_URL, method="GET", status_code=404)
         async with HttpReader(_TEMPLATE, self._BACKUP) as reader:
             with pytest.raises(MibNotFoundError):
                 await reader.fetch("IF-MIB")
 
     @pytest.mark.asyncio
-    async def test_transport_error_raises_network_error(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_exception(
-            httpx.ConnectError("connection reset"),
-            url=_IF_MIB_URL,
-            method="HEAD",
-        )
-        async with HttpReader(_TEMPLATE, retries=1) as reader:
-            with pytest.raises(NetworkError, match="HTTP fetch failed"):
-                await reader.fetch("IF-MIB")
-
-    @pytest.mark.asyncio
-    async def test_server_error_raises_network_error(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
-        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=500)
-        async with HttpReader(_TEMPLATE) as reader:
-            with pytest.raises(NetworkError, match="500"):
-                await reader.fetch("IF-MIB")
-
-    @pytest.mark.asyncio
     async def test_404_then_server_error_raises_network_error(self, httpx_mock: HTTPXMock):
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=404)
-        httpx_mock.add_response(url=self._BACKUP_URL, method="HEAD", status_code=200)
+        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", status_code=404)
         httpx_mock.add_response(url=self._BACKUP_URL, method="GET", status_code=500)
         async with HttpReader(_TEMPLATE, self._BACKUP) as reader:
             with pytest.raises(NetworkError, match="500"):
@@ -227,7 +253,6 @@ class TestHttpReaderCache:
     ):
         """_write_cache must not leave *.tmp files behind on success."""
         cache_dir = tmp_path / "http-cache"
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
         httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text=_MINIMAL)
 
         async with HttpReader(_TEMPLATE, cache_dir=cache_dir) as reader:
@@ -242,7 +267,6 @@ class TestHttpReaderCache:
     @pytest.mark.asyncio
     async def test_cache_content_matches_fetched_text(self, httpx_mock: HTTPXMock, tmp_path: Path):
         cache_dir = tmp_path / "http-cache"
-        httpx_mock.add_response(url=_IF_MIB_URL, method="HEAD", status_code=200)
         httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text=_MINIMAL)
 
         async with HttpReader(_TEMPLATE, cache_dir=cache_dir) as reader:

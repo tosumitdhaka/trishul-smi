@@ -10,6 +10,46 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.8] — 2026-09-22
+
+### Fixed
+
+- **ZipReader nested-archive size enforcement** — nested archive reads are bounded by
+  `max_mib_size` at every depth; a nested zip bomb raises `MibSizeLimitError` before
+  extraction instead of exhausting memory (#17).
+- **HttpReader fetch semantics** — responses are consumed as a stream and aborted as soon
+  as the byte count exceeds `max_mib_size` (previously the full body was buffered before
+  the check, so a chunked or lying server defeated the limit); a 404/410 on the GET is
+  authoritative for `MibNotFoundError` — the HEAD pre-check that misreported
+  HEAD-challenged servers as "not found" is gone (#18).
+- **`--online` help text** — now names the actual default sources (`mibs.pysnmp.com` +
+  `mibbrowser.online`) (#23, item 2).
+
+### Changed
+
+- **HttpReader ETag/304 machinery removed** — the in-memory ETag cache could never fire
+  across runs (the reader lives for one compile); dead code deleted. The compiled-module
+  `MibCache` remains the effective cross-run cache (#18).
+- **HTTP redirects are followed** (`follow_redirects=True`): a 301/302 to an existing MIB
+  resolves instead of surfacing as `NetworkError` (review follow-up to #18).
+
+### Security
+
+- **MIB-name validation at the CLI boundary** — explicit and discovered names are
+  validated against `^[A-Za-z0-9][A-Za-z0-9._-]*$`; path traversal
+  (`trishul-smi compile ../../etc/passwd -d .`) and URL-steering names are rejected with
+  exit code 2 before any fetch (#22). First catch in the wild: a junk-named `$.mib` in the
+  local corpus (real content: UUID-TC-MIB), since renamed.
+
+### Known Limitations
+
+- The raw-body disk cache under `cache_dir/raw/` is write-only (nothing reads it back);
+  removal is planned for v0.4.9.
+- Nested-zip scanning is bounded per entry but not in aggregate — an archive with many
+  small nested zips can still cause bounded-memory time/disk churn (tracked for v0.4.9).
+
+---
+
 ## [0.4.7] — 2026-09-22
 
 ### Fixed
@@ -505,3 +545,4 @@ See [roadmap.md](roadmap.md) for the full list of planned v0.2.0 improvements.
 [0.1.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.1.0
 [0.4.6]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.6
 [0.4.7]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.7
+[0.4.8]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.8
