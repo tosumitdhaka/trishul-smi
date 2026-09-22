@@ -299,6 +299,13 @@ def _wheel_smoke_test(settings: Settings, report: ReleaseGateReport) -> str:
                 "-f",
                 "pysnmp",
                 "--online",
+                # Disable the compiled-module cache: the smoke must exercise
+                # the cold fetch → parse → emit path deterministically. With
+                # the default cache dir a warm machine would serve `cached`
+                # rows (v0.4.9 ♻ status), breaking the ✅ check below and
+                # making the gate depend on local state.
+                "--cache-dir",
+                "",
                 "--verbose",
             ]
         )

@@ -10,9 +10,9 @@ class CompileResult:
     """Outcome of compiling a single MIB module."""
 
     name: str
-    # "cached" is emitted by MibResolver on a disk-cache hit — not yet wired
-    # in v1.0, but reserved here to avoid a future breaking Literal change
-    # once the cache read-path is plumbed through the compiler (see DD-5).
+    # "cached" — served from the compiled-module disk cache (MibCache) this
+    # run; the module was not re-parsed. Emitted by MibCompiler since v0.4.9
+    # (issue #15).
     # "missing" — MIB source not found in any configured reader.
     status: Literal["compiled", "cached", "failed", "missing"]
     output_paths: list[Path] = field(default_factory=list)

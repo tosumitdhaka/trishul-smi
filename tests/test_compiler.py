@@ -449,17 +449,17 @@ class TestMibCompiler:
     @pytest.mark.asyncio
     async def test_formatter_error_captured_in_warnings_not_raised(self, tmp_path: Path):
         """A formatter that raises must not abort the compile run."""
+        from unittest.mock import patch
+
         config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
         compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
 
-        def _raise(_):
-            raise RuntimeError("simulated crash")
+        # Per-run formatter instances (issue #20) mean the shared registry is
+        # no longer mutated, so patch the class method — the freshly-constructed
+        # per-run JsonFormatter raises too.
+        with patch.object(JsonFormatter, "format", side_effect=RuntimeError("simulated crash")):
+            results = await compiler.compile("TEST-MIB")
 
-        broken_formatter = JsonFormatter()
-        broken_formatter.format = _raise  # type: ignore[method-assign]
-        compiler._formatters = {"json": broken_formatter}
-
-        results = await compiler.compile("TEST-MIB")
         compiled = next((r for r in results if r.name == "TEST-MIB"), None)
         assert compiled is not None
         assert compiled.status == "compiled"
@@ -1487,6 +1487,41 @@ class TestMissingDependencies:
         by_name = {r.name: r for r in results}
         assert "GHOST-MIB" in by_name["MISSING-DEP-MIB"].missing_dependencies
         assert "MISSING-DEP-MIB" in by_name["DOWNSTREAM-MIB"].missing_dependencies
+
+
+class TestCachedStatus:
+    """Issue #15 — modules served from the disk cache report status='cached'."""
+
+    @pytest.mark.asyncio
+    async def test_warm_cache_reports_cached_status(self, tmp_path: Path):
+        config = CompilerConfig(
+            output_dir=tmp_path / "out", cache_dir=tmp_path / "cache", formats=["json"]
+        )
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+
+        first = await compiler.compile("TEST-MIB")
+        assert all(r.status == "compiled" for r in first)
+
+        second = await compiler.compile("TEST-MIB")
+        by_name = {r.name: r for r in second}
+        assert by_name["TEST-MIB"].status == "cached"
+        assert by_name["TEST-MIB"].is_dependency is False
+        # Output is still written for cached modules.
+        assert (tmp_path / "out" / "TEST-MIB.json").is_file()
+
+    @pytest.mark.asyncio
+    async def test_cached_modules_still_report_warnings(self, tmp_path: Path):
+        """Warnings persisted in the cache round-trip through a cached result."""
+        mib_text = MINIMAL_V2
+        config = CompilerConfig(
+            output_dir=tmp_path / "out", cache_dir=tmp_path / "cache", formats=["json"]
+        )
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": mib_text}))
+        await compiler.compile("TEST-MIB")
+        second = await compiler.compile("TEST-MIB")
+        r = next(x for x in second if x.name == "TEST-MIB")
+        assert r.status == "cached"
+        assert r.warnings == []
 
 
 class TestDryRun:

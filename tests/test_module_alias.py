@@ -152,14 +152,17 @@ class TestMisnamedModuleResolver:
         first = await resolver.resolve(["A"])
         assert first.ok
 
-        # Second run: reader raises on any fetch — a cache miss would surface
-        # as an error, so success proves the hit.
-        second = await MibResolver(CountingReader({}), SmiParser(), cache=cache).resolve(["A"])
+        # Second run: fetch-first (issue #12) — the source is fetched again to
+        # compute its fingerprint, but the matching alias entry is a cache hit.
+        second = await MibResolver(
+            CountingReader({"A": MISNAMED_TEXT}), SmiParser(), cache=cache
+        ).resolve(["A"])
 
         assert second.ok
         assert second.errors == {}
         assert [m.name for m in second.modules] == ["B-MIB"]
         assert second.aliases == {"A": "B-MIB"}
+        assert second.cached == {"B-MIB"}
         # The warning is persisted in the cache and not duplicated on reload.
         assert second.modules[0].warnings.count(_b_mib_warning()) == 1
 
@@ -168,7 +171,7 @@ class TestMisnamedModuleCache:
     """Issue #21 consequence 3: the declared name is the cache key."""
 
     @pytest.mark.asyncio
-    async def test_second_compile_hits_cache_no_fetch(self, tmp_path: Path):
+    async def test_second_compile_hits_cache_skips_parse(self, tmp_path: Path):
         cache = MibCache(tmp_path, ttl_days=7)
         parser = SmiParser()
         reader = CountingReader({"A": MISNAMED_TEXT})
@@ -183,12 +186,14 @@ class TestMisnamedModuleCache:
         assert cache.get("B-MIB").name == "B-MIB"
         assert cache.get("A") is not None
 
-        # Second compile: fresh resolver + reader that raises on any fetch.
-        fresh_reader = CountingReader({})
+        # Second compile: fetch-first (issue #12) — the source is fetched
+        # again to compute its fingerprint, but the parse is skipped.
+        fresh_reader = CountingReader({"A": MISNAMED_TEXT})
         second = await MibResolver(fresh_reader, parser, cache=cache).resolve(["A"])
         assert second.ok
         assert [m.name for m in second.modules] == ["B-MIB"]
-        assert fresh_reader.fetched == []  # cache hit — no re-fetch/parse
+        assert fresh_reader.fetched == ["A"]  # fetched for the fingerprint
+        assert second.cached == {"B-MIB"}  # served from cache — no re-parse
 
     @pytest.mark.asyncio
     async def test_cache_hit_under_declared_name(self, tmp_path: Path):
@@ -200,7 +205,12 @@ class TestMisnamedModuleCache:
         ).resolve(["A"])
         assert first.ok
 
-        second = await MibResolver(CountingReader({}), parser, cache=cache).resolve(["B-MIB"])
+        # Fetch-first (issue #12): the declared-name request must be fetchable
+        # — serve the same source text under B-MIB; its fingerprint matches
+        # the cached entry and the parse is skipped.
+        second = await MibResolver(
+            CountingReader({"B-MIB": MISNAMED_TEXT}), parser, cache=cache
+        ).resolve(["B-MIB"])
         assert second.ok
         assert [m.name for m in second.modules] == ["B-MIB"]
         assert second.aliases == {}  # requested name matched declared name
@@ -320,3 +330,25 @@ class TestNormallyNamedRegression:
         m = MibModule(name="PLAIN-MIB", language="SMIv2")
         assert m.name == "PLAIN-MIB"
         assert m.warnings == []
+
+
+class TestExplicitAliasRequest:
+    """Issue #25 — requesting both a misnamed file and its declared name."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_alias_request_compiles_once(self, tmp_path: Path):
+        """compile("A", "B-MIB") where A declares B-MIB and B-MIB cannot be
+        fetched: B-MIB must be compiled once from A and never reported as
+        missing — which keeps the CLI exit code at 0."""
+        config = CompilerConfig(output_dir=tmp_path / "out", cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"A": MISNAMED_TEXT}))
+
+        results = await compiler.compile("A", "B-MIB")
+        by_name = {r.name: r for r in results}
+
+        assert set(by_name) == {"B-MIB"}
+        assert by_name["B-MIB"].status == "compiled"
+        # No contradictory "B-MIB missing" entry — the missing/failed set that
+        # drives the CLI's exit-1 contract is empty.
+        assert not any(r.status in {"missing", "failed"} for r in results)
+        assert (tmp_path / "out" / "B-MIB.json").is_file()

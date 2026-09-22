@@ -1,19 +1,22 @@
 """Tests for HttpReader using pytest-httpx to intercept HTTP calls.
 
 Each test class covers a distinct behavioural contract:
-  TestHttpReaderBasic       — happy path, streaming size limit, CM guard
-  TestHttpReaderNoHead      — GET is authoritative; HEAD is never sent
-  TestHttpReaderErrorMap    — not-found vs transport/server error mapping
-  TestHttpReaderFallback    — multiple source URLs, all-fail path
-  TestHttpReaderCache       — atomic write, no stale .tmp files
+  TestHttpReaderBasic            — happy path, streaming size limit, CM guard
+  TestHttpReaderNoHead           — GET is authoritative; HEAD is never sent
+  TestHttpReaderErrorMap         — not-found vs transport/server error mapping
+  TestHttpReaderFallback         — multiple source URLs, all-fail path
+  TestHttpReaderNoRawCache       — no raw-body cache artifacts are written
+  TestHttpReaderCacheTtlDeprecation — cache_ttl_days warns; omission is silent
 
 The reader performs a single streaming GET per fetch: there is no HEAD
-pre-check and no ETag/304 machinery (both removed in the fetch-semantics
-rework), so no test registers HEAD responses.
+pre-check, no ETag/304 machinery, and no raw-body disk cache (all removed in
+the fetch-semantics rework), so no test registers HEAD responses or asserts
+cache files.
 """
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import httpx
@@ -242,36 +245,46 @@ class TestHttpReaderFallback:
 
 
 # ---------------------------------------------------------------------------
-# Atomic cache write
+# No raw-body disk cache
 # ---------------------------------------------------------------------------
 
 
-class TestHttpReaderCache:
+class TestHttpReaderNoRawCache:
     @pytest.mark.asyncio
-    async def test_no_stale_tmp_files_after_successful_fetch(
-        self, httpx_mock: HTTPXMock, tmp_path: Path
-    ):
-        """_write_cache must not leave *.tmp files behind on success."""
+    async def test_fetch_writes_no_raw_cache_files(self, httpx_mock: HTTPXMock, tmp_path: Path):
+        """The raw-body cache under cache_dir/raw/ is write-only — nothing reads
+        it back since the ETag/304 removal, so a successful fetch must leave no
+        cache artifacts on disk at all."""
         cache_dir = tmp_path / "http-cache"
         httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text=_MINIMAL)
 
-        async with HttpReader(_TEMPLATE, cache_dir=cache_dir) as reader:
-            await reader.fetch("IF-MIB")
-
-        raw_dir = cache_dir / "raw"
-        tmp_files = list(raw_dir.glob("*.tmp")) if raw_dir.exists() else []
-        mib_files = list(raw_dir.glob("*.mib")) if raw_dir.exists() else []
-        assert tmp_files == [], f"Stale .tmp files left behind: {tmp_files}"
-        assert len(mib_files) == 1
-
-    @pytest.mark.asyncio
-    async def test_cache_content_matches_fetched_text(self, httpx_mock: HTTPXMock, tmp_path: Path):
-        cache_dir = tmp_path / "http-cache"
-        httpx_mock.add_response(url=_IF_MIB_URL, method="GET", text=_MINIMAL)
-
-        async with HttpReader(_TEMPLATE, cache_dir=cache_dir) as reader:
+        async with HttpReader(_TEMPLATE) as reader:
             result = await reader.fetch("IF-MIB")
 
-        raw_dir = cache_dir / "raw"
-        cached = next(raw_dir.glob("*.mib")).read_text(encoding="utf-8")
-        assert cached == result == _MINIMAL
+        assert result == _MINIMAL
+        assert not cache_dir.exists(), "fetch() must not create a raw-body cache"
+
+    def test_cache_dir_parameter_removed(self):
+        """HttpReader no longer accepts cache_dir: the raw-body cache it fed
+        was write-only (nothing read it back), so the parameter is gone."""
+        with pytest.raises(TypeError, match="cache_dir"):
+            HttpReader(_TEMPLATE, cache_dir="/tmp/whatever")  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# cache_ttl_days deprecation
+# ---------------------------------------------------------------------------
+
+
+class TestHttpReaderCacheTtlDeprecation:
+    def test_passing_cache_ttl_days_warns(self):
+        """cache_ttl_days is accepted-but-unused since the ETag/304 removal;
+        passing it must warn and point at CompilerConfig.cache_ttl_days."""
+        with pytest.warns(DeprecationWarning, match="CompilerConfig.cache_ttl_days"):
+            HttpReader(_TEMPLATE, cache_ttl_days=7)  # type: ignore[call-arg]
+
+    def test_omitting_cache_ttl_days_does_not_warn(self):
+        """The default path must stay silent — only an explicit value warns."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            HttpReader(_TEMPLATE)

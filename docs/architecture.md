@@ -241,9 +241,11 @@ Warnings flow through the full pipeline: transformer → `MibModule.warnings` �
 (serialised so cached and fresh compiles are consistent) → `CompileResult.warnings` → CLI
 (per-module warning count in the result table, full details below it).
 
-**Async boundary:** `SmiParser.parse()` is CPU-bound sync code. Library callers may offload it
-manually if they want, but the built-in resolver now keeps fetches async and performs parse
-deterministically after each fetch wave to avoid real-MIB deadlocks under the CLI runtime.
+**Async boundary:** `SmiParser.parse()` is CPU-bound sync code. The resolver offloads it to
+the default thread pool via `asyncio.to_thread`, so parsing never runs on the event-loop
+thread; `SmiParser` caches compiled Lark parsers per thread so concurrent worker threads do
+not share mutable parser state. Fetches stay async and parse happens deterministically after
+each fetch wave.
 
 ---
 
@@ -265,15 +267,16 @@ class MibResolver:
 
 **Algorithm:**
 1. BFS over the import graph — each wave fetched concurrently via `asyncio.gather(return_exceptions=True)`
-2. Parse each fetched text synchronously after the fetch wave completes
+2. Check the cache against the fetched text's sha256 fingerprint; parse cache-missing text in the thread pool (`asyncio.to_thread`) after the fetch wave completes
 3. Topological sort via Kahn's algorithm (`resolver/dependency.py`) — `sorted()` for deterministic output
 4. `CircularDependencyError` includes the cycle members and propagates immediately
 5. `MibSizeLimitError` propagates immediately; per-module fetch/parse failures are collected in `ResolveResult.errors`
 
 **`MibCache`:**
 - Disk cache at `~/.cache/trishul-smi/<mib>.json`; `orjson` serialization (no pickle)
-- Atomic writes via temp-file rename (`rename(2)` on POSIX)
-- Invalidation by file mtime + configurable TTL; corrupted files self-heal on next miss
+- Atomic writes via a uniquely-named `tempfile.mkstemp` temp file + rename (`rename(2)` on POSIX)
+- Invalidation by file mtime + configurable TTL; corrupted/unreadable files self-heal on next miss
+- Content fingerprinting (issue #12): each entry records the sha256 of the source text it was parsed from, and `get()` treats a fingerprint mismatch as a miss — the resolver always fetches first, so the cache saves parsing only (never fetch-avoidance), guaranteeing updated files can never serve stale entries
 
 ---
 

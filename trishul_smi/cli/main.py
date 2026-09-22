@@ -330,8 +330,6 @@ async def _compile_async(
             timeout=config.http_timeout,
             retries=config.http_retries,
             max_size=config.max_mib_size,
-            cache_dir=config.cache_dir,
-            cache_ttl_days=config.cache_ttl_days,
         ) as http:
             compiler.add_reader(http)
             return await compiler.compile(*mib_names)
@@ -346,9 +344,10 @@ async def _compile_async(
 
 def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     compiled = [r for r in results if r.status == "compiled"]
+    cached = [r for r in results if r.status == "cached"]
     failed = [r for r in results if r.status == "failed"]
     missing = [r for r in results if r.status == "missing"]
-    warned = [r for r in compiled if r.warnings]
+    warned = [r for r in results if r.status in {"compiled", "cached"} and r.warnings]
 
     tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold")
     tbl.add_column("Status", width=10)
@@ -356,8 +355,8 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     tbl.add_column("Details")
 
     for r in results:
-        if r.status == "compiled":
-            icon = "[green]✅[/green]"
+        if r.status in {"compiled", "cached"}:
+            icon = "[green]✅[/green]" if r.status == "compiled" else "[cyan]♻[/cyan]"
             if r.warnings:
                 detail = f"[yellow]{len(r.warnings)} warning(s)[/yellow]"
             elif verbose:
@@ -378,6 +377,8 @@ def _print_results(results: list[CompileResult], *, verbose: bool) -> None:
     console.print(tbl)
 
     parts = [f"[green]{len(compiled)} compiled[/green]"]
+    if cached:
+        parts.append(f"[cyan]{len(cached)} cached[/cyan]")
     if failed:
         parts.append(f"[red]{len(failed)} failed[/red]")
     if missing:

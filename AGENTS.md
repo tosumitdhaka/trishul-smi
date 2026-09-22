@@ -45,7 +45,7 @@ CLI / Python API
     → MibResolver (BFS dependency walk)  resolver/resolver.py
       → ReaderChain (fallback readers)   reader/chain.py
       → MibCache (mtime-based TTL)       resolver/cache.py
-      → SmiParser (Lark; sync on event loop — see #19)  parser/smi_parser.py
+      → SmiParser (Lark, thread pool)                parser/smi_parser.py
       → topological_sort (Kahn's algo)   resolver/dependency.py
     → JsonFormatter / PysnmpFormatter    output/json_fmt.py, pysnmp_fmt.py
   → CompileResult per MIB
@@ -70,7 +70,7 @@ trishul_smi/
 ### Key design points
 
 - **ReaderChain**: only `MibNotFoundError` triggers fallback to the next reader; other errors propagate immediately.
-- **SmiParser**: grammar is a singleton; `parse()` currently runs synchronously on the event loop (planned `asyncio.to_thread` fix, v0.4.9 — #19). Two separate grammars for SMIv1 and SMIv2 (`parser/grammar/`).
+- **SmiParser**: grammar is a singleton; `parse()` is CPU-bound and offloaded via `asyncio.to_thread` (never runs on the event-loop thread). Two separate grammars for SMIv1 and SMIv2 (`parser/grammar/`).
 - **MibCache**: atomic writes via temp-file rename; mtime-based TTL; orjson for speed.
 - **Error strategy**: `MibSizeLimitError` and `CircularDependencyError` propagate immediately; per-module fetch/parse failures are collected in `ResolveResult.errors` and reported without halting the whole compile.
 - **Formatters** are selected by the `formats` list in `CompilerConfig` and conform to `FormatterProtocol` (structural protocol, not ABC).

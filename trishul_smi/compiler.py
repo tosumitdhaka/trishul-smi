@@ -125,6 +125,8 @@ class MibCompiler:
         Returns a list of CompileResult, one per module (including deps).
         Status values:
         - ``'compiled'`` — successfully parsed and written to disk.
+        - ``'cached'``   — served from the compiled-module disk cache this
+          run; output files are still written (issue #15).
         - ``'failed'``   — fetch, parse, or dependency-blocking error; see ``.error``.
         - ``'missing'``  — the module could not be found in any configured reader.
 
@@ -146,11 +148,30 @@ class MibCompiler:
         resolve_oids(resolve_result.modules)
 
         json_artifact_metadata: JsonArtifactMetadata | None = None
+        formatters = self._formatters
         if any(isinstance(formatter, JsonFormatter) for formatter in self._formatters.values()):
             json_artifact_metadata = make_json_artifact_metadata()
-            for formatter in self._formatters.values():
-                if isinstance(formatter, JsonFormatter):
-                    formatter.set_artifact_metadata(json_artifact_metadata)
+            # Per-run formatter instances (issue #20): JsonFormatter is
+            # stateful — it holds the run's artifact metadata — and mutating
+            # the SHARED instances via set_artifact_metadata() would race
+            # between concurrent compile() calls on one MibCompiler (last
+            # metadata wins; run A's module JSONs could carry run B's
+            # generated_at). Build fresh instances with this run's metadata
+            # baked in at construction instead. FormatterProtocol is unchanged.
+            # Only exact JsonFormatter instances (the compiler's own defaults
+            # from _make_formatter) are rebuilt; a user-supplied subclass that
+            # overrides format() keeps its own behaviour.
+            formatters = {
+                fmt: (
+                    JsonFormatter(
+                        no_texts=self._config.no_texts,
+                        artifact_metadata=json_artifact_metadata,
+                    )
+                    if type(formatter) is JsonFormatter
+                    else formatter
+                )
+                for fmt, formatter in self._formatters.items()
+            }
 
         requested_set = set(mib_names)
         resolved_names = {module.name for module in resolve_result.modules}
@@ -204,7 +225,7 @@ class MibCompiler:
             # noisy duplicate output for modules with many warnings.
             warnings: list[str] = list(module.warnings)
 
-            for fmt_name, formatter in self._formatters.items():
+            for fmt_name, formatter in formatters.items():
                 out_path = out_dir / f"{module.name}{formatter.FILE_SUFFIX}"
                 try:
                     content = formatter.format(module)
@@ -230,7 +251,7 @@ class MibCompiler:
             results.append(
                 CompileResult(
                     name=module.name,
-                    status="compiled",
+                    status="cached" if module.name in resolve_result.cached else "compiled",
                     output_paths=output_paths,
                     warnings=warnings,
                     is_dependency=(

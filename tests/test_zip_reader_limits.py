@@ -6,6 +6,12 @@ Both MIB entries and nested-ZIP entries are read with a bounded
 ``max_size + 1`` read at every recursion depth, and oversized content raises
 MibSizeLimitError. The limit is always a positive int (CompilerConfig
 validates ``max_mib_size > 0``); there is no unlimited/None mode to mirror.
+
+On top of the per-entry bound, the *aggregate* nested-archive bytes examined
+per ``fetch()`` call is capped at ``4 x max_size``: an archive holding many
+small nested zips must trip the aggregate guard rather than causing unbounded
+time/temp-file churn (bounded memory, unbounded work). MIB-entry (leaf)
+reads never count toward the aggregate.
 """
 
 from __future__ import annotations
@@ -76,6 +82,38 @@ class TestNestedArchiveSizeLimit:
         inner_zip = _zip_bytes({"IF-MIB.mib": MINIMAL_MIB.encode()})
         outer = tmp_path / "outer.zip"
         outer.write_bytes(_zip_bytes({"inner.zip": inner_zip}))
+
+        reader = ZipReader(outer, max_size=1024 * 1024)
+        text = await reader.fetch("IF-MIB")
+        assert "TEST-MIB" in text
+
+    @pytest.mark.asyncio
+    async def test_many_small_nested_zips_trip_aggregate_cap(self, tmp_path: Path):
+        """Per-entry bounds alone leave an archive of many small nested zips
+        unbounded in aggregate work; the 4 x max_size per-fetch cap must trip.
+        """
+        max_size = 512
+        inner_zip = _zip_bytes({"UNRELATED-MIB.mib": b""})
+        assert 0 < len(inner_zip) < max_size  # each nested archive is tiny alone
+        assert 20 * len(inner_zip) > 4 * max_size  # aggregate would breach cap
+
+        outer = tmp_path / "outer.zip"
+        outer.write_bytes(_zip_bytes({f"inner{i}.zip": inner_zip for i in range(20)}))
+
+        reader = ZipReader(outer, max_size=max_size)
+        with pytest.raises(MibSizeLimitError, match="aggregate"):
+            await reader.fetch("IF-MIB")
+
+    @pytest.mark.asyncio
+    async def test_handful_of_nested_zips_stays_under_aggregate_cap(self, tmp_path: Path):
+        """A corpus-typical archive with a handful of small nested zips stays
+        comfortably under the aggregate cap and still extracts the target."""
+        inner_zip = _zip_bytes({"IF-MIB.mib": MINIMAL_MIB.encode()})
+        decoy_zip = _zip_bytes({"DECOY-MIB.mib": MINIMAL_MIB.encode()})
+        outer = tmp_path / "outer.zip"
+        outer.write_bytes(
+            _zip_bytes({"decoy0.zip": decoy_zip, "decoy1.zip": decoy_zip, "inner.zip": inner_zip})
+        )
 
         reader = ZipReader(outer, max_size=1024 * 1024)
         text = await reader.fetch("IF-MIB")

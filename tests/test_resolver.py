@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -24,6 +25,24 @@ from trishul_smi.resolver.resolver import MibResolver
 
 def _make_module(name: str, imports: dict[str, list[str]] | None = None) -> MibModule:
     return MibModule(name=name, language="SMIv2", imports=imports or {})
+
+
+def _source_fingerprint(text: str) -> str:
+    """sha256 hex digest, mirroring the resolver's fingerprint helper (issue #12)."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class CountingParser:
+    """Wraps SmiParser and records every parse() call so tests can prove a
+    cache hit skipped parsing."""
+
+    def __init__(self) -> None:
+        self._inner = SmiParser()
+        self.parsed: list[str] = []
+
+    def parse(self, text: str) -> MibModule:
+        self.parsed.append(text)
+        return self._inner.parse(text)
 
 
 MINIMAL_V2 = """
@@ -177,13 +196,17 @@ class TestMibCache:
         assert not tmp.exists()
 
     def test_put_oserror_raises_mib_cache_error(self, tmp_path: Path):
-        """OSError during put() must be wrapped in MibCacheError, not leak raw."""
+        """OSError during put() must be wrapped in MibCacheError, not leak raw.
+
+        put() writes via tempfile.mkstemp + os.fdopen (issue #20), so an
+        OSError must surface from the write path rather than Path.write_bytes.
+        """
         from unittest.mock import patch
 
         from trishul_smi.errors import MibCacheError
 
         cache = MibCache(tmp_path, ttl_days=7)
-        with patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")):
+        with patch("os.fdopen", side_effect=OSError("disk full")):
             with pytest.raises(MibCacheError, match="disk full"):
                 cache.put("IF-MIB", _make_module("IF-MIB"))
 
@@ -321,22 +344,31 @@ class TestMibResolver:
         assert result.modules == []
 
     @pytest.mark.asyncio
-    async def test_cache_hit_skips_fetch(self, tmp_path: Path):
+    async def test_cache_hit_skips_parse(self, tmp_path: Path):
+        """Fetch-first design (issue #12): the source is fetched to compute
+        its fingerprint, but a matching entry skips the parse entirely."""
+        text = "IF-MIB source v1"
         cache = MibCache(tmp_path, ttl_days=7)
-        m = _make_module("IF-MIB")
-        cache.put("IF-MIB", m)
-        reader = MockReader({})  # raises for any fetch call
-        parser = SmiParser()
+        cache.put("IF-MIB", _make_module("IF-MIB"), _source_fingerprint(text))
+        reader = MockReader({"IF-MIB": text})
+        parser = CountingParser()
         resolver = MibResolver(reader, parser, cache=cache)
         result = await resolver.resolve(["IF-MIB"])
         assert result.ok
         assert result.modules[0].name == "IF-MIB"
+        assert parser.parsed == []  # served from cache — never re-parsed
+        assert result.cached == {"IF-MIB"}
 
     @pytest.mark.asyncio
     async def test_cache_hit_discovers_transitive_dependencies(self, tmp_path: Path):
         cache = MibCache(tmp_path, ttl_days=7)
-        cache.put("ROOT-MIB", _make_module("ROOT-MIB", imports={"DEP-MIB": ["depObj"]}))
-        reader = MockReader({"DEP-MIB": DEP_MIB})
+        root_text = "ROOT-MIB source v1"
+        cache.put(
+            "ROOT-MIB",
+            _make_module("ROOT-MIB", imports={"DEP-MIB": ["depObj"]}),
+            _source_fingerprint(root_text),
+        )
+        reader = MockReader({"ROOT-MIB": root_text, "DEP-MIB": DEP_MIB})
         resolver = MibResolver(reader, SmiParser(), cache=cache)
 
         result = await resolver.resolve(["ROOT-MIB"])
@@ -346,6 +378,7 @@ class TestMibResolver:
         assert "ROOT-MIB" in names
         assert "DEP-MIB" in names
         assert names.index("DEP-MIB") < names.index("ROOT-MIB")
+        assert result.cached == {"ROOT-MIB"}
 
     @pytest.mark.asyncio
     async def test_result_ok_property(self):
@@ -427,3 +460,40 @@ END
         resolver = MibResolver(reader, SmiParser())
         with pytest.raises(MibSizeLimitError):
             await resolver.resolve(["BIG-MIB"])
+
+
+class TestAliasEdgeCases:
+    """Issue #25 — declared-name collisions and explicit-alias requests."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_declared_names_emit_collision_warning(self):
+        """Two requested files declaring the same module name must emit a
+        collision warning on the surviving (last-wins) module, naming the
+        discarded requested file — no silent content drop (issue #25)."""
+        text_a = MINIMAL_V2.replace("TEST-MIB", "SHARED-MIB").replace("testMIB", "sharedMIB")
+        text_b = text_a.replace('LAST-UPDATED "200001010000Z"', 'LAST-UPDATED "200101010000Z"')
+        reader = MockReader({"A": text_a, "B": text_b})
+        resolver = MibResolver(reader, SmiParser())
+
+        result = await resolver.resolve(["A", "B"])
+
+        assert result.ok
+        # Last-wins: a single surviving module, its content from the later file.
+        assert [m.name for m in result.modules] == ["SHARED-MIB"]
+        module = result.modules[0]
+        assert module.lastupdated == "200101010000Z"
+        assert any("collision" in w and "'A'" in w and "'B'" in w for w in module.warnings)
+
+    @pytest.mark.asyncio
+    async def test_explicit_alias_request_yields_single_consistent_result(self):
+        """compile("A", "B-MIB") where A declares B-MIB and B-MIB cannot be
+        fetched must not report B-MIB as both compiled and missing (issue #25)."""
+        misnamed = MINIMAL_V2.replace("TEST-MIB", "B-MIB").replace("testMIB", "bMIB")
+        reader = MockReader({"A": misnamed})
+        resolver = MibResolver(reader, SmiParser())
+
+        result = await resolver.resolve(["A", "B-MIB"])
+
+        assert result.ok
+        assert result.errors == {}
+        assert [m.name for m in result.modules] == ["B-MIB"]

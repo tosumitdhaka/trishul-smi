@@ -1,19 +1,36 @@
 """MibModule-level compiled cache.
 
-Stores fully-parsed MibModule objects as orjson on disk so the fetch+parse
-step can be skipped on repeated runs. This is separate from HttpReader's
-raw-text cache (reader/httpclient.py) which caches ASN.1 source bytes.
+Stores fully-parsed MibModule objects as orjson on disk so the parse step can
+be skipped on repeated runs.
 
 Cache layout:
     {cache_dir}/compiled/{mib_name}.json
 
 Invalidation:
     File mtime vs CompilerConfig.cache_ttl_days. When cache_ttl_days=0
-    entries never expire (useful for offline/air-gapped workflows).
+    entries never expire. Note: since the fetch-first fingerprint design
+    (issue #12), a warm cache alone no longer serves a compile when the
+    source is unreachable — the source is always fetched first so its
+    fingerprint can be checked.
+
+Fingerprint invalidation (issue #12):
+    Each entry additionally records ``source_fingerprint`` — the sha256 hex
+    digest of the raw ASN.1 source text the module was parsed from.
+    ``MibResolver`` always fetches the source first and passes the fingerprint
+    to ``get()``; a mismatch is a miss, so an updated source file can never
+    serve a stale entry.
+
+    Trade-off: the cache cannot avoid fetches — it saves parsing only.
+    Fetch-avoidance on cache hits was abandoned so the content fingerprint is
+    always available; local reads are cheap, and the HTTP freshness machinery
+    that previously justified the old name-keyed design was deleted in v0.4.8
+    as dead code.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -30,7 +47,7 @@ from trishul_smi.models.mib_type import MibType
 # ---------------------------------------------------------------------------
 
 
-def _module_to_bytes(module: MibModule) -> bytes:
+def _module_to_bytes(module: MibModule, source_fingerprint: str | None = None) -> bytes:
     """Serialise MibModule to orjson bytes. source_text is intentionally
     excluded from the cache to keep files small."""
 
@@ -77,6 +94,8 @@ def _module_to_bytes(module: MibModule) -> bytes:
         "description": module.description,
         "warnings": module.warnings,
     }
+    if source_fingerprint is not None:
+        payload["source_fingerprint"] = source_fingerprint
     return orjson.dumps(payload, option=orjson.OPT_INDENT_2)
 
 
@@ -142,6 +161,13 @@ class MibCache:
         ttl_days: Entries older than this many days are treated as stale
             and re-fetched. ``0`` means never expire.
 
+    Fingerprinting (issue #12):
+        ``put()`` records the ``source_fingerprint`` (sha256 hex of the raw
+        source text) passed by the caller; ``get()`` treats a supplied
+        fingerprint that differs from the recorded one as a miss. Because the
+        fingerprint can only be computed from the fetched source, the cache
+        saves parsing only — it never avoids the fetch.
+
     Raises:
         MibCacheError: if the cache directory cannot be created (e.g.
             permission denied). Raised at construction time so the caller
@@ -167,11 +193,17 @@ class MibCache:
         # st_mtime is a wall-clock timestamp, so time.time() is correct here —
         # unlike in-memory TTL checks (httpclient.py) where monotonic is safer
         # because monotonic is immune to NTP slew and VM clock jumps.
-        age = time.time() - path.stat().st_mtime
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            # stat() failed (TOCTOU removal between is_file() and the TTL
+            # check, or unreadable metadata) — treat as stale so get()
+            # surfaces a miss rather than propagating.
+            return True
         return age > self._ttl_seconds
 
-    def get(self, mib_name: str) -> MibModule | None:
-        """Return cached MibModule or None if absent / stale."""
+    def get(self, mib_name: str, fingerprint: str | None = None) -> MibModule | None:
+        """Return cached MibModule or None if absent / stale / fingerprint-mismatched."""
         path = self._path(mib_name)
         if not path.is_file():
             return None
@@ -180,28 +212,51 @@ class MibCache:
             return None
         try:
             data = orjson.loads(path.read_bytes())
-            return _module_from_dict(data)
-        except (orjson.JSONDecodeError, KeyError):
-            # Corrupted cache file — delete and signal miss
+            module = _module_from_dict(data)
+        except (OSError, orjson.JSONDecodeError, KeyError):
+            # Unreadable or corrupted cache file — delete and signal miss.
+            # OSError covers TOCTOU (the file vanished between is_file() and
+            # read_bytes()) and permission errors: a cache is an optimization,
+            # so one unreadable entry must never kill a compile.
             path.unlink(missing_ok=True)
             return None
+        if fingerprint is not None and data.get("source_fingerprint") != fingerprint:
+            # The raw source this entry was parsed from has changed since it
+            # was cached — treat as miss (issue #12). Entries written before
+            # fingerprinting (no recorded fingerprint) also miss.
+            path.unlink(missing_ok=True)
+            return None
+        return module
 
-    def put(self, mib_name: str, module: MibModule) -> None:
+    def put(self, mib_name: str, module: MibModule, source_fingerprint: str | None = None) -> None:
         """Persist a compiled MibModule to disk atomically.
 
-        Writes to a sibling ``.tmp`` file first, then renames to the final
-        path. ``Path.replace()`` is atomic on POSIX (rename(2) syscall) and
-        best-effort on Windows. This prevents partially-written files if the
-        process is killed mid-write, or if two concurrent asyncio.gather tasks
-        write different MIBs whose paths collide on a race.
+        Writes to a uniquely-named temp file first (``tempfile.mkstemp``),
+        then renames to the final path. ``Path.replace()`` is atomic on POSIX
+        (rename(2) syscall) and best-effort on Windows. This prevents
+        partially-written files if the process is killed mid-write — and
+        ``mkstemp`` (unlike a predictable ``{name}.tmp`` sibling path) keeps
+        two concurrent processes writing the same entry from interleaving
+        bytes in one temp file before the rename (issue #20).
+
+        ``source_fingerprint`` (sha256 hex of the raw source text, issue #12)
+        is recorded in the payload so a later ``get()`` can refuse the entry
+        once the source changes.
         """
         path = self._path(mib_name)
-        tmp = path.with_suffix(".tmp")
+        fd: int | None = None
+        tmp_name: str | None = None
         try:
-            tmp.write_bytes(_module_to_bytes(module))
-            tmp.replace(path)  # atomic on POSIX
+            fd, tmp_name = tempfile.mkstemp(dir=self._dir, prefix=f"{mib_name}.", suffix=".tmp")
+            with os.fdopen(fd, "wb") as fh:
+                fd = None  # fd is now owned by the buffered writer
+                fh.write(_module_to_bytes(module, source_fingerprint))
+            Path(tmp_name).replace(path)  # atomic on POSIX
         except OSError as exc:
-            tmp.unlink(missing_ok=True)
+            if fd is not None:
+                os.close(fd)
+            if tmp_name is not None:
+                Path(tmp_name).unlink(missing_ok=True)
             raise MibCacheError(f"Cannot write cache for {mib_name}: {exc}") from exc
 
     def invalidate(self, mib_name: str) -> None:

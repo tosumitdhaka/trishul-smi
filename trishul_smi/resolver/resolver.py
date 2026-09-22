@@ -5,11 +5,15 @@ Architecture
 The resolver performs a BFS over the MIB import graph:
 
     1. Start with the requested MIB name(s).
-    2. Check the compiled cache (MibCache) — skip fetch+parse on hit.
-    3. Fetch all cache-missing MIBs *concurrently* via asyncio.gather.
-    4. Parse each fetched text synchronously after the fetch wave completes.
-       This keeps the CLI's asyncio.run() path reliable on real MIBs while
-       still allowing concurrent I/O for remote readers.
+    2. Fetch the raw text for every pending MIB *concurrently* via
+       asyncio.gather.
+    3. Check the compiled cache (MibCache) with the sha256 fingerprint of the
+       fetched text — a hit skips parsing. The source is always fetched so an
+       updated file can never serve a stale entry; the cache saves parsing
+       only (issue #12).
+    4. Parse each cache-missing text off the event-loop thread via
+       ``asyncio.to_thread`` (issue #19; the per-thread Lark parser cache in
+       smi_parser.py exists for exactly this).
     5. Collect imports from every module resolved in the current wave
        (cache hits and newly fetched modules); add unseen names to the next
        wave.
@@ -31,6 +35,7 @@ Error handling
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass, field
 
 from trishul_smi.errors import MibSizeLimitError
@@ -40,6 +45,16 @@ from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import FetchProtocol
 from trishul_smi.resolver.cache import MibCache
 from trishul_smi.resolver.dependency import topological_sort
+
+
+def _source_fingerprint(text: str) -> str:
+    """sha256 hex digest of the raw source text (issue #12).
+
+    The digest is the cache's second key factor: entries are name-keyed but
+    additionally record the fingerprint of the text they were parsed from, so
+    an updated MIB file can never be served stale content.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -58,6 +73,12 @@ class ResolveResult:
     carries, so callers can tell explicit requests from transitive deps even
     when the requested name and declared name differ.
     """
+    cached: set[str] = field(default_factory=set)
+    """Declared names served from the disk cache this run (issue #15).
+
+    These modules were loaded from ``MibCache`` rather than re-parsed, so
+    callers can surface a distinct ``cached`` status instead of ``compiled``.
+    """
 
     @property
     def ok(self) -> bool:
@@ -75,7 +96,9 @@ class MibResolver:
                 .fetch() contract without requiring inheritance.
         parser: A SmiParser instance (create once, reuse — grammar is cached).
         cache:  Optional MibCache. When provided, compiled modules are read
-                from / written to disk, skipping fetch+parse on subsequent runs.
+                from / written to disk, skipping re-parse on subsequent runs
+                (the source is still fetched so its content fingerprint can
+                be checked — issue #12).
     """
 
     def __init__(
@@ -87,6 +110,35 @@ class MibResolver:
         self._reader = reader
         self._parser = parser
         self._cache = cache
+
+    def _record_module(
+        self,
+        fetched: dict[str, MibModule],
+        declared_by: dict[str, str],
+        resolved_this_wave: set[str],
+        requested: str,
+        module: MibModule,
+    ) -> None:
+        """Key a resolved module by its DECLARED name, warning on duplicates.
+
+        Two requested files can declare the same module name (issue #25): the
+        later one silently wins today, dropping the first file's content.
+        Emit a collision warning on the surviving module (same style as the
+        ``_reconcile_name`` mismatch warning), naming the discarded requested
+        file, and record which requested file filled each declared name.
+        """
+        if module.name in fetched:
+            discarded = declared_by.get(module.name, "another requested file")
+            warning = (
+                f"Module name collision: both {discarded!r} and {requested!r} "
+                f"declare {module.name!r}; using {requested!r} and discarding "
+                f"{discarded!r}."
+            )
+            if warning not in module.warnings:
+                module.warnings.append(warning)
+        fetched[module.name] = module
+        declared_by[module.name] = requested
+        resolved_this_wave.add(module.name)
 
     def _reconcile_name(
         self,
@@ -122,11 +174,13 @@ class MibResolver:
         """Fetch and parse ``mib_names`` and all transitive dependencies.
 
         Returns:
-            ResolveResult with .modules in topological order and .errors
-            for anything that failed.
+            ResolveResult with .modules in topological order, .errors
+            for anything that failed, and .cached for names served from the
+            disk cache.
         """
         fetched: dict[str, MibModule] = {}
         errors: dict[str, Exception] = {}
+        cached: set[str] = set()
         # Explicit requests are always honoured; BASE_MIBS filter applies only
         # to transitive dependency resolution (line 146) so that well-known
         # infrastructure MIBs are skipped when pulled in as deps but still
@@ -136,23 +190,13 @@ class MibResolver:
         # keyed by DECLARED name so imports of the declared name match; this
         # map preserves the requested name for is_dependency / cache aliasing.
         aliases: dict[str, str] = {}
+        # declared module name -> requested file that supplied it (issue #25).
+        declared_by: dict[str, str] = {}
 
         while pending:
-            # --- Cache check (synchronous, cheap) ---
+            # --- Queue the wave: fetch raw text first (issue #12) ---
             resolved_this_wave: set[str] = set()
-            still_pending: set[str] = set()
-            for name in sorted(pending):
-                if self._cache is not None:
-                    cached = self._cache.get(name)
-                    if cached is not None:
-                        # Cache entries carry the module's declared name inside
-                        # the serialised payload, so a hit (under either the
-                        # requested or the declared name) is re-keyed here.
-                        fetched[cached.name] = cached
-                        resolved_this_wave.add(cached.name)
-                        self._reconcile_name(aliases, name, cached)
-                        continue
-                still_pending.add(name)
+            still_pending: set[str] = set(pending)
 
             if still_pending:
                 # --- Concurrent fetch, then parse deterministically ---
@@ -166,6 +210,13 @@ class MibResolver:
                 # result per coroutine, so a length mismatch would be a bug —
                 # fail loudly.
                 for name, result in zip(names_ordered, fetch_results, strict=True):
+                    if name in resolved_this_wave:
+                        # A file earlier in this wave declared this requested
+                        # name (e.g. "A" declares B-MIB while B-MIB was also
+                        # requested and cannot be fetched). The declared-name
+                        # copy is authoritative — skip so we do not report the
+                        # module as both compiled and missing (issue #25).
+                        continue
                     if isinstance(result, MibSizeLimitError):
                         # Propagate immediately — size limit is a config
                         # error, not a per-module failure. Use `raise result`
@@ -183,24 +234,45 @@ class MibResolver:
                         # cleanly.
                         raise result
                     else:
+                        # Fingerprint the fetched text and consult the cache
+                        # BEFORE parsing: a hit (fingerprint matches) skips the
+                        # expensive parse. The source is always fetched so an
+                        # updated file can never serve a stale entry.
+                        fingerprint = _source_fingerprint(result)
+                        if self._cache is not None:
+                            cached_module = self._cache.get(name, fingerprint)
+                            if cached_module is not None:
+                                # Cache entries carry the module's declared
+                                # name inside the serialised payload, so a hit
+                                # (under either the requested or the declared
+                                # name) is re-keyed here.
+                                self._record_module(
+                                    fetched, declared_by, resolved_this_wave, name, cached_module
+                                )
+                                self._reconcile_name(aliases, name, cached_module)
+                                cached.add(cached_module.name)
+                                continue
                         try:
-                            module = self._parser.parse(result)
+                            # CPU-bound Lark parse — off the event-loop thread
+                            # (issue #19). SmiParser caches compiled Lark
+                            # parsers per thread, so concurrent to_thread
+                            # calls do not share mutable parser state.
+                            module = await asyncio.to_thread(self._parser.parse, result)
                         except Exception as exc:  # noqa: BLE001
                             errors[name] = exc
                             continue
                         # Key by the module's DECLARED name so dependents that
                         # import it (by its real name) resolve against this
                         # entry instead of triggering a phantom fetch.
-                        fetched[module.name] = module
-                        resolved_this_wave.add(module.name)
+                        self._record_module(fetched, declared_by, resolved_this_wave, name, module)
                         self._reconcile_name(aliases, name, module)
                         if self._cache is not None:
-                            self._cache.put(module.name, module)
+                            self._cache.put(module.name, module, fingerprint)
                             if module.name != name:
                                 # Also cache under the requested name so a
                                 # later run still asking for the misnamed file
                                 # gets a cache hit under the declared name.
-                                self._cache.put(name, module)
+                                self._cache.put(name, module, fingerprint)
 
             # --- Discover new transitive dependencies ---
             pending = set()
@@ -227,4 +299,5 @@ class MibResolver:
             modules=[fetched[name] for name in order],
             errors=errors,
             aliases=aliases,
+            cached=cached,
         )

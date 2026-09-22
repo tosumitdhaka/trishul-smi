@@ -483,8 +483,6 @@ class TestCompileAsyncWiring:
             "timeout": 12.5,
             "retries": 4,
             "max_size": 4096,
-            "cache_dir": tmp_path / "cache",
-            "cache_ttl_days": 11,
         }
         assert compiler.add_reader.call_args_list[0].args == (file_reader_instance,)
         assert compiler.add_reader.call_args_list[1].args == (http_reader_instance,)

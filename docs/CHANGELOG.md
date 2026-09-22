@@ -10,6 +10,57 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.9] — 2026-09-22
+
+### Fixed
+
+- **Off-loop parsing (#19)** — `MibResolver` now runs `SmiParser.parse` via
+  `asyncio.to_thread`, so CPU-bound Lark parsing no longer stalls the event loop (and all
+  concurrent coroutines) in embedded async services. CLAUDE.md / AGENTS.md /
+  architecture.md now describe the thread-pool offload as reality (#23, item 1).
+- **Concurrent-compile safety (#20)** — `MibCompiler.compile()` no longer mutates shared
+  formatter state (per-run `JsonFormatter` instances carry each run's artifact metadata);
+  `MibCache` writes use `tempfile.mkstemp` (a predictable `.tmp` name could interleave
+  bytes from two processes sharing a cache dir and corrupt an entry through the atomic
+  rename); cache reads treat any `OSError` as a miss instead of crashing the compile.
+- **Cache staleness (#12)** — compiled-module cache entries record a sha256 fingerprint
+  of the source text; the resolver fetches the source first and parses only on a
+  fingerprint miss, so an updated MIB file can never serve a stale entry.
+- **Alias edge cases (#25)** — two requested files declaring the same module name now emit
+  a collision warning on the surviving module; requesting both a misnamed file and its
+  declared name no longer produces a contradictory `compiled` + `missing` pair (single
+  consistent result, exit 0).
+
+### Added
+
+- **`cached` compile status (#15)** — modules served from the compiled-module cache
+  report `status="cached"` (CLI renders ♻ and an `N cached` summary segment); a success
+  state — the exit-code contract is unchanged.
+- **Nested-zip aggregate scan cap** — nested-archive extraction per top-level fetch is
+  capped at 4 × `max_mib_size` (v0.4.8 review residue: per-entry bounds alone left
+  unbounded time/churn for many-small-nested-zip archives).
+
+### Changed
+
+- **HttpReader: raw-body cache removed (breaking Python-API change)** — the `cache_dir`
+  constructor parameter is removed (the raw cache had been write-only since the v0.4.8
+  ETag removal); `cache_ttl_days` is accepted but deprecated (`DeprecationWarning`; use
+  `CompilerConfig.cache_ttl_days`, which drives the compiled-module cache).
+- **Cache-hit behavior (#12 trade-off)** — a warm cache no longer avoids the source fetch
+  (the cache saves parsing only), and a warm cache can no longer serve a compile when the
+  source is unreachable. Both are consequences of fetch-first fingerprint checking.
+
+### Known Limitations
+
+- Offline/air-gapped recompiles from a warm cache are no longer possible (fetch-first
+  fingerprint design); a fallback that serves the cached module with a warning when the
+  source fetch fails is tracked in the v0.4.10 plan.
+- Aggregate nested-zip exhaustion raises `MibSizeLimitError` for the whole run; a
+  legitimate bundle of many small nested zips can trip the 4× heuristic (tracked in the
+  v0.4.10 plan).
+
+---
+
 ## [0.4.8] — 2026-09-22
 
 ### Fixed
@@ -546,3 +597,4 @@ See [roadmap.md](roadmap.md) for the full list of planned v0.2.0 improvements.
 [0.4.6]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.6
 [0.4.7]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.7
 [0.4.8]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.8
+[0.4.9]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.9

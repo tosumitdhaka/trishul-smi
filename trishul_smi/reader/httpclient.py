@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
+import warnings
 from typing import Any
 
 import httpx
@@ -16,6 +15,11 @@ from trishul_smi.errors import MibNotFoundError, MibSizeLimitError, NetworkError
 from trishul_smi.reader.base import AbstractReader
 
 _PLACEHOLDER = "@mib@"
+
+# Sentinel default for the deprecated ``cache_ttl_days`` parameter: lets
+# __init__ distinguish "caller passed it" from "caller left the default",
+# so the DeprecationWarning fires only when the value is actually supplied.
+_UNSET: object = object()
 
 # Status codes that unambiguously mean "this MIB does not exist at this
 # source" (as opposed to a server-side failure). Every other non-2xx status
@@ -33,7 +37,6 @@ class HttpReader(AbstractReader):
       as soon as the accumulated size exceeds ``max_size`` — no HEAD pre-check,
       no Content-Length parsing, so a lying or absent Content-Length cannot
       force a full download into memory
-    - Raw-body disk cache: successful fetches are written under ``cache_dir``
 
     Fallback behaviour
     ------------------
@@ -58,18 +61,21 @@ class HttpReader(AbstractReader):
         timeout: float = 30.0,
         retries: int = 3,
         max_size: int | None = 10 * 1024 * 1024,
-        cache_dir: Path | None = None,
-        cache_ttl_days: int = 7,
+        cache_ttl_days: object = _UNSET,
     ) -> None:
         self._templates = list(url_templates)
         self._timeout = timeout
         self._retries = retries
         # None means unlimited: streaming still applies, just without the byte cap.
         self._max_size = max_size
-        self._cache_dir = cache_dir
-        # ``cache_ttl_days`` is accepted for CLI compatibility but unused: the
-        # raw-body cache is written unconditionally, and the compiled-module
-        # MibCache (resolver/cache.py) is what prevents re-parse across runs.
+        if cache_ttl_days is not _UNSET:
+            warnings.warn(
+                "HttpReader.cache_ttl_days is deprecated and unused: HttpReader no "
+                "longer maintains a raw-body cache. Set CompilerConfig.cache_ttl_days "
+                "to control the compiled-module MibCache instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> HttpReader:
@@ -175,28 +181,4 @@ class HttpReader(AbstractReader):
             chunks.append(chunk)
             total += len(chunk)
         text = b"".join(chunks).decode(response.encoding or "utf-8")
-        self._write_cache(url, text)
         return text
-
-    def _cache_path(self, url: str) -> Path | None:
-        if self._cache_dir is None:
-            return None
-        safe_name = url.replace("://", "_").replace("/", "_").replace(":", "_")
-        return self._cache_dir / "raw" / f"{safe_name}.mib"
-
-    def _write_cache(self, url: str, text: str) -> None:
-        """Atomically write *text* to the cache file for *url*."""
-        path = self._cache_path(url)
-        if path is None:
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            delete=False,
-            suffix=".tmp",
-        ) as tmp:
-            tmp.write(text)
-            tmp_path = Path(tmp.name)
-        tmp_path.replace(path)  # atomic on POSIX; best-effort on Windows

@@ -186,6 +186,21 @@ Fetch-layer limits & input hardening.
 
 ---
 
+## v0.4.9 — shipped 2026-09-22
+
+Runtime robustness & concurrency.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | Off-loop parsing | done | `asyncio.to_thread` + per-thread Lark cache; docs flipped to reality. (#19, #23 item 1) |
+| 2 | Concurrent-compile safety | done | Per-run formatter instances; `mkstemp` cache writes; `OSError`-tolerant cache reads. (#20) |
+| 3 | Cache content fingerprint | done | sha256 source fingerprint; fetch-first; never-stale. (#12) |
+| 4 | `cached` compile status | done | `ResolveResult.cached` → `CompileResult.status="cached"`; CLI ♻ rendering. (#15) |
+| 5 | Alias edge cases | done | Duplicate-declared-name collision warning; consistent explicit-alias results. (#25) |
+| 6 | v0.4.8 review residue | done | Raw-body cache removed (breaking `HttpReader.cache_dir` removal); nested-zip aggregate cap (4×); `cache_ttl_days` deprecation. |
+
+---
+
 ## Backlog
 
 | # | Item | Status | Notes |
