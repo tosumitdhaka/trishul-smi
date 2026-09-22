@@ -9,6 +9,7 @@ live clock and must not equal the pinned epoch.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -112,9 +113,14 @@ class TestReproducibleMetadata:
 
 class TestCliReproducible:
     def test_help_shows_reproducible_flag(self):
-        result = runner.invoke(_cmd, ["compile", "--help"])
+        # Rich wraps the help panel to the terminal width (80 columns on CI),
+        # which can break the option name across lines. Pin a wide layout via
+        # COLUMNS and assert on ANSI-stripped output so the check is
+        # width-independent.
+        result = runner.invoke(_cmd, ["compile", "--help"], env={"COLUMNS": "200"})
         assert result.exit_code == 0
-        assert "--reproducible" in result.output
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--reproducible" in plain
 
     def test_cli_reproducible_runs_are_byte_identical(self, tmp_path: Path):
         mib_dir = tmp_path / "mibs"
