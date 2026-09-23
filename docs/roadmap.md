@@ -216,11 +216,24 @@ Output contracts, determinism & pysnmp deprecation.
 
 ---
 
-## Backlog
+## v0.5.0 — planned
+
+First minor bump (reserved for breaking scope, per the versioning convention): the pysnmp `.py` removal promised by the v0.4.10 deprecation, the last known correctness edge case, and the highest-value workflow features.
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | MIB validation / lint mode | planned | `tsmi lint IF-MIB` — report missing imports, undefined types, etc. |
-| 2 | Watch mode | planned | Recompile on file change for local MIB development workflows. |
-| 3 | Plugin system for custom formatters | planned | Allow third-party output formats without forking. |
-| 4 | MIB borrowing (pre-compiled fallback) | planned | Download pre-compiled MIBs from a remote registry as fallback. |
+| 1 | pysnmp `.py` format removal (breaking) | planned | Delete `PysnmpFormatter` + `-f pysnmp` + deprecation notice paths. `tsmi convert` unaffected. Follow-up to the v0.4.10 deprecation (#24). |
+| 2 | Offline-fallback staleness fix | planned | v0.4.10 review M1: a cached misnamed alias served offline must not beat a genuinely fetchable source in the same wave — prefer the fresh fetch on the skip path. |
+| 3 | MIB validation / lint mode | planned | `tsmi lint IF-MIB` — missing imports, undefined types, unresolvable OIDs, unused imports, duplicate OID arcs. Single-pass over the existing resolver closure; `--format json` for CI. |
+| 4 | Watch mode | planned | `tsmi compile --watch` — debounced mtime polling (no new deps), recompiles the changed module + dependents only. |
+| 5 | Plugin system for custom formatters | planned | `trishul_smi.formatters` entry-point group; `-f name` resolves built-ins then plugins; the pysnmp removal's escape hatch. |
+
+---
+
+## Backlog
+
+(empty — items are promoted into per-release plans; see `docs/plans/`. MIB borrowing
+was dropped 2026-09-22: its value is already covered by the curated local corpus, the
+fingerprinted cache, the offline fallback, and the HTTP sources — and it would
+reintroduce un-fingerprintable third-party compiled artifacts, the exact failure class
+the 0.4.x program closed off.)
