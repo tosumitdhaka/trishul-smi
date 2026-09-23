@@ -10,7 +10,7 @@
 [![GitHub Issues](https://img.shields.io/github/issues/tosumitdhaka/trishul-smi)](https://github.com/tosumitdhaka/trishul-smi/issues)
 
 `trishul-smi` fetches, parses, and compiles SNMP MIB definitions (SMIv1 and SMIv2)
-into structured JSON or pysnmp-compatible Python modules.
+into portable JSON (module files plus optional bundle sidecars).
 It resolves transitive imports automatically, caches compiled modules on disk,
 and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 
@@ -20,13 +20,11 @@ and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 
 - **Full import closure** — resolves every transitive dependency automatically
 - **Full OID resolution** — all objects carry absolute numeric OID paths after compile
-- **Two output formats** — structured JSON and pysnmp-compatible Python
 - **Atomic JSON modules + optional sidecars** — each module JSON is usable on its own; `manifest.json` and `oid_index.json` are additive when enabled via `CompilerConfig` or the CLI flags `--emit-manifest` / `--emit-oid-index`
 - **Versioned JSON IR metadata** — module JSON and optional sidecars carry `schema_version`, `producer_version`, `generated_by`, and `generated_at`
 - **Deterministic sidecars** — optional `manifest.json` and `oid_index.json` describe the final emitted JSON file set, so overlapping alias inputs do not duplicate or self-poison bundle metadata
 - **Real-world parser compatibility** — wrapped inline comment continuations, `SNMPv2-PDU` compatibility forms, preserved-source `SNMPv2-TC` variants that import built-in ASN.1 symbols such as `OCTET STRING` and `OBJECT IDENTIFIER`, Juniper `AGENT-CAPABILITIES` clauses with `ACCESS not-implemented`, and vendor MIBs that use lowercase local type references now compile cleanly through the standard parser path
 - **Tagged ASN.1 type support** — explicit base MIBs such as `SNMPv2-SMI` compile correctly, including application-tagged types like `IpAddress` and `Counter32`
-- **pysmi-parity pysnmp output** — MibTableColumn detection, full TC subtypeSpec, setIndexNames, setOrganization, setRevisions, inline constraint wrappers
 - **Reverse conversion** — `tsmi convert FILE.py` converts a compiled PySNMP module back to JSON
 - **Directory compile mode** — `tsmi compile -d /path/to/mibs` auto-discovers and compiles every MIB file
 - **Concurrent fetching** — parallel async HTTP with retry and timeout; parse waves stay deterministic on real MIB corpora
@@ -53,8 +51,8 @@ Requires Python ≥ 3.10.
 # Compile from a local MIB directory
 tsmi compile IF-MIB --mib-dir /usr/share/snmp/mibs
 
-# Fetch from the internet and compile to JSON + pysnmp
-tsmi compile IF-MIB IP-MIB -f json -f pysnmp --online -o ./out
+# Fetch from the internet and compile to JSON
+tsmi compile IF-MIB IP-MIB -f json --online -o ./out
 
 # Emit optional bundle sidecars for downstream JSON consumers
 tsmi compile IF-MIB --online --emit-manifest --emit-oid-index -o ./out

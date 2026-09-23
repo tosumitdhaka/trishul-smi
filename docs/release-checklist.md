@@ -26,7 +26,7 @@ Follow this checklist for every release. Steps must be completed in order.
 - [ ] No open issues tagged for this milestone that are not resolved
 - [ ] If `~/test/mibs/` (or any local MIB corpus) is available, compile all of them:
   ```bash
-  .venv/bin/trishul-smi compile --mib-dir ~/test/mibs -f json -f pysnmp --cache-dir "" --verbose
+  .venv/bin/trishul-smi compile --mib-dir ~/test/mibs -f json --cache-dir "" --verbose
   ```
   Every MIB in the corpus must show ✅ before tagging.
   Judge success by the CLI result rows, not by output file count: alias source files such as

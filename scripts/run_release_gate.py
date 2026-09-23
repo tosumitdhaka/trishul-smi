@@ -296,8 +296,6 @@ def _wheel_smoke_test(settings: Settings, report: ReleaseGateReport) -> str:
                 *settings.smoke_mibs,
                 "-f",
                 "json",
-                "-f",
-                "pysnmp",
                 "--online",
                 # Disable the compiled-module cache: the smoke must exercise
                 # the cold fetch → parse → emit path deterministically. With

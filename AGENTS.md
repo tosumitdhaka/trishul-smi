@@ -30,12 +30,16 @@ ruff format trishul_smi tests
 
 # Run the CLI
 trishul-smi compile IF-MIB
-trishul-smi compile IF-MIB IP-MIB --format pysnmp -o ./out
+trishul-smi compile IF-MIB IP-MIB --format json -o ./out
+trishul-smi compile IF-MIB -d /usr/share/snmp/mibs --watch
+trishul-smi lint IF-MIB -d /usr/share/snmp/mibs
+trishul-smi convert IF_MIB.py
+trishul-smi version
 ```
 
 ## Architecture
 
-**trishul-smi** is an async SNMP MIB compiler: it fetches SMIv1/SMIv2 MIB definitions from local files, HTTP sources, or ZIP archives, parses them with a Lark grammar, resolves their import dependencies, and emits JSON or pysnmp-compatible Python modules.
+**trishul-smi** is an async SNMP MIB compiler: it fetches SMIv1/SMIv2 MIB definitions from local files, HTTP sources, or ZIP archives, parses them with a Lark grammar, resolves their import dependencies, and emits portable JSON (module files plus optional bundle sidecars).
 
 ### Data flow
 
@@ -47,7 +51,7 @@ CLI / Python API
       → MibCache (mtime-based TTL)       resolver/cache.py
       → SmiParser (Lark, thread pool)                parser/smi_parser.py
       → topological_sort (Kahn's algo)   resolver/dependency.py
-    → JsonFormatter / PysnmpFormatter    output/json_fmt.py, pysnmp_fmt.py
+    → JsonFormatter                     output/json_fmt.py
   → CompileResult per MIB
 ```
 
@@ -62,9 +66,10 @@ trishul_smi/
   reader/            FileReader, HttpReader (httpx+tenacity), ZipReader, ReaderChain
   parser/            SmiParser + MibTransformer; grammars in parser/grammar/*.lark
   resolver/          MibResolver (asyncio.gather), MibCache (orjson), dependency sort
-  output/            JsonFormatter, PysnmpFormatter (Jinja2 templates)
+  output/            JsonFormatter
   convert/           PysnmpReader — ast-based pysnmp .py → JSON reverse conversion
-  cli/main.py        Typer CLI — compile, convert, and version commands
+  watch.py           Watch-mode engine — debounced mtime polling + invalidation set
+  cli/main.py        Typer CLI — compile (--watch), lint, convert, and version commands
 ```
 
 ### Key design points

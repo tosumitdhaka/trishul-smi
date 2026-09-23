@@ -36,6 +36,13 @@ Error handling
   gets this fallback — transport failures (NetworkError and friends) always
   surface as per-module errors and never mask stale cache behind a
   reachable-but-broken source.
+- A fallback-served entry is a last resort, so it never blocks a genuine
+  fresh fetch: if the real source for a fallback-served declared name is
+  fetchable in the same wave, the fresh content replaces the stale entry
+  (with a collision warning) instead of being silently discarded (M1). If
+  that fresh source fails to parse, the fallback-served entry is kept and
+  the parse failure is reported as a warning on it — the module still
+  appears exactly once, as served/cached.
 """
 
 from __future__ import annotations
@@ -202,6 +209,11 @@ class MibResolver:
         aliases: dict[str, str] = {}
         # declared module name -> requested file that supplied it (issue #25).
         declared_by: dict[str, str] = {}
+        # Declared names whose current `fetched` entry was served by the
+        # offline cache fallback (v0.4.10 L1) rather than fetched from a live
+        # source. Such entries may be stale, so a genuine fresh fetch for the
+        # same declared name must be allowed to replace them (v0.5.0 M1).
+        fallback_served: set[str] = set()
 
         while pending:
             # --- Queue the wave: fetch raw text first (issue #12) ---
@@ -232,15 +244,69 @@ class MibResolver:
                         # parse path, which warns and is last-wins. Surface a
                         # collision warning on the surviving module (L2).
                         if isinstance(result, str):
-                            survivor = fetched[name]
-                            supplier = declared_by.get(name, "another requested file")
-                            warning = (
-                                f"Module requested as {name!r} was fetched but "
-                                f"discarded; {name!r} was already supplied by "
-                                f"{supplier!r}."
-                            )
-                            if warning not in survivor.warnings:
-                                survivor.warnings.append(warning)
+                            if name in fallback_served:
+                                # The claiming entry was served by the OFFLINE
+                                # CACHE FALLBACK (its source was unreachable
+                                # earlier in this wave), so it may be stale. A
+                                # genuine fresh fetch for the same declared
+                                # name is now available — prefer it: parse and
+                                # re-record through _record_module, which
+                                # emits the collision warning and lets the
+                                # fresh content replace the stale
+                                # fallback-served entry (v0.5.0 M1).
+                                # Freshly-sourced entries keep the normal
+                                # first-wins skip behavior — this branch only
+                                # fires for fallback-served claiming entries.
+                                try:
+                                    fresh_module = await asyncio.to_thread(
+                                        self._parser.parse, result
+                                    )
+                                except Exception as exc:  # noqa: BLE001
+                                    # The fresh source exists but does not
+                                    # parse. Keep the fallback-served entry
+                                    # rather than leaving a hole in the
+                                    # closure, and surface the parse failure
+                                    # as a WARNING on the kept module — NOT an
+                                    # errors[name] entry, which would report
+                                    # the same module as both cached and
+                                    # failed (issue #25 contradiction shape).
+                                    kept = fetched[name]
+                                    warning = (
+                                        f"fresh source for {name!r} failed to "
+                                        f"parse; keeping the cached fallback "
+                                        f"copy ({exc})"
+                                    )
+                                    if warning not in kept.warnings:
+                                        kept.warnings.append(warning)
+                                    continue
+                                self._record_module(
+                                    fetched,
+                                    declared_by,
+                                    resolved_this_wave,
+                                    name,
+                                    fresh_module,
+                                )
+                                self._reconcile_name(aliases, name, fresh_module)
+                                fallback_served.discard(name)
+                                # The final module was compiled from source,
+                                # not served from the disk cache — drop the
+                                # cached status the fallback recorded for it.
+                                cached.discard(name)
+                                if self._cache is not None:
+                                    fingerprint = _source_fingerprint(result)
+                                    self._cache.put(fresh_module.name, fresh_module, fingerprint)
+                                    if fresh_module.name != name:
+                                        self._cache.put(name, fresh_module, fingerprint)
+                            else:
+                                survivor = fetched[name]
+                                supplier = declared_by.get(name, "another requested file")
+                                warning = (
+                                    f"Module requested as {name!r} was fetched but "
+                                    f"discarded; {name!r} was already supplied by "
+                                    f"{supplier!r}."
+                                )
+                                if warning not in survivor.warnings:
+                                    survivor.warnings.append(warning)
                         continue
                     if isinstance(result, MibSizeLimitError):
                         # Propagate immediately — size limit is a config
@@ -277,6 +343,7 @@ class MibResolver:
                                 )
                                 self._reconcile_name(aliases, name, cached_module)
                                 cached.add(cached_module.name)
+                                fallback_served.add(cached_module.name)
                                 continue
                         errors[name] = result
                     elif isinstance(result, BaseException):

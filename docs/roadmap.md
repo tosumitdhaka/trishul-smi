@@ -216,17 +216,17 @@ Output contracts, determinism & pysnmp deprecation.
 
 ---
 
-## v0.5.0 — planned
+## v0.5.0 — shipped 2026-09-23
 
 First minor bump (reserved for breaking scope, per the versioning convention): the pysnmp `.py` removal promised by the v0.4.10 deprecation, the last known correctness edge case, and the highest-value workflow features.
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | pysnmp `.py` format removal (breaking) | planned | Delete `PysnmpFormatter` + `-f pysnmp` + deprecation notice paths. `tsmi convert` unaffected. Follow-up to the v0.4.10 deprecation (#24). |
-| 2 | Offline-fallback staleness fix | planned | v0.4.10 review M1: a cached misnamed alias served offline must not beat a genuinely fetchable source in the same wave — prefer the fresh fetch on the skip path. |
-| 3 | MIB validation / lint mode | planned | `tsmi lint IF-MIB` — missing imports, undefined types, unresolvable OIDs, unused imports, duplicate OID arcs. Single-pass over the existing resolver closure; `--format json` for CI. |
-| 4 | Watch mode | planned | `tsmi compile --watch` — debounced mtime polling (no new deps), recompiles the changed module + dependents only. |
-| 5 | Plugin system for custom formatters | planned | `trishul_smi.formatters` entry-point group; `-f name` resolves built-ins then plugins; the pysnmp removal's escape hatch. |
+| 1 | pysnmp `.py` format removal (breaking) | done | `PysnmpFormatter` + `-f pysnmp` removed; actionable error points at JSON bundle output. `tsmi convert` unaffected. (#24) |
+| 2 | Offline-fallback staleness fix | done | Fresh fetch beats a fallback-served stale alias in the same wave (M1); parse-failure on that path keeps the fallback entry with a warning (no cached+failed pair). |
+| 3 | MIB validation / lint mode | done | `tsmi lint` — five checks over the existing resolver closure; role-dependent `missing-import` severity; `--format text\|json`; exit 0/1/2. Calibrated on the 412-module corpus: 12 genuine errors found (8 vendor modules). |
+| 4 | Watch mode | done | `tsmi compile --watch` — debounced mtime polling, no new deps; invalidation-set recompiles; cumulative watch set (review blocker fixed pre-tag). |
+| 5 | Plugin system for custom formatters | done | `trishul_smi.formatters` entry-point group; built-ins-first resolution; broken plugins skip with a warning; the pysnmp removal's escape hatch. |
 
 ---
 

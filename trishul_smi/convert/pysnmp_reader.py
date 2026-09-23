@@ -1,8 +1,8 @@
 """PySNMPReader: convert a compiled PySNMP .py MIB module back to a MibModule.
 
 Uses Python's ast module to parse the .py file — not the SMI grammar.  The
-patterns recognised are those produced by pysmi and by trishul-smi's own
-PysnmpFormatter:
+patterns recognised are those produced by pysmi and by older trishul-smi
+versions (the pysnmp `.py` output format was removed in v0.5.0):
 
     ifMIB = ModuleIdentity((1, 3, 6, 1, 2, 1, 31,))
     ifDescr = MibScalar((1, 3, 6, 1, 2, 1, 2, 2, 1, 2,), DisplayString())

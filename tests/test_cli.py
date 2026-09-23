@@ -25,6 +25,7 @@ from click.testing import CliRunner
 
 from trishul_smi.cli.main import _compile_async, app
 from trishul_smi.config import CompilerConfig
+from trishul_smi.lint import CheckId, LintFinding, LintReport, LintSummary, Severity
 from trishul_smi.models import CompileResult
 from trishul_smi.output.json_bundle import MANIFEST_FILENAME, OID_INDEX_FILENAME
 
@@ -149,10 +150,13 @@ class TestCompileArgs:
         result = _invoke(["compile", "IF-MIB", "--online", "-f", "xml"])
         assert result.exit_code == 2
 
-    def test_emit_manifest_requires_json_format(self):
-        result = _invoke(["compile", "IF-MIB", "--online", "-f", "pysnmp", "--emit-manifest"])
+    def test_pysnmp_format_removed_exits_2(self):
+        """-f pysnmp is gone in v0.5.0 — exit 2 with the actionable message."""
+        result = _invoke(["compile", "IF-MIB", "--online", "-f", "pysnmp"])
         assert result.exit_code == 2
-        assert "emit_manifest" in result.output
+        assert "removed in v0.5.0" in result.output
+        assert "--format json" in result.output
+        assert "tsmi convert" in result.output
 
     def test_negative_retries_exits_2(self):
         result = _invoke(["compile", "IF-MIB", "--online", "--retries", "-1"])
@@ -554,3 +558,175 @@ class TestConvertCommand:
         out_dir = tmp_path / "out"
         result = _invoke(["convert", str(py_file), "-o", str(out_dir)])
         assert "IF-MIB" in result.output
+
+
+# ---------------------------------------------------------------------------
+# lint command
+# ---------------------------------------------------------------------------
+
+# Real MIB texts for --mib-dir reader-assembly tests (lint writes no output).
+LINT_CLEAN_MIB = """
+CLEAN-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+cleanMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Lint Test"
+    CONTACT-INFO "lint@example.com"
+    DESCRIPTION  "Clean lint fixture."
+    ::= { 1 3 }
+END
+"""
+
+LINT_BAD_MIB = """
+BAD-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE FROM SNMPv2-SMI ;
+badMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Lint Test"
+    CONTACT-INFO "lint@example.com"
+    DESCRIPTION  "Bad lint fixture."
+    ::= { 1 4 }
+ghostObj OBJECT-TYPE
+    SYNTAX      MysteryType
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Missing import."
+    ::= { badMIB 1 }
+END
+"""
+
+
+def _lint_finding(
+    check: CheckId = CheckId.MISSING_IMPORT,
+    severity: Severity = Severity.ERROR,
+    module: str = "A-MIB",
+    symbol: str = "MysteryType",
+    message: str = "boom",
+) -> LintFinding:
+    return LintFinding(
+        check=check, severity=severity, module=module, symbol=symbol, message=message
+    )
+
+
+def _make_lint_report(
+    findings: list[LintFinding] | None = None,
+    resolve_errors: dict[str, str] | None = None,
+    modules_checked: int = 1,
+) -> LintReport:
+    findings = findings or []
+    summary = LintSummary(
+        modules_checked=modules_checked,
+        errors=sum(1 for f in findings if f.severity is Severity.ERROR),
+        warnings=sum(1 for f in findings if f.severity is Severity.WARNING),
+    )
+    return LintReport(findings=findings, summary=summary, resolve_errors=resolve_errors or {})
+
+
+def _patch_lint(report: LintReport):
+    """Patch the lint engine so no real resolution happens."""
+    return patch("trishul_smi.cli.main.run_lint", new=AsyncMock(return_value=report))
+
+
+class TestLint:
+    def test_text_output_with_findings(self):
+        report = _make_lint_report(
+            findings=[
+                _lint_finding(),
+                _lint_finding(
+                    check=CheckId.UNUSED_IMPORT,
+                    severity=Severity.WARNING,
+                    module="D-MIB",
+                    symbol="Integer32",
+                    message="never referenced",
+                ),
+            ]
+        )
+        with _patch_lint(report):
+            result = _invoke(["lint", "A-MIB", "--online"])
+        assert result.exit_code == 1
+        assert "Errors:" in result.output
+        assert "Warnings:" in result.output
+        assert "A-MIB" in result.output
+        assert "MysteryType" in result.output
+        assert "missing-import" in result.output
+        assert "Summary: 1 module checked, 1 error, 1 warning" in result.output
+
+    def test_json_output_is_valid_and_stable(self):
+        report = _make_lint_report(findings=[_lint_finding()])
+        with _patch_lint(report):
+            result = _invoke(["lint", "A-MIB", "--online", "-f", "json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["findings"] == [
+            {
+                "check": "missing-import",
+                "severity": "error",
+                "module": "A-MIB",
+                "symbol": "MysteryType",
+                "message": "boom",
+            }
+        ]
+        assert data["summary"] == {"modules_checked": 1, "errors": 1, "warnings": 0}
+        assert data["resolve_errors"] == {}
+
+    def test_clean_module_exits_zero(self):
+        with _patch_lint(_make_lint_report()):
+            result = _invoke(["lint", "CLEAN-MIB", "--online"])
+        assert result.exit_code == 0
+        assert "Summary: 1 module checked, 0 errors, 0 warnings" in result.output
+
+    def test_findings_exit_one(self):
+        with _patch_lint(_make_lint_report(findings=[_lint_finding()])):
+            result = _invoke(["lint", "A-MIB", "--online"])
+        assert result.exit_code == 1
+
+    def test_resolve_errors_count_toward_exit_one(self):
+        report = _make_lint_report(resolve_errors={"NO-SUCH-MIB": "MIB 'NO-SUCH-MIB' not found"})
+        with _patch_lint(report):
+            result = _invoke(["lint", "NO-SUCH-MIB", "--online"])
+        assert result.exit_code == 1
+        assert "Unresolved modules:" in result.output
+        assert "NO-SUCH-MIB" in result.output
+
+    def test_no_names_exits_2(self):
+        result = _invoke(["lint", "--online"])
+        assert result.exit_code == 2
+
+    def test_no_source_exits_2(self):
+        result = _invoke(["lint", "IF-MIB"])
+        assert result.exit_code == 2
+        assert "No MIB source" in result.output
+
+    def test_invalid_name_exits_2(self):
+        with patch("trishul_smi.cli.main.run_lint") as lint_run:
+            result = _invoke(["lint", "../../etc/passwd", "-d", "."])
+        assert result.exit_code == 2
+        assert "Invalid MIB name" in result.output
+        lint_run.assert_not_called()
+
+    def test_unknown_format_exits_2(self):
+        result = _invoke(["lint", "IF-MIB", "--online", "-f", "xml"])
+        assert result.exit_code == 2
+
+    def test_negative_retries_exits_2(self):
+        result = _invoke(["lint", "IF-MIB", "--online", "--retries", "-1"])
+        assert result.exit_code == 2
+
+    def test_mib_dir_reader_assembly_clean(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        (mib_dir / "CLEAN-MIB").write_text(LINT_CLEAN_MIB, encoding="utf-8")
+        result = _invoke(["lint", "CLEAN-MIB", "-d", str(mib_dir), "--cache-dir", ""])
+        assert result.exit_code == 0
+        assert "Summary: 1 module checked, 0 errors, 0 warnings" in result.output
+
+    def test_mib_dir_reader_assembly_finds_issue(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        (mib_dir / "BAD-MIB").write_text(LINT_BAD_MIB, encoding="utf-8")
+        result = _invoke(["lint", "BAD-MIB", "-d", str(mib_dir), "--cache-dir", ""])
+        assert result.exit_code == 1
+        assert "missing-import" in result.output
+        assert "MysteryType" in result.output

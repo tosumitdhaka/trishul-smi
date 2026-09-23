@@ -4,9 +4,12 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Single source of truth for valid output format names.
-# compiler.py imports this to build _FORMATTER_CLASSES — add new formats here.
-VALID_FORMATS: frozenset[str] = frozenset({"json", "pysnmp"})
+# Built-in output format names. Plugin formats registered under the
+# ``trishul_smi.formatters`` entry-point group are discovered dynamically by
+# ``output/registry.py``, so they cannot be validated statically here — the
+# registry resolves them when MibCompiler is constructed and raises there for
+# unknown names. This set documents the built-ins only.
+VALID_FORMATS: frozenset[str] = frozenset({"json"})
 
 # Allowlist for MIB names accepted from the CLI (issue #22). Names flow into
 # filesystem paths (FileReader: directory / f"{name}{ext}") and HTTP URL
@@ -54,8 +57,10 @@ class CompilerConfig:
 
     # Output
     output_dir: Path = field(default_factory=lambda: Path("./mibs-output"))
-    # list[str] rather than list[Literal[...]] so that adding a new formatter
-    # only requires updating VALID_FORMATS above and compiler._FORMATTER_CLASSES.
+    # list[str] rather than list[Literal[...]] so that plugin format names
+    # (discovered via the trishul_smi.formatters entry-point group) can pass
+    # construction; unknown names fail later, in MibCompiler, with a listing of
+    # available formats (built-ins + discovered plugins).
     formats: list[str] = field(default_factory=lambda: ["json"])
 
     # HTTP
@@ -93,11 +98,15 @@ class CompilerConfig:
             raise ValueError("sources must not be empty")
         if not self.formats:
             raise ValueError("formats must not be empty")
-        unknown = set(self.formats) - VALID_FORMATS
-        if unknown:
+        # The pysnmp .py output format was removed in v0.5.0 (breaking change).
+        # Give a pointed error before the generic unknown-format message so
+        # `-f pysnmp` users know the format is gone and what to use instead.
+        if "pysnmp" in self.formats:
             raise ValueError(
-                f"Unknown output format(s): {sorted(unknown)}. "
-                f"Valid formats: {sorted(VALID_FORMATS)}"
+                "the 'pysnmp' output format was removed in v0.5.0 — use the JSON "
+                "bundle output instead (--format json, optionally with "
+                "--emit-manifest / --emit-oid-index); 'tsmi convert' is "
+                "unaffected for reading existing .py files"
             )
         if self.emit_manifest and "json" not in self.formats:
             raise ValueError("emit_manifest requires 'json' in formats")

@@ -619,3 +619,80 @@ class TestOfflineCacheFallback:
         assert isinstance(result.errors["IF-MIB"], MibNotFoundError)
         assert result.modules == []
         assert result.cached == set()
+
+    @pytest.mark.asyncio
+    async def test_fresh_fetch_wins_over_stale_offline_fallback(self, tmp_path: Path):
+        """v0.5.0 M1: when the offline fallback serves a stale cached misnamed
+        alias for a declared name whose genuine source is fetchable in the
+        same wave, the fresh source must win. The skip guard must re-record
+        the fresh content through _record_module (collision warning emitted)
+        instead of silently keeping the stale fallback-served entry.
+
+        Review repro: cached alias 'ALIAS' declaring B-MIB with LAST-UPDATED
+        2000; ALIAS is unreachable (fallback), but the genuine B-MIB source is
+        fetchable in the same wave with LAST-UPDATED 2003 → 2003 wins.
+        """
+        stale_alias_text = MINIMAL_V2.replace("TEST-MIB", "B-MIB").replace("testMIB", "bMIB")
+        fresh_source = stale_alias_text.replace(
+            'LAST-UPDATED "200001010000Z"', 'LAST-UPDATED "200301010000Z"'
+        )
+
+        cache = MibCache(tmp_path, ttl_days=7)
+        # Cached misnamed alias: requested "ALIAS" carried a module declaring
+        # B-MIB with old content (LAST-UPDATED 2000).
+        stale_cached = _make_module("B-MIB")
+        stale_cached.lastupdated = "200001010000Z"
+        cache.put("ALIAS", stale_cached)
+
+        # ALIAS is genuinely unreachable (→ offline fallback); B-MIB is
+        # fetchable from a live source with newer content.
+        reader = MockReader({"B-MIB": fresh_source})
+        resolver = MibResolver(reader, SmiParser(), cache=cache)
+
+        result = await resolver.resolve(["ALIAS", "B-MIB"])
+
+        assert result.ok
+        assert result.errors == {}
+        assert [m.name for m in result.modules] == ["B-MIB"]
+        module = result.modules[0]
+        # Fresh content (2003) replaces the stale fallback-served entry (2000).
+        assert module.lastupdated == "200301010000Z"
+        # Re-recorded via _record_module → the collision warning is emitted.
+        assert any("collision" in w and "'ALIAS'" in w and "'B-MIB'" in w for w in module.warnings)
+        # The surviving module was compiled from source, not served from cache.
+        assert result.cached == set()
+
+    @pytest.mark.asyncio
+    async def test_unparseable_fresh_fetch_keeps_fallback_entry(self, tmp_path: Path):
+        """v0.5.0 M1 regression: when the offline fallback serves a cached
+        entry for a declared name whose fresh source is fetchable in the same
+        wave but does NOT parse, the fallback-served entry must be kept and
+        the parse failure surfaced as a warning on it — NOT an errors[name]
+        entry. Recording the failure in .errors would report the same module
+        as both cached and failed (issue #25 contradiction shape) and exit 1.
+        """
+        cache = MibCache(tmp_path, ttl_days=7)
+        # Cached alias: requested "ALIAS" carries a module declaring B-MIB.
+        stale_cached = _make_module("B-MIB")
+        stale_cached.lastupdated = "200001010000Z"
+        cache.put("ALIAS", stale_cached)
+
+        # ALIAS is genuinely unreachable (→ offline fallback); the genuine
+        # B-MIB source is fetchable but its content is unparseable garbage.
+        reader = MockReader({"B-MIB": "this is not a MIB at all !!!"})
+        resolver = MibResolver(reader, SmiParser(), cache=cache)
+
+        result = await resolver.resolve(["ALIAS", "B-MIB"])
+
+        # The module appears exactly once, served from the fallback entry.
+        assert result.ok
+        assert result.errors == {}
+        assert result.cached == {"B-MIB"}
+        assert [m.name for m in result.modules] == ["B-MIB"]
+        module = result.modules[0]
+        # Stale fallback content is kept (fresh source could not be parsed).
+        assert module.lastupdated == "200001010000Z"
+        # The parse failure is reported as a warning on the kept module.
+        assert any(
+            "failed to parse" in w and "keeping the cached fallback" in w for w in module.warnings
+        )

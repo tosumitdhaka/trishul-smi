@@ -1,8 +1,8 @@
 """Shared Protocol for output formatters.
 
-All formatters (JsonFormatter, PysnmpFormatter, any future formatter) must
-conform to FormatterProtocol so the compiler can type-check its formatter
-registry and future authors know exactly what contract to satisfy.
+All formatters (JsonFormatter, any future formatter) must conform to
+FormatterProtocol so the compiler can type-check its formatter registry and
+future authors know exactly what contract to satisfy.
 """
 
 from __future__ import annotations

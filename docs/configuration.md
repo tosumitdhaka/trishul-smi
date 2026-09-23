@@ -10,7 +10,7 @@ from trishul_smi.config import CompilerConfig
 
 config = CompilerConfig(
     output_dir=Path("./out"),
-    formats=["json", "pysnmp"],
+    formats=["json"],
     cache_ttl_days=0,
 )
 ```
@@ -22,7 +22,7 @@ config = CompilerConfig(
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `output_dir` | `Path` | `./mibs-output` | Directory where output files are written |
-| `formats` | `list[str]` | `["json"]` | Output formats to generate: `"json"`, `"pysnmp"`, or both |
+| `formats` | `list[str]` | `["json"]` | Output formats to generate: `"json"` |
 | `sources` | `list[str]` | pysnmp.com + mibbrowser.online | HTTP URL templates; `@mib@` is replaced with the MIB name |
 | `cache_dir` | `Path \| None` | `~/.cache/trishul-smi` | Compiled-module cache directory; `None` disables the cache |
 | `cache_ttl_days` | `int` | `7` | Cache TTL in days; `0` = never expire |

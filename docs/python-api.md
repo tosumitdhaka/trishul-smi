@@ -29,7 +29,7 @@ from trishul_smi.reader import FileReader, HttpReader
 async def main() -> None:
     config = CompilerConfig(
         output_dir=Path("./out"),
-        formats=["json", "pysnmp"],  # "pysnmp" is deprecated (removal in v0.5.0)
+        formats=["json"],
     )
 
     compiler = MibCompiler(config).add_reader(FileReader("/usr/share/snmp/mibs"))

@@ -10,6 +10,44 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.0] — 2026-09-23
+
+### Removed
+
+- **pysnmp `.py` output format** (breaking; follow-up to the v0.4.10 deprecation, #24) —
+  `PysnmpFormatter` and `-f pysnmp` are removed. Selecting the format now raises an
+  actionable error pointing at the JSON bundle output. `tsmi convert` (reading existing
+  pysnmp `.py` files) is unaffected.
+
+### Added
+
+- **`tsmi lint`** — MIB validation over the existing resolve pipeline (no new parse path).
+  Five checks: `missing-import` (severity is reference-role dependent: type-role references
+  are errors, member/OID-role references are warnings), `undefined-type`,
+  `unresolvable-oid` (errors); `unused-import`, `duplicate-oid-arc` (warnings). Text and
+  JSON output (`--format`), exit codes 0 (clean) / 1 (findings or unresolved modules) /
+  2 (usage/config errors).
+- **Watch mode (`tsmi compile --watch`)** — debounced mtime polling with no new runtime
+  dependencies. On change, recompiles only the changed module and its transitive
+  dependents (invalidation set derived from the dependency graph); the watch set is
+  cumulative across cycles, so no module ever silently stops being polled. Clean Ctrl-C
+  exit with a run summary.
+- **Plugin formatters** — third-party output formats via the `trishul_smi.formatters`
+  entry-point group. Resolution is built-ins-first (a plugin cannot shadow `json`);
+  unknown format names raise an error listing built-in and discovered formats; broken
+  plugins are skipped with a warning. Doubles as the escape hatch for the pysnmp `.py`
+  removal.
+
+### Fixed
+
+- **Offline-fallback staleness (v0.4.10 review M1)** — a cached misnamed alias served by
+  the offline fallback no longer beats a genuinely fetchable source arriving in the same
+  wave: the fresh fetch now wins, with the module-name collision warning. A fresh fetch
+  that fails to parse keeps the fallback entry (with a warning) instead of emitting a
+  contradictory cached-and-failed result pair for the same module.
+
+---
+
 ## [0.4.10] — 2026-09-22
 
 ### Deprecated

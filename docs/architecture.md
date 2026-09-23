@@ -1,6 +1,6 @@
 # trishul-smi — Architecture
 
-> **Last updated:** 2026-09-22
+> **Last updated:** 2026-09-23
 
 ---
 
@@ -89,8 +89,8 @@ trishul_smi/
 │   ├── json_ir.py         ← shared JSON artifact metadata
 │   ├── json_contract.py   ← shared JSON class/nodetype semantics
 │   ├── json_bundle.py     ← optional manifest.json / oid_index.json builders
-│   ├── json_fmt.py        ← JsonFormatter  (FILE_SUFFIX = ".json")
-│   └── pysnmp_fmt.py      ← PysnmpFormatter (Jinja2, FILE_SUFFIX = ".py") — DEPRECATED since v0.4.10, removal targeted at v0.5.0
+│   ├── registry.py        ← formatter registry: built-ins + entry-point plugins
+│   └── json_fmt.py        ← JsonFormatter  (FILE_SUFFIX = ".json")
 │
 ├── convert/
 │   └── pysnmp_reader.py   ← PySNMPReader: compiled .py → MibModule (ast-based)
@@ -115,6 +115,7 @@ tests/
 ├── test_models.py
 ├── test_oid_resolver.py
 ├── test_parser.py
+├── test_plugins.py
 ├── test_readers.py
 ├── test_reproducible.py
 ├── test_resolver.py
@@ -286,21 +287,19 @@ Transforms a `MibModule` into an output string. Conforming to `FormatterProtocol
 
 ```python
 class FormatterProtocol(Protocol):
-    FILE_SUFFIX: str             # e.g. ".json" or ".py"
+    FILE_SUFFIX: str             # e.g. ".json"
     def format(self, module: MibModule) -> str | bytes: ...
 ```
 
 | Class | Output | Method |
 |---|---|---|
 | `JsonFormatter` | `.json` | `orjson` serialization; shared artifact metadata; descriptions normalized; `oid_path` compact |
-| `PysnmpFormatter` | `.py` | Jinja2 template; two-pass OID walk classifies MibTable / MibTableRow / MibTableColumn / MibScalar |
-
-`PysnmpFormatter` replaces hyphens in Python identifiers, emits full TEXTUAL-CONVENTION subclasses with `subtypeSpec`, inline `_Name_Type` wrappers for constrained OBJECT-TYPEs, `setIndexNames`/`AUGMENTS`, `setOrganization`, `setRevisions`, and `setDescription`. Supports `--no-texts` to suppress all text fields.
 
 `json_ir.py` creates one shared metadata block per compile run, `json_contract.py`
 centralizes runtime-visible JSON `class` and `nodetype` semantics, and `json_bundle.py`
 builds optional `manifest.json` and `oid_index.json` sidecars from the final emitted JSON
-file set for the compile run.
+file set for the compile run. `registry.py` resolves format names to formatter classes —
+built-ins first, then entry-point-discovered plugins (see [§3.11 Plugins](#311-plugins)).
 
 ---
 
@@ -344,7 +343,7 @@ Formatter errors are non-fatal — captured in `CompileResult.warnings`, logged 
 class CompilerConfig:
     sources: list[str]           # HTTP URL templates; @mib@ replaced with MIB name
     output_dir: Path             # default: ./mibs-output
-    formats: list[str]           # ["json"] | ["pysnmp"] | ["json", "pysnmp"]
+    formats: list[str]           # ["json"]
     cache_dir: Path | None       # None disables cache; default: ~/.cache/trishul-smi
     cache_ttl_days: int          # 0 = never expire; default: 7
     max_mib_size: int            # bytes; default: 10 MB
@@ -430,13 +429,54 @@ contract between producer (this package) and consumers.
 
 ---
 
+### 3.11 Plugins
+
+Custom output formats can be shipped as third-party packages. A plugin is a
+class conforming to the structural `FormatterProtocol` (`FILE_SUFFIX` class
+attribute + `format(module) -> str | bytes`), registered under the
+`trishul_smi.formatters` entry-point group:
+
+```toml
+# pyproject.toml of the plugin package
+[project.entry-points."trishul_smi.formatters"]
+yaml = "my_package.formatters:YamlFormatter"
+```
+
+```python
+# my_package/formatters.py
+from trishul_smi.models.mib_module import MibModule
+
+class YamlFormatter:
+    FILE_SUFFIX = ".yaml"
+
+    def format(self, module: MibModule) -> str:
+        ...  # render the module however you like
+```
+
+**Resolution order** (implemented in `output/registry.py`): built-in formats
+(`json`) are checked first; only names that are not built-in trigger
+entry-point discovery. A plugin can therefore never shadow a built-in name.
+
+**Broken-plugin policy:** a plugin that fails to import, or whose loaded object
+is not a formatter class, is skipped with a logged warning — it never aborts a
+compile run. Formatter errors at render time are already non-fatal (captured in
+`CompileResult.warnings`), and per-run formatter instances (v0.4.10) keep
+concurrent compiles race-free.
+
+**Escape hatch for the v0.5.0 pysnmp removal:** this plugin mechanism is the
+supported way to keep producing the old `.py` output after the built-in
+`pysnmp` format was removed — anyone who still needs it can ship a
+`PysnmpFormatter` as a plugin under this entry-point group.
+
+---
+
 ## 4. Data Flow — End to End
 
 ```
-$ tsmi compile IF-MIB -f json -f pysnmp --emit-manifest --emit-oid-index --online
+$ tsmi compile IF-MIB -f json --emit-manifest --emit-oid-index --online
 
 cli/main.py
-  ├─ CompilerConfig(formats=["json","pysnmp"], ...)
+  ├─ CompilerConfig(formats=["json"], ...)
   ├─ MibCompiler(config).add_reader(FileReader(...)).add_reader(http)  # http only if --online
   └─ await compiler.compile("IF-MIB")
         │
@@ -452,7 +492,6 @@ cli/main.py
         │
         └─ for each module in ordered list:
              JsonFormatter.format(module)     → IF-MIB.json
-             PysnmpFormatter.format(module)   → IF-MIB.py
         │
         ├─ build_oid_index_bytes(...)         → oid_index.json   [optional; final file set]
         └─ build_manifest_bytes(...)          → manifest.json    [optional; final file set]
@@ -486,7 +525,7 @@ cli
  │    │    ├── parser
  │    │    ├── oid_resolver
  │    │    └── cache
- │    └── output (json_fmt, pysnmp_fmt)
+ │    └── output (json_fmt)
  └── convert (pysnmp_reader)
       └── output (json_fmt)
 

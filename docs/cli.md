@@ -21,7 +21,7 @@ Compile one or more MIBs and all their transitive dependencies.
 | Option | Default | Description |
 |---|---|---|
 | `-o` / `--output-dir` | `./mibs-output` | Directory to write output files |
-| `-f` / `--format` | `json` | Output format: `json` or `pysnmp`. Repeat for multiple. |
+| `-f` / `--format` | `json` | Output format: `json`. |
 | `--emit-manifest` | off | Emit optional `manifest.json` bundle metadata alongside JSON output. Requires `json` output. |
 | `--emit-oid-index` | off | Emit optional `oid_index.json` reverse-lookup metadata alongside JSON output. Requires `json` output. |
 | `-d` / `--mib-dir` | — | Local MIB directory. Repeat for multiple. Searched before HTTP. |
@@ -34,6 +34,7 @@ Compile one or more MIBs and all their transitive dependencies.
 | `--retries` | `3` | HTTP retry count on transient failure. |
 | `--no-texts` | off | Omit description, organization, and contact text from output for leaner files. Structural metadata (OIDs, dates, types) is always preserved. |
 | `-v` / `--verbose` | — | Show output file paths per module. |
+| `--watch` | off | Watch MIB source files for changes and recompile only the changed module and its dependents. Requires explicit MIB names or at least one `--mib-dir`. |
 | `--help` | — | Show help and exit. |
 
 **Exit codes:** `0` all compiled — `1` any failure — `2` bad option or no source configured.
@@ -47,8 +48,8 @@ tsmi compile IF-MIB -d /usr/share/snmp/mibs
 # Fetch from the internet
 tsmi compile IF-MIB --online
 
-# Both formats, custom output directory
-tsmi compile IF-MIB IP-MIB -f json -f pysnmp --online -o ./out
+# Custom output directory
+tsmi compile IF-MIB IP-MIB -f json --online -o ./out
 
 # Emit optional JSON bundle sidecars
 tsmi compile IF-MIB --online --emit-manifest --emit-oid-index
@@ -57,7 +58,7 @@ tsmi compile IF-MIB --online --emit-manifest --emit-oid-index
 tsmi compile IF-MIB -d /usr/share/snmp/mibs --online
 
 # Compile every MIB found in a directory (no explicit names)
-tsmi compile -d /usr/share/snmp/mibs -f json -f pysnmp
+tsmi compile -d /usr/share/snmp/mibs -f json
 
 # Disable the disk cache
 tsmi compile IF-MIB --online --cache-dir ""
@@ -65,8 +66,11 @@ tsmi compile IF-MIB --online --cache-dir ""
 # Show per-module output paths
 tsmi compile IF-MIB --online --verbose
 
-# Lean output without description text (works for both json and pysnmp)
+# Lean output without description text
 tsmi compile IF-MIB --online --no-texts
+
+# Watch a local MIB directory and recompile on every change
+tsmi compile IF-MIB -d /usr/share/snmp/mibs --watch
 ```
 
 **Sample output**
@@ -79,6 +83,161 @@ Status    Module
 
 2 compiled
 ```
+
+---
+
+## Watch mode (`--watch`)
+
+`tsmi compile --watch` keeps the compile running and recompiles automatically
+when a MIB source file changes. It requires explicit MIB names or at least one
+`--mib-dir` (no watchable sources otherwise → exit 2).
+
+**How it works**
+
+- The initial compile runs normally; afterwards the CLI polls the source files
+  that participated in the resolved closure (the watched set) for changes.
+- Changes are **debounced (~300 ms)** — a burst of rapid writes triggers a
+  single recompile once the files stop changing.
+- On a change, only the **changed module and its transitive dependents** are
+  recompiled (the dependency graph is rebuilt from the last resolve's emitted
+  JSON `imports`). Unchanged modules are served by the fingerprinted
+  compiled-module cache and never re-parsed; modules outside the invalidation
+  set are not re-requested, so their output files are left untouched.
+- The same per-module results table is printed after every cycle.
+- New MIB-looking files appearing in `--mib-dir` mid-watch are reported with a
+  one-line notice but not watched or compiled (v1).
+- **Ctrl-C** stops the session cleanly: a short summary (cycles run, modules
+  recompiled) is printed and the process exits `0`.
+
+**Example**
+
+```
+$ tsmi compile IF-MIB -d /usr/share/snmp/mibs --watch
+Watching IF-MIB → ./mibs-output (json, Ctrl-C to stop)
+
+  Status   Module
+  ✅       IANAifType-MIB
+  ✅       IF-MIB
+
+2 compiled
+
+Cycle 2:
+  Status   Module
+  ✅       IANAifType-MIB
+  ♻        IF-MIB
+
+1 compiled  1 cached
+Watch stopped: 2 cycle(s) run, 1 module(s) recompiled.
+```
+
+Notes:
+
+- Dependents tracking relies on the emitted JSON module files (`imports`
+  section); with a non-json `--format` the invalidation set falls back to a
+  source-text `FROM` scan, so dependent tracking is best-effort.
+- Misnamed source files (file stem ≠ declared module name) are tracked under
+  their declared name; if no file matches, that module is not polled.
+- A same-size rewrite landing on the same coarse filesystem timestamp tick as
+  the last poll may be missed (mtime polling limitation).
+
+---
+
+## `tsmi lint` / `trishul-smi lint`
+
+```
+tsmi lint MIB [MIB ...] [OPTIONS]
+```
+
+Validate one or more MIBs and all their transitive dependencies against the
+v1 lint check set. Runs the same resolve pipeline as `compile` (fetch →
+parse → cache → OID resolution) and reports findings; **no output files are
+written**.
+
+**Check set (v1)**
+
+| Check | Severity | Meaning |
+|---|---|---|
+| `missing-import` | error / warning | A referenced symbol is neither imported nor defined in-module and is not a base type or well-known OID root. Error when the reference is in a TYPE position (SYNTAX / base type); warning when it is in a MEMBER/OID position (notification OBJECTS members, INDEX, AUGMENTS, OID parent, TRAP-TYPE ENTERPRISE) |
+| `undefined-type` | error | A SYNTAX/base-type reference has no TEXTUAL-CONVENTION or base type anywhere in the closure |
+| `unresolvable-oid` | error | An object's OID parent chain dead-ends |
+| `unused-import` | warning | An IMPORTS symbol is never referenced by the module |
+| `duplicate-oid-arc` | warning | Two or more objects resolve to the same absolute OID |
+
+**Arguments**
+
+| Argument | Description |
+|---|---|
+| `MIB ...` | One or more MIB names to lint (e.g. `IF-MIB IP-MIB`) |
+
+**Options**
+
+| Option | Default | Description |
+|---|---|---|
+| `-f` / `--format` | `text` | Output format: `text` (human-readable) or `json` (stable machine-readable document, for CI) |
+| `-d` / `--mib-dir` | — | Local MIB directory. Repeat for multiple. Searched before HTTP. |
+| `--online` | off | Fetch missing MIBs from HTTP sources (pysnmp.com + mibbrowser.online). Off by default. |
+| `-s` / `--source` | — | Custom HTTP URL template (`@mib@` replaced with MIB name). Implies `--online`. Repeat for multiple. |
+| `--cache-dir` | `~/.cache/trishul-smi` | Compiled-module cache directory. Pass `""` to disable. |
+| `--cache-ttl-days` | `7` | Cache TTL in days. `0` = never expire. |
+| `--max-mib-size` | `10485760` | Maximum MIB source size in bytes. |
+| `--timeout` | `30.0` | HTTP timeout in seconds. |
+| `--retries` | `3` | HTTP retry count on transient failure. |
+| `--help` | — | Show help and exit. |
+
+**Exit codes:** `0` no findings and no unresolved modules — `1` one or more findings or unresolved modules — `2` bad option, no source configured, or invalid MIB name.
+
+Modules that cannot be fetched or parsed are reported as *unresolved* in the
+output (they cannot be inspected) and count toward exit code `1`.
+
+**Examples**
+
+```bash
+# Lint a MIB from a local directory (no HTTP)
+tsmi lint IF-MIB -d /usr/share/snmp/mibs
+
+# Lint several MIBs, fetching missing dependencies from the internet
+tsmi lint IF-MIB IP-MIB --online
+
+# JSON output for CI
+tsmi lint IF-MIB -d /usr/share/snmp/mibs --format json
+
+# Disable the disk cache
+tsmi lint IF-MIB --online --cache-dir ""
+```
+
+**Sample text output**
+
+```
+Errors:
+  [A-MIB] MysteryType (missing-import): 'MysteryType' is referenced as a SYNTAX/base type but is neither imported nor defined in module 'A-MIB'
+Warnings:
+  [D-MIB] Integer32 (unused-import): imported symbol 'Integer32' from 'SNMPv2-SMI' is never referenced by module 'D-MIB'
+Summary: 2 modules checked, 1 error, 1 warning
+```
+
+**JSON output (`--format json`)**
+
+The document shape is stable and is the CI contract:
+
+```json
+{
+  "findings": [
+    {
+      "check": "missing-import",
+      "severity": "error",
+      "module": "A-MIB",
+      "symbol": "MysteryType",
+      "message": "'MysteryType' is referenced as a SYNTAX/base type but is neither imported nor defined in module 'A-MIB'"
+    }
+  ],
+  "summary": {"modules_checked": 2, "errors": 1, "warnings": 0},
+  "resolve_errors": {"NO-SUCH-MIB": "MIB 'NO-SUCH-MIB' not found"}
+}
+```
+
+`severity` is `error` or `warning`; `check` is one of the stable check ids
+above; `symbol` is `null` when a finding has no symbol; `resolve_errors`
+maps each module that could not be fetched or parsed to its error message.
 
 ---
 
@@ -186,21 +345,3 @@ set for that compile run.
 `producer_version` reflects the installed package version that produced the artifact.
 `oid_path` is the canonical runtime OID representation, and `oid` is emitted only when the
 matching numeric dotted string can be derived from it.
-
-### pysnmp (`-f pysnmp`)
-
-> **Deprecated (v0.4.10).** The pysnmp `.py` output format will be removed in v0.5.0.
-> Use the JSON bundle output (`-f json`, optionally with `--emit-manifest` /
-> `--emit-oid-index`) instead. `tsmi convert` (reading existing pysnmp `.py` files) is
-> unaffected.
-
-One `.py` file per MIB module, loadable by `pysnmp`'s `MibBuilder`:
-
-```python
-# IF-MIB MIB module
-# Generated by trishul-smi
-mibBuilder = MibBuilder()
-(ModuleIdentity, ObjectType,) = mibBuilder.importSymbols('SNMPv2-SMI', ...)
-ifMIB = ModuleIdentity((1, 3, 6, 1, 2, 1, 31,))
-mibBuilder.exportSymbols('IF-MIB', **{'ifMIB': ifMIB})
-```

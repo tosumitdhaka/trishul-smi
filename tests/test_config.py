@@ -75,16 +75,15 @@ class TestValidators:
         with pytest.raises(ValueError, match="formats"):
             CompilerConfig(formats=[])
 
-    def test_emit_manifest_requires_json_format(self):
-        with pytest.raises(ValueError, match="emit_manifest"):
-            CompilerConfig(formats=["pysnmp"], emit_manifest=True)
-
-    def test_emit_oid_index_requires_json_format(self):
-        with pytest.raises(ValueError, match="emit_oid_index"):
-            CompilerConfig(formats=["pysnmp"], emit_oid_index=True)
+    def test_pysnmp_format_removed_in_v0_5_0(self):
+        """The pysnmp .py output format is gone (breaking v0.5.0 change)."""
+        with pytest.raises(ValueError, match="removed in v0.5.0"):
+            CompilerConfig(formats=["pysnmp"])
+        with pytest.raises(ValueError, match="removed in v0.5.0"):
+            CompilerConfig(formats=["json", "pysnmp"], emit_manifest=True)
 
     def test_sidecar_flags_allowed_with_json_format(self):
-        c = CompilerConfig(formats=["json", "pysnmp"], emit_manifest=True, emit_oid_index=True)
+        c = CompilerConfig(formats=["json"], emit_manifest=True, emit_oid_index=True)
         assert c.emit_manifest is True
         assert c.emit_oid_index is True
 

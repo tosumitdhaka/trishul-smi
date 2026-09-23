@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from trishul_smi.config import VALID_FORMATS, CompilerConfig
+from trishul_smi.config import CompilerConfig
 from trishul_smi.models import CompileResult
 from trishul_smi.output.base import FormatterProtocol
 from trishul_smi.output.json_bundle import (
@@ -38,7 +38,7 @@ from trishul_smi.output.json_bundle import (
 )
 from trishul_smi.output.json_fmt import JsonFormatter
 from trishul_smi.output.json_ir import JsonArtifactMetadata, make_json_artifact_metadata
-from trishul_smi.output.pysnmp_fmt import PysnmpFormatter
+from trishul_smi.output.registry import resolve_formatter
 from trishul_smi.parser._constants import BASE_MIBS
 from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import FetchProtocol
@@ -51,11 +51,15 @@ logger = logging.getLogger(__name__)
 
 
 def _make_formatter(fmt: str, config: CompilerConfig) -> FormatterProtocol:
-    if fmt == "pysnmp":
-        return PysnmpFormatter(no_texts=config.no_texts)
-    if fmt == "json":
+    """Instantiate the formatter class for *fmt* (built-in or plugin).
+
+    Plugins resolve through the entry-point registry; an unknown name raises
+    a ValueError listing every available format.
+    """
+    formatter_cls = resolve_formatter(fmt)
+    if formatter_cls is JsonFormatter:
         return JsonFormatter(no_texts=config.no_texts)
-    raise ValueError(f"Unknown output format: {fmt!r}")
+    return formatter_cls()
 
 
 class MibCompiler:
@@ -76,14 +80,11 @@ class MibCompiler:
     def __init__(self, config: CompilerConfig | None = None) -> None:
         self._config = config or CompilerConfig()
 
-        # Validate formats eagerly — a KeyError in compile() deep inside an
-        # async gather would be opaque. Surface it here instead.
-        unknown = set(self._config.formats) - VALID_FORMATS
-        if unknown:
-            raise ValueError(
-                f"Unknown output format(s): {sorted(unknown)}. "
-                f"Valid formats: {sorted(VALID_FORMATS)}"
-            )
+        # Format names are validated eagerly by _make_formatter() below (via
+        # the formatter registry): unknown names — including any that the
+        # config layer cannot statically reject — raise ValueError here, before
+        # any I/O begins. Plugin format names pass config construction and
+        # resolve (or fail with the full available-format listing) here.
 
         self._readers: list[FetchProtocol] = []
         # Set on the first compile() call; add_reader() raises RuntimeError
