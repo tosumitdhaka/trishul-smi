@@ -26,8 +26,10 @@ Design notes
   its source file) ever observed in any resolved closure, from the initial
   full compile onward. A module never leaves the watch set because one cycle's
   invalidation set happened not to include it. New MIB-looking files appearing
-  in ``--mib-dir`` mid-watch are reported once via ``on_new_files`` but not
-  watched or compiled (v1).
+  in ``--mib-dir`` mid-watch are ADOPTED: announced once via ``on_new_files``,
+  folded into the cumulative closure, given an initial compile in the next
+  debounced cycle, and polled like any other module afterwards. File removal
+  stays notice-only (deletion handling is a separate design question).
 - Misnamed source files (file stem ≠ declared module name) are tracked under
   their declared name; if no file matches the declared name, the module is not
   polled (v1 limitation).
@@ -63,7 +65,8 @@ class WatchSummary:
     cycles_run: int
     """Total compile cycles: the initial full compile plus every incremental one."""
     modules_recompiled: int
-    """Total module recompiles triggered by file changes (invalidation-set sizes)."""
+    """Total modules compiled in incremental cycles: change-triggered
+    recompiles (invalidation-set sizes) plus adopted new files."""
 
 
 CompileCycle = Callable[[list[str]], Awaitable[list[CompileResult]]]
@@ -187,14 +190,16 @@ def _notice_new_files(
     known: set[str],
     noticed: set[str],
     on_new_files: NewFilesHandler | None,
-) -> None:
-    """Report MIB-looking files that appeared in --mib-dir mid-watch.
+) -> list[str]:
+    """Detect MIB-looking files that appeared in --mib-dir mid-watch.
 
-    *known* is the union of every module name ever seen in a resolved closure,
-    so a file that merely drops out of the last cycle's closure (an
-    incremental cycle only resolves the invalidation set) is not mistaken for
-    a new arrival. v1 scope: new files are reported but not watched or
-    compiled.
+    Returns the newly-seen stems (and adds them to *noticed* so a repeated
+    scan never reports them again, even if adoption fails). *known* is the
+    union of every module name ever seen in a resolved closure, so a file that
+    merely drops out of the last cycle's closure (an incremental cycle only
+    resolves the invalidation set) is not mistaken for a new arrival. The
+    caller adopts the returned stems into the watch set; adoption compiles
+    them through the normal cycle path.
     """
     new: list[str] = []
     for directory in mib_dirs:
@@ -213,6 +218,7 @@ def _notice_new_files(
                 new.append(stem)
     if new and on_new_files is not None:
         on_new_files(sorted(new))
+    return new
 
 
 async def run_watch(
@@ -259,6 +265,12 @@ async def run_watch(
     # re-resolve stays polled and its dependents stay discoverable.
     known_names: set[str] = set(initial_names)
     noticed: set[str] = set()
+    # Stems adopted mid-watch whose initial compile is still pending the
+    # debounce window (folded into the next cycle's invalidation set).
+    pending_adopt: list[str] = []
+    # Timestamp of the last detected change (file edit or new-file arrival);
+    # a compile fires only after the debounce window has elapsed.
+    last_change: float | None = None
 
     def _current_summary() -> WatchSummary:
         return WatchSummary(cycles_run=cycles_run, modules_recompiled=modules_recompiled)
@@ -274,6 +286,27 @@ async def run_watch(
         baseline = {path: _stat_sig(path) for path in watched.values()}
         return graph, watched, baseline
 
+    def _adopt_new_files() -> None:
+        """Scan for new MIB-looking files and adopt them into the watch set.
+
+        Detection is idempotent: a stem joins ``known_names`` (and
+        ``noticed``) the first time it is seen, so it is never announced or
+        compiled twice. The initial compile of an adopted module is debounced
+        like a file change — the stem is folded into the next cycle's
+        invalidation set — so a half-written new file settles before its first
+        parse. Adoption follows the same stem-dedup rule as --mib-dir
+        discovery: the first directory that provides a source file for the
+        stem wins (``_find_source_file`` iterates the dirs in order).
+        """
+        new_stems = _notice_new_files(mib_dirs, known_names, noticed, on_new_files)
+        if new_stems:
+            known_names.update(new_stems)
+            pending_adopt.extend(new_stems)
+            # A new arrival is a change event too: re-arm the debounce so the
+            # file's state settles before its initial compile.
+            nonlocal last_change
+            last_change = time.monotonic()
+
     # --- Initial cycle ---
     try:
         results = await compile_cycle(list(initial_names))
@@ -285,16 +318,15 @@ async def run_watch(
     known_names.update(r.name for r in results)
     graph, watched, baseline = _refresh_watch_state(watched)
     prev_snap = baseline
-    _notice_new_files(mib_dirs, known_names, noticed, on_new_files)
+    _adopt_new_files()
 
-    last_change: float | None = None
     while True:
         if stop_event is not None and stop_event.is_set():
             break
         if max_cycles is not None and cycles_run >= max_cycles:
             break
 
-        _notice_new_files(mib_dirs, known_names, noticed, on_new_files)
+        _adopt_new_files()
 
         try:
             await asyncio.sleep(poll_interval)
@@ -316,6 +348,14 @@ async def run_watch(
         changed_paths = [path for path in baseline if snap[path] != baseline[path]]
         changed_names = {name for name, path in watched.items() if path in changed_paths}
         names = _transitive_dependents(changed_names, graph)
+        if pending_adopt:
+            # Fold adopted new modules into this cycle's compile. They never
+            # participated in the last graph, so no reverse edges can
+            # invalidate anything that imports them (nothing does yet) — the
+            # stems are compiled as-is and their dependencies resolve through
+            # the normal compile pipeline.
+            names |= set(pending_adopt)
+            pending_adopt.clear()
         if not names:
             # A watched file no longer maps to a known module (e.g. renamed
             # between polls) — nothing to recompile this cycle.
@@ -332,7 +372,7 @@ async def run_watch(
         known_names.update(r.name for r in results)
         graph, watched, baseline = _refresh_watch_state(watched)
         prev_snap = baseline
-        _notice_new_files(mib_dirs, known_names, noticed, on_new_files)
+        _adopt_new_files()
         if any(path in snap and snap[path] != baseline[path] for path in baseline):
             # The source kept changing while we were compiling — re-arm the
             # debounce so the newest state still gets compiled.

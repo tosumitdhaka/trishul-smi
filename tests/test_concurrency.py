@@ -183,11 +183,13 @@ class TestUnreadableCacheEntries:
         real_stat = Path.stat
         calls = {"n": 0}
 
-        def _flaky_stat(self):
+        def _flaky_stat(self, **kwargs):
             calls["n"] += 1
             if calls["n"] == 2:  # the stat inside _is_stale (1st is is_file)
                 raise PermissionError("denied")
-            return real_stat(self)
+            # Forward whatever the running Python passes (e.g. follow_symlinks
+            # on 3.13+) to the real implementation, which accepts its own args.
+            return real_stat(self, **kwargs)
 
         with patch("pathlib.Path.stat", _flaky_stat):
             assert cache.get("IF-MIB") is None

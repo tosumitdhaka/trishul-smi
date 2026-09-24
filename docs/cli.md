@@ -104,8 +104,12 @@ when a MIB source file changes. It requires explicit MIB names or at least one
   compiled-module cache and never re-parsed; modules outside the invalidation
   set are not re-requested, so their output files are left untouched.
 - The same per-module results table is printed after every cycle.
-- New MIB-looking files appearing in `--mib-dir` mid-watch are reported with a
-  one-line notice but not watched or compiled (v1).
+- New MIB-looking files appearing in `--mib-dir` mid-watch are **adopted**:
+  the new module joins the watch set, gets an initial compile folded into the
+  next debounced cycle, and is watched like any other from then on (first
+  `--mib-dir` wins on stem collisions). A new file that fails to parse
+  surfaces as a `failed` result row without stopping the watcher. Removed
+  files are reported with a one-line notice only.
 - **Ctrl-C** stops the session cleanly: a short summary (cycles run, modules
   recompiled) is printed and the process exits `0`.
 
@@ -145,15 +149,17 @@ Notes:
 ## `tsmi lint` / `trishul-smi lint`
 
 ```
-tsmi lint MIB [MIB ...] [OPTIONS]
+tsmi lint [MIB ...] [OPTIONS]
 ```
 
 Validate one or more MIBs and all their transitive dependencies against the
-v1 lint check set. Runs the same resolve pipeline as `compile` (fetch →
-parse → cache → OID resolution) and reports findings; **no output files are
-written**.
+v1 lint check set (plus the two v0.5.1 additions below). Runs the same
+resolve pipeline as `compile` (fetch → parse → cache → OID resolution) and
+reports findings; **no output files are written**. When no `MIB` names are
+given, the whole `--mib-dir` discovery set is linted — the same discovery
+semantics as `compile` (file stems, deduplicated, first `--mib-dir` wins).
 
-**Check set (v1)**
+**Check set (v1 + v0.5.1)**
 
 | Check | Severity | Meaning |
 |---|---|---|
@@ -162,18 +168,21 @@ written**.
 | `unresolvable-oid` | error | An object's OID parent chain dead-ends |
 | `unused-import` | warning | An IMPORTS symbol is never referenced by the module |
 | `duplicate-oid-arc` | warning | Two or more objects resolve to the same absolute OID |
+| `missing-status` | warning | A construct whose SMI macro mandates a STATUS clause lacks one (SMIv2 macros with STATUS: OBJECT-TYPE, OBJECT-IDENTITY, NOTIFICATION-TYPE, OBJECT-GROUP, NOTIFICATION-GROUP, MODULE-COMPLIANCE, AGENT-CAPABILITIES; TEXTUAL-CONVENTION) |
+| `missing-description` | warning | A construct whose SMI macro carries a DESCRIPTION clause lacks one (the STATUS-bearing macros above plus TRAP-TYPE, and the module-level description of a SMIv2 module) |
 
 **Arguments**
 
 | Argument | Description |
 |---|---|
-| `MIB ...` | One or more MIB names to lint (e.g. `IF-MIB IP-MIB`) |
+| `MIB ...` | One or more MIB names to lint (e.g. `IF-MIB IP-MIB`). Omit to lint every MIB discovered in `--mib-dir` directories. |
 
 **Options**
 
 | Option | Default | Description |
 |---|---|---|
 | `-f` / `--format` | `text` | Output format: `text` (human-readable) or `json` (stable machine-readable document, for CI) |
+| `--fail-level` | `all` | Exit-1 threshold: `all` (any finding or unresolved module) or `error` (only error-severity findings and unresolved modules; warnings report but exit 0) |
 | `-d` / `--mib-dir` | — | Local MIB directory. Repeat for multiple. Searched before HTTP. |
 | `--online` | off | Fetch missing MIBs from HTTP sources (pysnmp.com + mibbrowser.online). Off by default. |
 | `-s` / `--source` | — | Custom HTTP URL template (`@mib@` replaced with MIB name). Implies `--online`. Repeat for multiple. |
@@ -184,16 +193,26 @@ written**.
 | `--retries` | `3` | HTTP retry count on transient failure. |
 | `--help` | — | Show help and exit. |
 
-**Exit codes:** `0` no findings and no unresolved modules — `1` one or more findings or unresolved modules — `2` bad option, no source configured, or invalid MIB name.
+**Exit codes:** `0` no findings and no unresolved modules — `1` one or more
+findings or unresolved modules (with `--fail-level error`: one or more
+error-severity findings or unresolved modules) — `2` bad option, no source
+configured, or invalid MIB name.
 
 Modules that cannot be fetched or parsed are reported as *unresolved* in the
-output (they cannot be inspected) and count toward exit code `1`.
+output (they cannot be inspected) and count toward exit code `1` under both
+`--fail-level` values.
 
 **Examples**
 
 ```bash
 # Lint a MIB from a local directory (no HTTP)
 tsmi lint IF-MIB -d /usr/share/snmp/mibs
+
+# Lint every MIB discovered in --mib-dir (no names needed)
+tsmi lint -d /usr/share/snmp/mibs
+
+# Gate CI on errors only; warnings report but do not fail the run
+tsmi lint -d /usr/share/snmp/mibs --fail-level error
 
 # Lint several MIBs, fetching missing dependencies from the internet
 tsmi lint IF-MIB IP-MIB --online

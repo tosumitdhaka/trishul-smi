@@ -19,10 +19,14 @@ from trishul_smi.lint import (
     LintReport,
     LintSummary,
     Severity,
+    _check_missing_status,
     format_lint_report_text,
     lint_report_to_dict,
     run_lint,
 )
+from trishul_smi.models.mib_module import MibModule
+from trishul_smi.models.mib_object import MibObject
+from trishul_smi.models.mib_type import MibType
 
 # ---------------------------------------------------------------------------
 # Fixtures — one per check
@@ -197,6 +201,47 @@ cleanObj OBJECT-TYPE
     STATUS      current
     DESCRIPTION "A well-formed object."
     ::= { cleanMIB 1 }
+END
+"""
+
+
+# (f) missing-status fires on a STATUS-bearing macro whose STATUS clause is
+# absent. The strict v1 grammar currently requires STATUS on every SMIv2
+# macro, so no text fixture can carry this omission and parse — the check is
+# exercised at the model level (see TestMissingStatus).
+#
+# (g) missing-description, object level: `trap` is a TRAP-TYPE whose
+# DESCRIPTION clause is optional per RFC 1215 and therefore parseable with
+# the clause omitted. Everything else in the module is compliant, so this is
+# the only finding.
+MISSING_DESCRIPTION_TRAP_MIB = """
+T-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, TRAP-TYPE FROM SNMPv2-SMI ;
+tMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Lint Test"
+    CONTACT-INFO "lint@example.com"
+    DESCRIPTION  "Missing-description trap fixture."
+    ::= { 1 3 }
+trap TRAP-TYPE
+    ENTERPRISE tMIB
+    ::= 1
+END
+"""
+
+# (g) missing-description, module level: an SMIv2 module with no
+# MODULE-IDENTITY has no module-level DESCRIPTION. The one TC is fully
+# compliant (STATUS + DESCRIPTION + SYNTAX), so the module-level finding is
+# the only one.
+MISSING_DESCRIPTION_MODULE_MIB = """
+R-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    DisplayString FROM SNMPv2-TC ;
+MyTc ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION "A well-formed TC, but the module has no MODULE-IDENTITY."
+    SYNTAX      DisplayString (SIZE (0..255))
 END
 """
 
@@ -378,6 +423,93 @@ class TestDuplicateOidArc:
         report = _lint({"E-MIB": DUPLICATE_OID_ARC_MIB})
         assert report.summary.errors == 0
         assert report.summary.warnings == 1
+
+
+# ---------------------------------------------------------------------------
+# Check (f): missing status
+# ---------------------------------------------------------------------------
+
+
+class TestMissingStatus:
+    def test_reports_missing_status_on_object(self) -> None:
+        # Model-level fixture: the v1 grammar requires STATUS on every SMIv2
+        # macro, so a text fixture omitting it cannot parse (see module
+        # docstring for the scope rationale).
+        module = MibModule(
+            name="S-MIB",
+            language="SMIv2",
+            objects={
+                "sObj": MibObject(
+                    name="sObj",
+                    oid="1.3.6.1.2.1.1",
+                    object_type="OBJECT-TYPE",
+                    status=None,
+                )
+            },
+        )
+        findings: list[LintFinding] = []
+        _check_missing_status(module, findings)
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding.check is CheckId.MISSING_STATUS
+        assert finding.severity is Severity.WARNING
+        assert finding.module == "S-MIB"
+        assert finding.symbol == "sObj"
+        assert "STATUS" in finding.message
+
+    def test_reports_missing_status_on_tc_shaped_type(self) -> None:
+        # A TEXTUAL-CONVENTION marker (here a DESCRIPTION) identifies a type
+        # as a TC; plain type assignments carry neither marker and are exempt.
+        module = MibModule(
+            name="S-MIB",
+            language="SMIv2",
+            types={
+                "MyTc": MibType(
+                    name="MyTc",
+                    base_type="OCTET STRING",
+                    description="has a description but no status",
+                )
+            },
+        )
+        findings: list[LintFinding] = []
+        _check_missing_status(module, findings)
+        assert len(findings) == 1
+        assert findings[0].check is CheckId.MISSING_STATUS
+        assert findings[0].symbol == "MyTc"
+
+    def test_silent_on_compliant_module(self) -> None:
+        report = _lint({"CLEAN-MIB": CLEAN_MIB})
+        assert not [f for f in report.findings if f.check is CheckId.MISSING_STATUS]
+
+
+# ---------------------------------------------------------------------------
+# Check (g): missing description
+# ---------------------------------------------------------------------------
+
+
+class TestMissingDescription:
+    def test_reports_missing_description_on_trap_type(self) -> None:
+        report = _lint({"T-MIB": MISSING_DESCRIPTION_TRAP_MIB})
+        assert len(report.findings) == 1
+        finding = report.findings[0]
+        assert finding.check is CheckId.MISSING_DESCRIPTION
+        assert finding.severity is Severity.WARNING
+        assert finding.module == "T-MIB"
+        assert finding.symbol == "trap"
+        assert "DESCRIPTION" in finding.message
+
+    def test_reports_module_level_missing_description(self) -> None:
+        report = _lint({"R-MIB": MISSING_DESCRIPTION_MODULE_MIB})
+        assert len(report.findings) == 1
+        finding = report.findings[0]
+        assert finding.check is CheckId.MISSING_DESCRIPTION
+        assert finding.severity is Severity.WARNING
+        assert finding.module == "R-MIB"
+        assert finding.symbol is None
+
+    def test_silent_on_compliant_module(self) -> None:
+        report = _lint({"CLEAN-MIB": CLEAN_MIB})
+        assert not [f for f in report.findings if f.check is CheckId.MISSING_DESCRIPTION]
 
 
 # ---------------------------------------------------------------------------

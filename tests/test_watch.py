@@ -482,11 +482,14 @@ async def test_rapid_writes_debounce_to_single_cycle(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Engine: new files in --mib-dir are noticed, not watched (v1)
+# Engine: new files in --mib-dir are adopted — compiled and watched
 # ---------------------------------------------------------------------------
 
 
-async def test_new_file_in_mib_dir_noticed_not_crashing(tmp_path: Path):
+async def test_new_file_adopted_compiled_and_watched(tmp_path: Path):
+    """A file appearing in --mib-dir mid-watch is adopted: its module joins
+    the watch set, gets an initial compile (its output file appears), and is
+    polled like any other module — a later modification of IT fires a cycle."""
     mib_dir = tmp_path / "mibs"
     out_dir = tmp_path / "out"
     cache_dir = tmp_path / "cache"
@@ -494,13 +497,17 @@ async def test_new_file_in_mib_dir_noticed_not_crashing(tmp_path: Path):
     compiler, parser = _build_compiler(mib_dir, out_dir, cache_dir)
 
     started = asyncio.Event()
-    new_seen = asyncio.Event()
+    cycle_done = {n: asyncio.Event() for n in (2, 3)}
+    closures: dict[int, set[str]] = {}
     new_files: list[str] = []
-    stop = asyncio.Event()
+    new_seen = asyncio.Event()
 
     def on_cycle(n: int, results) -> None:
+        closures[n] = {r.name for r in results}
         if n == 1:
             started.set()
+        if n in cycle_done:
+            cycle_done[n].set()
 
     def on_new_files(files: list[str]) -> None:
         new_files.extend(files)
@@ -513,21 +520,132 @@ async def test_new_file_in_mib_dir_noticed_not_crashing(tmp_path: Path):
         ["A-MIB"],
         debounce=0.05,
         poll=0.005,
-        max_cycles=10,
+        max_cycles=3,
         on_cycle=on_cycle,
         on_new_files=on_new_files,
-        stop_event=stop,
     )
-    await started.wait()
+    await asyncio.wait_for(started.wait(), timeout=10)
 
     new_mib = C_MIB.replace("C-MIB", "NEW-MIB").replace("cMIB", "newMIB")
     _write_fixture(mib_dir, {"NEW-MIB": new_mib})
-    await asyncio.wait_for(new_seen.wait(), timeout=5)
+    await asyncio.wait_for(new_seen.wait(), timeout=10)
     assert "NEW-MIB" in new_files
+    await asyncio.wait_for(cycle_done[2].wait(), timeout=10)
+    assert "NEW-MIB" in closures[2]
+    assert (out_dir / "NEW-MIB.json").is_file()
 
-    stop.set()
+    # The adopted module is watched from the next cycle: modifying IT triggers
+    # a recompile and refreshes its output.
+    new_path = out_dir / "NEW-MIB.json"
+    before = new_path.read_bytes()
+    _write_changed(mib_dir / "NEW-MIB", new_mib.replace("::= { 1 8 }", "::= { 1 9 }"))
+    await asyncio.wait_for(cycle_done[3].wait(), timeout=10)
+    assert "NEW-MIB" in closures[3]
+    assert new_path.read_bytes() != before
+
     summary = await task
-    assert summary.cycles_run == 1  # the new file never triggered a compile
+    assert summary.cycles_run == 3
+    assert summary.modules_recompiled == 2  # cycle 2: adoption; cycle 3: modification
+
+
+async def test_new_unparseable_file_failed_row_not_crash(tmp_path: Path):
+    """An unparseable new file is adopted like any other: its initial compile
+    surfaces a failed result row (not a crash), and the watcher keeps running."""
+    mib_dir = tmp_path / "mibs"
+    out_dir = tmp_path / "out"
+    cache_dir = tmp_path / "cache"
+    _write_fixture(mib_dir, {"A-MIB": A_MIB})
+    compiler, parser = _build_compiler(mib_dir, out_dir, cache_dir)
+
+    started = asyncio.Event()
+    adoption_done = asyncio.Event()
+    cycle_results: dict[int, list[CompileResult]] = {}
+
+    def on_cycle(n: int, results) -> None:
+        cycle_results[n] = list(results)
+        if n == 1:
+            started.set()
+        if n >= 2:
+            adoption_done.set()
+
+    task = _watch_task(
+        _compiler_cycle(compiler),
+        mib_dir,
+        out_dir,
+        ["A-MIB"],
+        debounce=0.05,
+        poll=0.005,
+        max_cycles=2,
+        on_cycle=on_cycle,
+    )
+    await asyncio.wait_for(started.wait(), timeout=10)
+
+    (mib_dir / "BAD-MIB").write_text("this is not a MIB module", encoding="utf-8")
+    await asyncio.wait_for(adoption_done.wait(), timeout=10)
+
+    bad = [r for r in cycle_results[2] if r.name == "BAD-MIB"]
+    assert len(bad) == 1
+    assert bad[0].status == "failed"
+    assert bad[0].error is not None
+
+    summary = await task
+    assert summary.cycles_run == 2
+    assert summary.modules_recompiled == 1
+
+
+async def test_new_file_adoption_first_mib_dir_wins(tmp_path: Path):
+    """Stem-dedup semantics of --mib-dir discovery carry into adoption: when a
+    new stem appears in two directories mid-watch, the FIRST --mib-dir's file
+    is the one that gets adopted and compiled."""
+    mib_dir_a = tmp_path / "mibs-a"
+    mib_dir_b = tmp_path / "mibs-b"
+    out_dir = tmp_path / "out"
+    cache_dir = tmp_path / "cache"
+    _write_fixture(mib_dir_a, {"A-MIB": A_MIB})
+    _write_fixture(mib_dir_b, {"A-MIB": A_MIB})
+
+    config = CompilerConfig(output_dir=out_dir, cache_dir=cache_dir, cache_ttl_days=0)
+    compiler = MibCompiler(config)
+    compiler.add_reader(FileReader(mib_dir_a, max_size=config.max_mib_size))
+    compiler.add_reader(FileReader(mib_dir_b, max_size=config.max_mib_size))
+
+    started = asyncio.Event()
+    adoption_done = asyncio.Event()
+    closures: dict[int, set[str]] = {}
+
+    def on_cycle(n: int, results) -> None:
+        closures[n] = {r.name for r in results}
+        if n == 1:
+            started.set()
+        if n >= 2:
+            adoption_done.set()
+
+    task = asyncio.create_task(
+        run_watch(
+            _compiler_cycle(compiler),
+            initial_names=["A-MIB"],
+            mib_dirs=[mib_dir_a, mib_dir_b],
+            output_dir=out_dir,
+            debounce_seconds=0.05,
+            poll_interval=0.005,
+            max_cycles=2,
+            on_cycle=on_cycle,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=10)
+
+    new_mib = C_MIB.replace("C-MIB", "NEW-MIB").replace("cMIB", "newMIB")
+    _write_fixture(mib_dir_a, {"NEW-MIB": new_mib.replace("::= { 1 8 }", "::= { 1 9 }")})
+    _write_fixture(mib_dir_b, {"NEW-MIB": new_mib.replace("::= { 1 8 }", "::= { 1 10 }")})
+    await asyncio.wait_for(adoption_done.wait(), timeout=10)
+
+    data = json.loads((out_dir / "NEW-MIB.json").read_text(encoding="utf-8"))
+    assert data["objects"]["newMIB"]["oid"] == "1.9"  # first --mib-dir wins
+    assert data["objects"]["newMIB"]["oid"] != "1.10"
+
+    summary = await task
+    assert summary.cycles_run == 2
+    assert summary.modules_recompiled == 1
 
 
 # ---------------------------------------------------------------------------

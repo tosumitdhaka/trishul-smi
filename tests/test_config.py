@@ -75,12 +75,14 @@ class TestValidators:
         with pytest.raises(ValueError, match="formats"):
             CompilerConfig(formats=[])
 
-    def test_pysnmp_format_removed_in_v0_5_0(self):
-        """The pysnmp .py output format is gone (breaking v0.5.0 change)."""
-        with pytest.raises(ValueError, match="removed in v0.5.0"):
-            CompilerConfig(formats=["pysnmp"])
-        with pytest.raises(ValueError, match="removed in v0.5.0"):
-            CompilerConfig(formats=["json", "pysnmp"], emit_manifest=True)
+    def test_pysnmp_format_passes_config_construction(self):
+        """The 'pysnmp' name is not rejected at the config layer — it resolves
+        through the formatter registry (the v0.5.0 plugin escape hatch)."""
+        c = CompilerConfig(formats=["pysnmp"])
+        assert c.formats == ["pysnmp"]
+        c2 = CompilerConfig(formats=["json", "pysnmp"], emit_manifest=True)
+        assert c2.formats == ["json", "pysnmp"]
+        assert c2.emit_manifest is True
 
     def test_sidecar_flags_allowed_with_json_format(self):
         c = CompilerConfig(formats=["json"], emit_manifest=True, emit_oid_index=True)

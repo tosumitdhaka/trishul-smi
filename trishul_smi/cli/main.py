@@ -23,6 +23,15 @@ Examples
     # Lint a MIB from a local directory:
     trishul-smi lint IF-MIB -d /usr/share/snmp/mibs
 
+    # Lint every MIB found in --mib-dir directories:
+    trishul-smi lint -d /usr/share/snmp/mibs
+
+    # Gate CI on errors only (warnings report but exit 0):
+    trishul-smi lint -d /usr/share/snmp/mibs --fail-level error
+
+    # List available output formats (built-ins + plugins):
+    trishul-smi compile --list-formats
+
 Exit codes
 ----------
 compile:
@@ -30,8 +39,10 @@ compile:
     1   One or more MIBs failed to fetch, parse, or format.
     2   Configuration error (bad CLI option value).
 lint:
-    0   No lint findings and no unresolved modules.
-    1   One or more lint findings or unresolved modules.
+    0   No findings and no unresolved modules (with --fail-level error:
+        no error-severity findings and no unresolved modules).
+    1   One or more findings or unresolved modules (with --fail-level error:
+        one or more error-severity findings or unresolved modules).
     2   Configuration error (bad CLI option value).
 """
 
@@ -51,8 +62,9 @@ from rich.table import Table
 
 from trishul_smi.compiler import MibCompiler
 from trishul_smi.config import CompilerConfig, validate_mib_name
-from trishul_smi.lint import format_lint_report_text, lint_report_to_dict, run_lint
+from trishul_smi.lint import Severity, format_lint_report_text, lint_report_to_dict, run_lint
 from trishul_smi.models import CompileResult
+from trishul_smi.output.registry import BUILTIN_FORMATTERS, discover_plugins
 
 if TYPE_CHECKING:
     from trishul_smi.watch import WatchSummary
@@ -223,8 +235,24 @@ def compile(  # noqa: A001
             "or at least one --mib-dir.",
         ),
     ] = False,
+    list_formats: Annotated[
+        bool,
+        typer.Option(
+            "--list-formats",
+            help="List available output formats (built-ins and discovered plugins) and exit.",
+        ),
+    ] = False,
 ) -> None:
     """Compile one or more MIB definitions and all transitive dependencies."""
+
+    if list_formats:
+        plugins = discover_plugins()
+        console.print("Available output formats:")
+        for name in sorted(BUILTIN_FORMATTERS):
+            console.print(f"  {name} (built-in)")
+        for name in sorted(plugins):
+            console.print(f"  {name} (plugin)")
+        raise typer.Exit(0)
 
     try:
         # dict[str, Any]: values are either list[str] or left absent entirely.
@@ -376,9 +404,12 @@ def compile(  # noqa: A001
 @app.command()
 def lint(
     mib_names: Annotated[
-        list[str],
-        typer.Argument(help="MIB names to lint (e.g. IF-MIB IP-MIB)."),
-    ],
+        list[str] | None,
+        typer.Argument(
+            help="MIB names to lint (e.g. IF-MIB IP-MIB). "
+            "Omit to lint every MIB found in --mib-dir directories."
+        ),
+    ] = None,
     output_format: Annotated[
         Literal["text", "json"],
         typer.Option(
@@ -387,6 +418,15 @@ def lint(
             help="Output format: text (default) or json (machine-readable, for CI).",
         ),
     ] = "text",
+    fail_level: Annotated[
+        Literal["error", "all"],
+        typer.Option(
+            "--fail-level",
+            help="Exit-1 threshold: 'all' (default, any finding or unresolved "
+            "module) or 'error' (only error-severity findings and unresolved "
+            "modules; warnings report but exit 0).",
+        ),
+    ] = "all",
     mib_dirs: Annotated[
         list[Path] | None,
         typer.Option(
@@ -440,8 +480,11 @@ def lint(
 
     Runs the same resolve pipeline as compile (fetch → parse → cache →
     resolve_oids) and reports the v1 lint check set. No output files are
-    written. Exits 0 when clean, 1 when any finding or unresolved module is
-    reported.
+    written. With no NAME arguments, lints every MIB discovered in
+    --mib-dir (stem-deduped, first --mib-dir wins — the same discovery
+    semantics as compile). Exits 0 when clean, 1 when findings or unresolved
+    modules are reported (under --fail-level error: only error-severity
+    findings and unresolved modules), 2 on configuration errors.
     """
     try:
         # dict[str, Any]: values are either list[str] or left absent entirely.
@@ -475,11 +518,40 @@ def lint(
         if not d.is_dir():
             err.print(f"[yellow]Warning:[/yellow] --mib-dir {d} is not a directory, skipping.")
 
-    # MIB-name validation choke point (issue #22): names flow into filesystem
-    # paths (FileReader) and HTTP URL templates (HttpReader); rejecting
-    # anything outside the allowlist here prevents path/URL escapes.
+    # Auto-discover MIB names from --mib-dir when none are specified explicitly
+    # (same semantics as compile: stem dedup, first --mib-dir wins).
+    resolved_names: list[str] = list(mib_names) if mib_names else []
+    if not resolved_names:
+        if not mib_dirs:
+            err.print(
+                "[bold red]Error:[/bold red] No MIB names given and no --mib-dir to discover from."
+            )
+            raise typer.Exit(2)
+        seen: set[str] = set()
+        for d in mib_dirs:
+            if not d.is_dir():
+                continue
+            for f in sorted(d.iterdir()):
+                if f.is_file() and f.suffix.lower() in {"", ".mib", ".my", ".txt"}:
+                    name = f.stem
+                    if name not in seen:
+                        seen.add(name)
+                        resolved_names.append(name)
+        if not resolved_names:
+            err.print(
+                "[bold red]Error:[/bold red] No MIB files found in the given --mib-dir directories."  # noqa: E501
+            )
+            raise typer.Exit(2)
+        err.print(f"[dim]Discovered {len(resolved_names)} MIBs from --mib-dir[/dim]")
+
+    # MIB-name validation choke point (issue #22): every name that reaches the
+    # lint engine — explicit CLI args AND --mib-dir auto-discovered stems —
+    # flows through resolved_names, so this single loop covers both entry paths.
+    # Names are later interpolated into filesystem paths (FileReader) and HTTP
+    # URL templates (HttpReader); rejecting anything outside the allowlist here
+    # prevents path/URL escapes.
     invalid_names: list[str] = []
-    for name in mib_names:
+    for name in resolved_names:
         try:
             validate_mib_name(name)
         except ValueError as exc:
@@ -492,7 +564,7 @@ def lint(
 
     try:
         report = asyncio.run(
-            run_lint(mib_names, config, mib_dirs=mib_dirs or [], use_http=use_http)
+            run_lint(resolved_names, config, mib_dirs=mib_dirs or [], use_http=use_http)
         )
     except KeyboardInterrupt:
         err.print("\n[yellow]Interrupted.[/yellow]")
@@ -520,7 +592,14 @@ def lint(
             soft_wrap=not console.is_terminal,
         )
 
-    if report.findings or report.resolve_errors:
+    if fail_level == "error":
+        # CI gating mode: only error-severity findings exit 1; warnings report
+        # but exit 0. Unresolved modules are hard failures (the module could
+        # not be fetched or parsed at all) and exit 1 under both levels.
+        has_errors = any(f.severity is Severity.ERROR for f in report.findings)
+        if has_errors or report.resolve_errors:
+            raise typer.Exit(1)
+    elif report.findings or report.resolve_errors:
         raise typer.Exit(1)
 
 
@@ -596,8 +675,7 @@ async def _watch_async(
 
     def on_new_files(files: list[str]) -> None:
         console.print(
-            f"[dim]Note: new MIB file(s) appeared in --mib-dir (not watched): "
-            f"{', '.join(files)}[/dim]"
+            f"[dim]Note: new MIB file(s) appeared in --mib-dir, adopting: {', '.join(files)}[/dim]"
         )
 
     async def compile_cycle(names: list[str]) -> list[CompileResult]:

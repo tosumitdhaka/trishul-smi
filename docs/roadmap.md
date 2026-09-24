@@ -230,6 +230,34 @@ First minor bump (reserved for breaking scope, per the versioning convention): t
 
 ---
 
+## v0.5.1 — shipped 2026-09-24
+
+Lint & watch ergonomics from first real usage of the v0.5.0 features (details: `docs/plans/v0.5.1_plan.md`).
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | `tsmi lint` no-name mode | done | Lint the whole `--mib-dir` discovery set when no `NAME...` given, mirroring compile. Discovery notice routed to stderr so `-f json` stdout stays a clean single document. |
+| 2 | `--fail-level {error,all}` on lint | done | CI gating: errors-only exit mode; default `all` preserves current behavior. JSON byte-stable across levels. |
+| 3 | `tsmi compile --list-formats` | done | Prints built-ins then discovered plugins, exit 0, no names needed. |
+| 4 | Watch mode: auto-adopt new files | done | New files in `--mib-dir` join the watch set + initial compile (debounced); unparseable new files → failed row, watcher survives. Known limits (review findings): a module that failed on an unresolved import is not recompiled when the missing dependency is later adopted (it recompiles on its own file change); pre-existing unwatched files in `--mib-dir` are adopted at first scan. Removal stays notice-only. |
+| 5 | `missing-status` / `missing-description` lint checks | done | Two additive warning-severity checks; TC-shaped scoping for type-level. Module-level `missing-description` fires on legal TC-only modules (SNMPv2-TC etc.) — scoping refinement tracked as #34. |
+| 6 | Plugin-provided `pysnmp` unblock | done | Config-level rejection moved to registry-resolution guidance — the v0.5.0 escape hatch works end-to-end (verified against `trishul-smi-pysnmp`). |
+| 7 | Python 3.13 CI fix + checklist amendment | done | `_flaky_stat` shim forwards stdlib kwargs (3.13 `follow_symlinks`); release checklist requires ALL workflows green on the pushed commit. |
+
+---
+
+## v0.5.2 — planned
+
+`tsmi lint --fix` auto-remediation (details: `docs/plans/v0.5.2_plan.md`).
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | `tsmi lint --fix` | planned | Mechanical fixes for type-role `missing-import` (add import when uniquely resolvable) and `unused-import`; local files only. |
+| 2 | `--diff` dry-run | planned | Unified diffs, writes nothing. |
+| 3 | Safety rules | planned | Idempotency, byte-preservation of untouched lines, rollback-on-unparseable, HTTP/ZIP sources report-only. |
+
+---
+
 ## Backlog
 
 (empty — items are promoted into per-release plans; see `docs/plans/`. MIB borrowing

@@ -111,6 +111,20 @@ def resolve_formatter(name: str) -> type[FormatterProtocol]:
     plugins = discover_plugins()
     if name in plugins:
         return plugins[name]
+    if name == "pysnmp":
+        # No plugin registers a `pysnmp` formatter (which is exactly what the
+        # v0.5.0 removal promised as the escape hatch), so the name is gone
+        # from the built-ins. Point at the JSON bundle output and the plugin
+        # route instead of the generic unknown-format listing.
+        raise ValueError(
+            "the 'pysnmp' output format was removed in v0.5.0 — use the JSON "
+            "bundle output instead (--format json, optionally with "
+            "--emit-manifest / --emit-oid-index); 'tsmi convert' is unaffected "
+            "for reading existing .py files. To keep producing .py output, a "
+            "plugin can register a 'pysnmp' formatter under the "
+            f"{ENTRY_POINT_GROUP!r} entry-point group — the trishul-smi-pysnmp "
+            "package does exactly that."
+        )
     available = ", ".join(
         [f"{fmt} (built-in)" for fmt in sorted(BUILTIN_FORMATTERS)]
         + [f"{fmt} (plugin)" for fmt in sorted(plugins)]

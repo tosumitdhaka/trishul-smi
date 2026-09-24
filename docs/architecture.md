@@ -1,6 +1,6 @@
 # trishul-smi — Architecture
 
-> **Last updated:** 2026-09-23
+> **Last updated:** 2026-09-24
 
 ---
 
@@ -466,7 +466,10 @@ concurrent compiles race-free.
 **Escape hatch for the v0.5.0 pysnmp removal:** this plugin mechanism is the
 supported way to keep producing the old `.py` output after the built-in
 `pysnmp` format was removed — anyone who still needs it can ship a
-`PysnmpFormatter` as a plugin under this entry-point group.
+`PysnmpFormatter` as a plugin under this entry-point group. For a working
+reference implementation, see the `trishul-smi-plugins` monorepo
+(<https://github.com/tosumitdhaka/trishul-smi-plugins>): its `trishul-smi-pysnmp`
+package revives the removed `.py` format as a full end-to-end example.
 
 ---
 

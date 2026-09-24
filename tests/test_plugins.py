@@ -149,3 +149,48 @@ class TestMibCompilerWithPlugin:
         msg = str(exc_info.value)
         assert "json (built-in)" in msg
         assert "marker (plugin)" in msg
+
+
+class TestPysnmpEscapeHatch:
+    """The v0.5.0 pysnmp removal is the plugin escape hatch: 'pysnmp' passes
+    config construction and resolves through the entry-point registry, falling
+    back to removal guidance only when no plugin provides it."""
+
+    def test_pysnmp_with_plugin_resolves_at_construction(self, mock_entry_points):
+        """A plugin registering 'pysnmp' is used — config accepts the name and
+        MibCompiler construction succeeds with the plugin class."""
+        mock_entry_points([_entry_point("pysnmp", "tests.test_plugins:MarkerFormatter")])
+        config = CompilerConfig(formats=["pysnmp"], cache_dir=None)
+        assert config.formats == ["pysnmp"]
+        compiler = MibCompiler(config)
+        assert isinstance(compiler._formatters["pysnmp"], MarkerFormatter)
+
+    @pytest.mark.asyncio
+    async def test_pysnmp_plugin_formatter_used_end_to_end(self, tmp_path: Path, mock_entry_points):
+        """A 'pysnmp' plugin format name flows through MibCompiler and writes output."""
+        mock_entry_points([_entry_point("pysnmp", "tests.test_plugins:MarkerFormatter")])
+        compiler = MibCompiler(
+            CompilerConfig(output_dir=tmp_path / "out", formats=["pysnmp"], cache_dir=None)
+        ).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        results = await compiler.compile("TEST-MIB")
+
+        compiled = next(r for r in results if r.name == "TEST-MIB")
+        assert compiled.status == "compiled"
+        assert (tmp_path / "out" / "TEST-MIB.marker").read_text() == "module=TEST-MIB"
+
+    def test_pysnmp_without_plugin_raises_removal_guidance(self):
+        """Without a plugin, 'pysnmp' fails resolution with the v0.5.0 guidance."""
+        with pytest.raises(ValueError) as exc_info:
+            resolve_formatter("pysnmp")
+        msg = str(exc_info.value)
+        assert "removed in v0.5.0" in msg
+        assert "--format json" in msg
+        assert "tsmi convert" in msg
+        assert "trishul-smi-pysnmp" in msg
+        assert "Unknown output format" not in msg
+
+    def test_pysnmp_without_plugin_fails_at_compiler_construction(self):
+        """MibCompiler surfaces the removal guidance at construction time."""
+        with pytest.raises(ValueError) as exc_info:
+            MibCompiler(CompilerConfig(formats=["pysnmp"], cache_dir=None))
+        assert "removed in v0.5.0" in str(exc_info.value)

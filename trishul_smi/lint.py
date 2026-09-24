@@ -16,8 +16,8 @@ document, stable across versions for CI consumers) and
 carries no terminal/presentation concern beyond those two string/dict
 renderings.
 
-Checks (v1 set, stable check ids)
----------------------------------
+Checks (v1 set plus the two v0.5.1 additions; all check ids stable)
+------------------------------------------------------------------
 ``missing-import`` (error/warning)  A symbol is referenced structurally but
                                     is neither imported by the module nor
                                     defined in-module, and is not a built-in
@@ -46,6 +46,19 @@ Checks (v1 set, stable check ids)
 ``duplicate-oid-arc`` (warning) Two or more objects in the closure resolve
                                 to the exact same absolute OID (same
                                 sub-identifier under the same parent).
+``missing-status`` (warning)    A construct whose SMI macro mandates a
+                                STATUS clause lacks one. Applies to the
+                                SMIv2 macros that carry STATUS (OBJECT-TYPE,
+                                OBJECT-IDENTITY, NOTIFICATION-TYPE,
+                                OBJECT-GROUP, NOTIFICATION-GROUP,
+                                MODULE-COMPLIANCE, AGENT-CAPABILITIES) and
+                                to TEXTUAL-CONVENTION definitions.
+``missing-description`` (warning)
+                                A construct whose SMI macro carries a
+                                DESCRIPTION clause lacks one. Applies to the
+                                same SMIv2 macros plus TRAP-TYPE, and to the
+                                module-level description (a SMIv2 module with
+                                no MODULE-IDENTITY DESCRIPTION).
 
 Severity rationale
 ------------------
@@ -58,11 +71,12 @@ unusable without the type — while a reference in a MEMBER/OID position
 (notification OBJECTS members, INDEX, AUGMENTS, OID parent, TRAP-TYPE
 ENTERPRISE) is a ``warning``: those are OID references that resolve by name
 across the closure rather than by import, so failing to import them is legal
-SMI and common in real vendor trap MIBs. ``unused-import`` and
-``duplicate-oid-arc`` are ``warning``: they never block parsing or
-output, are frequently left in real MIBs (imported-and-unused symbols are
-cosmetic), and a duplicate arc, while suspicious, may be an intentional
-re-claim of a well-known subtree — the module still compiles.
+SMI and common in real vendor trap MIBs. ``unused-import``,
+``duplicate-oid-arc``, ``missing-status``, and ``missing-description`` are
+``warning``: they never block parsing or output. A missing STATUS/DESCRIPTION
+clause is common in older vendor MIBs and does not break compilation — the
+field is simply null in the model and the compiled output — so these two
+checks are advisory, not blocking.
 
 Scoping notes
 -------------
@@ -80,7 +94,19 @@ Scoping notes
   defined in-module. A reference that is neither is reported by
   ``missing-import`` instead, so the two checks never double-report the same
   reference.
-- The five checks are otherwise independent: a genuinely broken module can
+- ``missing-status`` only fires on constructs whose SMI macro actually
+  defines a STATUS clause. MODULE-IDENTITY (no STATUS per RFC 2578),
+  TRAP-TYPE (no STATUS per RFC 1215), and OBJECT IDENTIFIER value
+  assignments are never flagged. The module-level ``missing-description``
+  check applies only to SMIv2 modules (SMIv1 has no module-level DESCRIPTION
+  clause).
+- The model does not distinguish a TEXTUAL-CONVENTION from a plain type
+  assignment (``Foo ::= OCTET STRING``). Per RFC 2578 a type assignment
+  legitimately carries no STATUS/DESCRIPTION, so to avoid false positives the
+  type-level checks fire only on definitions carrying TC-only markers — a
+  DISPLAY-HINT or a DESCRIPTION (the plain type assignments in the v0.5.0
+  corpus carry neither).
+- The five v1 checks are otherwise independent: a genuinely broken module can
   legitimately trigger several (e.g. an OID parent that is neither imported
   nor defined fires both ``missing-import`` and ``unresolvable-oid``).
 """
@@ -96,6 +122,7 @@ from typing import Any
 
 from trishul_smi.config import CompilerConfig
 from trishul_smi.models.mib_module import MibModule
+from trishul_smi.models.mib_type import MibType
 from trishul_smi.parser._constants import BASE_MIBS
 from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import FetchProtocol
@@ -117,13 +144,15 @@ class Severity(str, Enum):
 
 
 class CheckId(str, Enum):
-    """Stable identifiers for the v1 lint check set."""
+    """Stable identifiers for the v1 lint check set (plus v0.5.1 additions)."""
 
     MISSING_IMPORT = "missing-import"
     UNDEFINED_TYPE = "undefined-type"
     UNRESOLVABLE_OID = "unresolvable-oid"
     UNUSED_IMPORT = "unused-import"
     DUPLICATE_OID_ARC = "duplicate-oid-arc"
+    MISSING_STATUS = "missing-status"
+    MISSING_DESCRIPTION = "missing-description"
 
 
 @dataclass(frozen=True)
@@ -236,6 +265,38 @@ _ROLE_LABELS: dict[str, str] = {
 # is suspicious but not broken — a warning, not an error.
 _MEMBER_OID_ROLES: frozenset[str] = frozenset(
     {"oid-parent", "index", "augments", "member", "enterprise"}
+)
+
+# Macros whose SMI definition mandates a STATUS clause (RFC 2578 / 2580).
+# MODULE-IDENTITY (no STATUS), TRAP-TYPE (RFC 1215, no STATUS), and OBJECT
+# IDENTIFIER value assignments are deliberately absent.
+_STATUS_MACROS: frozenset[str] = frozenset(
+    {
+        "OBJECT-TYPE",
+        "OBJECT-IDENTITY",
+        "NOTIFICATION-TYPE",
+        "OBJECT-GROUP",
+        "NOTIFICATION-GROUP",
+        "MODULE-COMPLIANCE",
+        "AGENT-CAPABILITIES",
+    }
+)
+
+# Macros whose SMI definition carries a DESCRIPTION clause. Adds TRAP-TYPE
+# (RFC 1215 DESCRIPTION is optional but applicable); MODULE-IDENTITY is
+# covered by the module-level check (MibModule.description), not here, so a
+# module is never double-reported.
+_DESCRIPTION_MACROS: frozenset[str] = frozenset(
+    {
+        "OBJECT-TYPE",
+        "OBJECT-IDENTITY",
+        "NOTIFICATION-TYPE",
+        "OBJECT-GROUP",
+        "NOTIFICATION-GROUP",
+        "MODULE-COMPLIANCE",
+        "AGENT-CAPABILITIES",
+        "TRAP-TYPE",
+    }
 )
 
 
@@ -467,6 +528,97 @@ def _check_unused_imports(module: MibModule, findings: list[LintFinding]) -> Non
             )
 
 
+def _is_tc_shaped(typ: MibType) -> bool:
+    """True if *typ* carries a marker only a TEXTUAL-CONVENTION can have.
+
+    The model does not distinguish a TEXTUAL-CONVENTION from a plain type
+    assignment (``Foo ::= OCTET STRING``). A plain type assignment never has
+    a DISPLAY-HINT or a DESCRIPTION, so either marker identifies a TC; a
+    definition with neither is treated as a legal type assignment and is
+    exempt from the STATUS/DESCRIPTION clause checks (see module docstring).
+    """
+    return typ.description is not None or typ.display_hint is not None
+
+
+def _check_missing_status(module: MibModule, findings: list[LintFinding]) -> None:
+    """Check (f): a STATUS-bearing construct has no STATUS clause."""
+    for obj in (*module.objects.values(), *module.notifications.values()):
+        if obj.object_type not in _STATUS_MACROS:
+            continue
+        if obj.status is not None:
+            continue
+        findings.append(
+            LintFinding(
+                check=CheckId.MISSING_STATUS,
+                severity=Severity.WARNING,
+                module=module.name,
+                symbol=obj.name,
+                message=(
+                    f"{obj.object_type} {obj.name!r} has no STATUS clause "
+                    f"(required by SMI for {obj.object_type})"
+                ),
+            )
+        )
+    for typ in module.types.values():
+        if typ.status is not None or not _is_tc_shaped(typ):
+            continue
+        findings.append(
+            LintFinding(
+                check=CheckId.MISSING_STATUS,
+                severity=Severity.WARNING,
+                module=module.name,
+                symbol=typ.name,
+                message=(
+                    f"TEXTUAL-CONVENTION {typ.name!r} has no STATUS clause "
+                    f"(required by SMI for TEXTUAL-CONVENTION)"
+                ),
+            )
+        )
+
+
+def _check_missing_description(module: MibModule, findings: list[LintFinding]) -> None:
+    """Check (g): a DESCRIPTION-bearing construct has no DESCRIPTION clause."""
+    for obj in (*module.objects.values(), *module.notifications.values()):
+        if obj.object_type not in _DESCRIPTION_MACROS:
+            continue
+        if obj.description is not None:
+            continue
+        findings.append(
+            LintFinding(
+                check=CheckId.MISSING_DESCRIPTION,
+                severity=Severity.WARNING,
+                module=module.name,
+                symbol=obj.name,
+                message=f"{obj.object_type} {obj.name!r} has no DESCRIPTION clause",
+            )
+        )
+    for typ in module.types.values():
+        if typ.description is not None or not _is_tc_shaped(typ):
+            continue
+        findings.append(
+            LintFinding(
+                check=CheckId.MISSING_DESCRIPTION,
+                severity=Severity.WARNING,
+                module=module.name,
+                symbol=typ.name,
+                message=f"TEXTUAL-CONVENTION {typ.name!r} has no DESCRIPTION clause",
+            )
+        )
+    if module.language == "SMIv2" and module.description is None:
+        findings.append(
+            LintFinding(
+                check=CheckId.MISSING_DESCRIPTION,
+                severity=Severity.WARNING,
+                module=module.name,
+                symbol=None,
+                message=(
+                    f"module {module.name!r} has no module-level DESCRIPTION "
+                    f"(no MODULE-IDENTITY with a DESCRIPTION clause)"
+                ),
+            )
+        )
+
+
 def _check_duplicate_oid_arcs(modules: list[MibModule], findings: list[LintFinding]) -> None:
     """Check (e): same absolute OID claimed by more than one object.
 
@@ -530,6 +682,21 @@ def _run_oid_checks(modules: list[MibModule]) -> list[LintFinding]:
     findings: list[LintFinding] = []
     _check_unresolvable_oids(modules, findings)
     _check_duplicate_oid_arcs(modules, findings)
+    return findings
+
+
+def _run_clause_checks(modules: list[MibModule]) -> list[LintFinding]:
+    """Run the STATUS/DESCRIPTION clause-presence checks (f), (g).
+
+    Reads model fields only (``status`` / ``description`` / module-level
+    ``description``) and is independent of both the reference-based and the
+    OID-state checks; it may run in any position relative to
+    ``resolve_oids``.
+    """
+    findings: list[LintFinding] = []
+    for module in modules:
+        _check_missing_status(module, findings)
+        _check_missing_description(module, findings)
     return findings
 
 
@@ -628,6 +795,7 @@ async def _lint_async(
     # resolved object, which would erase OID-parent references the
     # missing-import / unused-import checks need to see.
     findings = _run_reference_checks(modules, modules_by_name)
+    findings.extend(_run_clause_checks(modules))
     resolve_oids(modules)
     findings.extend(_run_oid_checks(modules))
 

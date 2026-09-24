@@ -66,6 +66,11 @@ Follow this checklist for every release. Steps must be completed in order.
 - [ ] Push tag: `git push origin vx.y.z`
 - [ ] Confirm the `release` GitHub Actions workflow completes successfully:
   - Test → Build → PyPI publish → GitHub Release created
+- [ ] Confirm the `CI` workflow on the pushed commit is also green — **check every
+  workflow triggered by the push, not just the release one** (`gh run list --limit 5`).
+  The local gate and the release workflow run a single Python version, so a
+  matrix-leg failure (e.g. a Python 3.13-only break) is invisible until this check
+  (that exact gap shipped v0.4.9-v0.5.0 with a red `CI` run on every push).
 - [ ] Verify the package is live: `pip install trishul-smi==x.y.z`
 
 ---

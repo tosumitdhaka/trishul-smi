@@ -151,12 +151,15 @@ class TestCompileArgs:
         assert result.exit_code == 2
 
     def test_pysnmp_format_removed_exits_2(self):
-        """-f pysnmp is gone in v0.5.0 — exit 2 with the actionable message."""
+        """-f pysnmp without a plugin is gone in v0.5.0 — exit 2 with the
+        actionable message (raised at MibCompiler construction, mapped to the
+        configuration-error path)."""
         result = _invoke(["compile", "IF-MIB", "--online", "-f", "pysnmp"])
         assert result.exit_code == 2
         assert "removed in v0.5.0" in result.output
         assert "--format json" in result.output
         assert "tsmi convert" in result.output
+        assert "trishul-smi-pysnmp" in result.output
 
     def test_negative_retries_exits_2(self):
         result = _invoke(["compile", "IF-MIB", "--online", "--retries", "-1"])
@@ -193,6 +196,23 @@ class TestCompileArgs:
         assert captured
         assert captured[0].emit_manifest is True
         assert captured[0].emit_oid_index is True
+
+    def test_list_formats_builtin_only(self):
+        result = _invoke(["compile", "--list-formats"])
+        assert result.exit_code == 0
+        assert "json (built-in)" in result.output
+
+    def test_list_formats_with_plugin(self, monkeypatch):
+        from trishul_smi.cli import main as cli_main
+
+        class _FakePlugin:
+            pass
+
+        monkeypatch.setattr(cli_main, "discover_plugins", lambda: {"pysnmp": _FakePlugin})
+        result = _invoke(["compile", "--list-formats"])
+        assert result.exit_code == 0
+        assert "json (built-in)" in result.output
+        assert "pysnmp (plugin)" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -730,3 +750,134 @@ class TestLint:
         assert result.exit_code == 1
         assert "missing-import" in result.output
         assert "MysteryType" in result.output
+
+
+class TestLintNoNameDiscovery:
+    """No-name mode: lint the whole --mib-dir discovery set (compile semantics)."""
+
+    def test_no_name_lints_discovery_set(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        (mib_dir / "CLEAN-MIB").write_text(LINT_CLEAN_MIB, encoding="utf-8")
+        (mib_dir / "ALSO-CLEAN-MIB").write_text(
+            LINT_CLEAN_MIB.replace("CLEAN-MIB DEFINITIONS", "ALSO-CLEAN-MIB DEFINITIONS")
+            .replace("cleanMIB", "alsoCleanMIB")
+            .replace("1 3", "2 3"),
+            encoding="utf-8",
+        )
+        result = _invoke(["lint", "-d", str(mib_dir), "--cache-dir", ""])
+        assert result.exit_code == 0
+        assert "Discovered 2 MIBs from --mib-dir" in result.stderr
+        assert "Summary: 2 modules checked, 0 errors, 0 warnings" in result.output
+
+    def test_discovery_dedups_stems_first_dir_wins(self, tmp_path: Path):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        # Same stem in both dirs: dedup keeps one name; the first --mib-dir's
+        # copy (clean) wins, so the bad copy is never linted.
+        (first / "SHARED-MIB").write_text(LINT_CLEAN_MIB, encoding="utf-8")
+        (second / "SHARED-MIB").write_text(LINT_BAD_MIB, encoding="utf-8")
+        result = _invoke(["lint", "-d", str(first), "-d", str(second), "--cache-dir", ""])
+        assert result.exit_code == 0
+        assert "Discovered 1 MIBs from --mib-dir" in result.stderr
+        assert "Summary: 1 module checked, 0 errors, 0 warnings" in result.output
+
+    def test_discovery_empty_dir_exits_2(self, tmp_path: Path):
+        mib_dir = tmp_path / "empty"
+        mib_dir.mkdir()
+        result = _invoke(["lint", "-d", str(mib_dir), "--cache-dir", ""])
+        assert result.exit_code == 2
+        assert "No MIB files found" in result.output
+
+    def test_names_with_mib_dir_still_works(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        (mib_dir / "CLEAN-MIB").write_text(LINT_CLEAN_MIB, encoding="utf-8")
+        # An explicit name overrides discovery: only the named module is linted.
+        (mib_dir / "ALSO-CLEAN-MIB").write_text(
+            LINT_CLEAN_MIB.replace("CLEAN-MIB", "ALSO-CLEAN-MIB"), encoding="utf-8"
+        )
+        result = _invoke(["lint", "CLEAN-MIB", "-d", str(mib_dir), "--cache-dir", ""])
+        assert result.exit_code == 0
+        assert "Discovered" not in result.output
+        assert "Summary: 1 module checked, 0 errors, 0 warnings" in result.output
+
+    def test_no_name_json_stdout_is_pure_json(self, tmp_path: Path):
+        """The discovery notice must not pollute lint's stdout in JSON mode:
+        the whole stdout must parse as exactly one JSON document (CI contract,
+        oracle review finding 1 for v0.5.1)."""
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        (mib_dir / "CLEAN-MIB").write_text(LINT_CLEAN_MIB, encoding="utf-8")
+        result = _invoke(["lint", "-d", str(mib_dir), "--cache-dir", "", "-f", "json"])
+        assert result.exit_code == 0
+        # click 8.2+: result.output is the combined stream; result.stdout is
+        # the pure stdout a CI pipe would see.
+        assert "Discovered" not in result.stdout
+        parsed = json.loads(result.stdout)
+        assert isinstance(parsed, dict)
+        assert "Discovered" in result.stderr
+
+
+class TestLintFailLevel:
+    """--fail-level {error,all}: exit-code threshold, JSON contract untouched."""
+
+    def _warnings_only_report(self) -> LintReport:
+        return _make_lint_report(
+            findings=[
+                _lint_finding(
+                    check=CheckId.UNUSED_IMPORT,
+                    severity=Severity.WARNING,
+                    module="D-MIB",
+                    symbol="Integer32",
+                    message="never referenced",
+                )
+            ]
+        )
+
+    def test_error_level_warnings_only_exits_zero(self):
+        with _patch_lint(self._warnings_only_report()):
+            result = _invoke(["lint", "D-MIB", "--online", "--fail-level", "error"])
+        assert result.exit_code == 0
+        assert "Warnings:" in result.output
+        assert "Integer32" in result.output
+
+    def test_error_level_any_error_exits_one(self):
+        report = _make_lint_report(findings=[_lint_finding()])
+        with _patch_lint(report):
+            result = _invoke(["lint", "A-MIB", "--online", "--fail-level", "error"])
+        assert result.exit_code == 1
+
+    def test_default_all_preserves_behavior(self):
+        # Default (all): any finding exits 1 — unchanged from v0.5.0.
+        with _patch_lint(self._warnings_only_report()):
+            result = _invoke(["lint", "D-MIB", "--online"])
+        assert result.exit_code == 1
+        assert "Warnings:" in result.output
+
+    def test_error_level_resolve_errors_still_exit_one(self):
+        report = _make_lint_report(resolve_errors={"NO-SUCH-MIB": "MIB 'NO-SUCH-MIB' not found"})
+        with _patch_lint(report):
+            result = _invoke(["lint", "NO-SUCH-MIB", "--online", "--fail-level", "error"])
+        assert result.exit_code == 1
+
+    def test_json_output_byte_stable_across_levels(self):
+        report = self._warnings_only_report()
+        with _patch_lint(report):
+            default = _invoke(["lint", "D-MIB", "--online", "-f", "json"])
+        with _patch_lint(report):
+            error = _invoke(["lint", "D-MIB", "--online", "-f", "json", "--fail-level", "error"])
+        assert default.exit_code == 1
+        assert error.exit_code == 0
+        # The JSON document is identical under both levels — fail-level is an
+        # exit-code-only switch (plan item #27).
+        assert default.output == error.output
+        data = json.loads(error.output)
+        assert data["findings"][0]["check"] == "unused-import"
+        assert data["summary"] == {"modules_checked": 1, "errors": 0, "warnings": 1}
+
+    def test_unknown_fail_level_exits_2(self):
+        result = _invoke(["lint", "A-MIB", "--online", "--fail-level", "warn"])
+        assert result.exit_code == 2

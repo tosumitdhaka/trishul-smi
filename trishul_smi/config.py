@@ -98,16 +98,6 @@ class CompilerConfig:
             raise ValueError("sources must not be empty")
         if not self.formats:
             raise ValueError("formats must not be empty")
-        # The pysnmp .py output format was removed in v0.5.0 (breaking change).
-        # Give a pointed error before the generic unknown-format message so
-        # `-f pysnmp` users know the format is gone and what to use instead.
-        if "pysnmp" in self.formats:
-            raise ValueError(
-                "the 'pysnmp' output format was removed in v0.5.0 — use the JSON "
-                "bundle output instead (--format json, optionally with "
-                "--emit-manifest / --emit-oid-index); 'tsmi convert' is "
-                "unaffected for reading existing .py files"
-            )
         if self.emit_manifest and "json" not in self.formats:
             raise ValueError("emit_manifest requires 'json' in formats")
         if self.emit_oid_index and "json" not in self.formats:

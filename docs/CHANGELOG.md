@@ -10,6 +10,42 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.1] — 2026-09-24
+
+### Features
+
+- **`tsmi lint` no-name mode**: lint the whole `--mib-dir` discovery set when no MIB
+  names are given, mirroring compile's discovery semantics (stem dedup, first
+  `--mib-dir` wins). The discovery notice is routed to stderr so `-f json` stdout
+  stays a single clean machine-readable document (#26).
+- **`tsmi lint --fail-level {error,all}`**: CI gating — `error` exits 1 only on
+  error-severity findings (warnings report but exit 0 when error-free); default
+  `all` preserves existing behavior. JSON output is byte-stable across levels (#27).
+- **`tsmi compile --list-formats`**: list built-in and discovered plugin output
+  formats; exits 0 with no MIB names or `--mib-dir` required (#28).
+- **Watch mode auto-adopt**: new files appearing in `--mib-dir` mid-watch join the
+  watch set and get an initial compile folded into the next debounced cycle; a new
+  file that fails to parse surfaces as a `failed` result row without stopping the
+  watcher. Removed files remain notice-only (#29).
+- **Two additive lint checks**: `missing-status` and `missing-description`
+  (warning severity; type-level checks scoped to TC-shaped types to avoid
+  false positives on plain type assignments) (#30).
+
+### Fixes
+
+- **Plugin-provided `pysnmp` unblock**: `CompilerConfig` no longer hard-rejects the
+  `pysnmp` format name before the formatter registry is consulted — a plugin
+  registered under the `trishul_smi.formatters` entry-point group can now provide
+  it end-to-end via the CLI. Without a plugin, the actionable removal guidance
+  (JSON bundle output, `tsmi convert` unaffected, the `trishul-smi-pysnmp`
+  package) surfaces at formatter resolution with exit 2 (#32).
+- **Python 3.13 CI**: the `_flaky_stat` test shim now forwards stdlib kwargs
+  (`follow_symlinks` on 3.13+), fixing the `CI` workflow's 3.13 matrix leg that
+  had been failing on every push since v0.4.9. The release checklist now requires
+  verifying all workflows green on the pushed commit (#33).
+
+---
+
 ## [0.5.0] — 2026-09-23
 
 ### Removed
