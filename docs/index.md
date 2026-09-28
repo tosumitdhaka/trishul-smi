@@ -15,7 +15,7 @@
 | [Architecture](architecture.md) | Package structure, module contracts, data flow, and design principles |
 | [Roadmap](roadmap.md) | Planned features, known limitations, and shipped status |
 | [Release Checklist](release-checklist.md) | Step-by-step process for cutting a release |
-| [Design Notes](design-notes.md) | Goals, motivation, and design decisions (DD-1 through DD-9) |
+| [Design Notes](design-notes.md) | Goals, motivation, and design decisions (DD-1 through DD-9) — historical, updated through v0.4.3 |
 | [Changelog](CHANGELOG.md) | Version history and release notes |
 
 ---

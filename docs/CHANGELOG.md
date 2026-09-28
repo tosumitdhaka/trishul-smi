@@ -12,7 +12,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.5.2] — 2026-09-28
 
-### Features
+### Added
 
 - **`tsmi lint --fix`**: mechanical auto-remediation for the two fixable check kinds —
   type-role `missing-import` (adds the missing `FROM` import when the symbol resolves
@@ -41,7 +41,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   compatibility policy; older consumers load the enriched JSON unchanged (verified
   against trishul-snmp 0.5.1) (#35).
 
-### Fixes
+### Fixed
 
 - **`missing-description` scoping**: the module-level check fires only on
   object-bearing modules; legal TC-only modules without MODULE-IDENTITY
@@ -61,7 +61,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.5.1] — 2026-09-24
 
-### Features
+### Added
 
 - **`tsmi lint` no-name mode**: lint the whole `--mib-dir` discovery set when no MIB
   names are given, mirroring compile's discovery semantics (stem dedup, first
@@ -80,7 +80,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (warning severity; type-level checks scoped to TC-shaped types to avoid
   false positives on plain type assignments) (#30).
 
-### Fixes
+### Fixed
 
 - **Plugin-provided `pysnmp` unblock**: `CompilerConfig` no longer hard-rejects the
   `pysnmp` format name before the formatter registry is consulted — a plugin
@@ -790,3 +790,6 @@ See [roadmap.md](roadmap.md) for the full list of planned v0.2.0 improvements.
 [0.4.8]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.8
 [0.4.9]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.9
 [0.4.10]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.4.10
+[0.5.0]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.5.0
+[0.5.1]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.5.1
+[0.5.2]: https://github.com/tosumitdhaka/trishul-smi/releases/tag/v0.5.2

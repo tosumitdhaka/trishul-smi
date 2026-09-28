@@ -32,6 +32,8 @@ config = CompilerConfig(
 | `no_texts` | `bool` | `False` | Omit description, organization, and contact text from output for leaner files. Structural metadata (OIDs, dates, types) is always preserved. |
 | `emit_manifest` | `bool` | `False` | Emit optional `manifest.json` bundle metadata alongside JSON output. Requires `"json"` in `formats`. |
 | `emit_oid_index` | `bool` | `False` | Emit optional `oid_index.json` reverse-lookup metadata alongside JSON output. Requires `"json"` in `formats`. |
+| `dry_run` | `bool` | `False` | Resolve and parse as normal but skip all file writes; `output_paths` is always empty. Programmatic API only — no CLI flag. |
+| `reproducible` | `bool` | `False` | Pin `generated_at` to a fixed epoch so repeated runs over the same source produce byte-identical output files. |
 
 ---
 

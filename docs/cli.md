@@ -33,6 +33,8 @@ Compile one or more MIBs and all their transitive dependencies.
 | `--timeout` | `30.0` | HTTP timeout in seconds. |
 | `--retries` | `3` | HTTP retry count on transient failure. |
 | `--no-texts` | off | Omit description, organization, and contact text from output for leaner files. Structural metadata (OIDs, dates, types) is always preserved. |
+| `--reproducible` | off | Pin `generated_at` to a fixed epoch so repeated compiles of the same source produce byte-identical output files. |
+| `--list-formats` | — | Print built-in and discovered plugin output formats and exit 0. No MIB names or `--mib-dir` required. |
 | `-v` / `--verbose` | — | Show output file paths per module. |
 | `--watch` | off | Watch MIB source files for changes and recompile only the changed module and its dependents. Requires explicit MIB names or at least one `--mib-dir`. |
 | `--help` | — | Show help and exit. |

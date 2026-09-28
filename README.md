@@ -26,6 +26,10 @@ and ships a CLI that works out-of-the-box with no SNMP toolchain required.
 - **Real-world parser compatibility** — wrapped inline comment continuations, `SNMPv2-PDU` compatibility forms, preserved-source `SNMPv2-TC` variants that import built-in ASN.1 symbols such as `OCTET STRING` and `OBJECT IDENTIFIER`, Juniper `AGENT-CAPABILITIES` clauses with `ACCESS not-implemented`, and vendor MIBs that use lowercase local type references now compile cleanly through the standard parser path
 - **Tagged ASN.1 type support** — explicit base MIBs such as `SNMPv2-SMI` compile correctly, including application-tagged types like `IpAddress` and `Counter32`
 - **Reverse conversion** — `tsmi convert FILE.py` converts a compiled PySNMP module back to JSON
+- **MIB linting with auto-fix** — `tsmi lint` runs a 7-check set over the resolved closure; `--fix` mechanically repairs the two fixable kinds (type-role missing imports, unused imports) in local `--mib-dir` source files; `--fix --diff` previews the changes
+- **Watch mode** — `tsmi compile --watch` recompiles only the changed module and its transitive dependents (debounced); new files in `--mib-dir` are adopted mid-watch
+- **Reproducible output** — `--reproducible` emits byte-identical artifacts across repeated runs
+- **Pluggable formatters** — custom output formats via the `trishul_smi.formatters` entry-point group
 - **Directory compile mode** — `tsmi compile -d /path/to/mibs` auto-discovers and compiles every MIB file
 - **Concurrent fetching** — parallel async HTTP with retry and timeout; parse waves stay deterministic on real MIB corpora
 - **Pluggable readers** — `FileReader`, `HttpReader`, `ZipReader`, composable via `ReaderChain`

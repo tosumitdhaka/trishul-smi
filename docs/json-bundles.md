@@ -67,25 +67,26 @@ JSON unchanged (the fields were introduced in v0.5.2 with `schema_version` still
   value like `(42)` is stored as `[42, 42]`; bounds may be the strings `MIN` /
   `MAX`).
 - `enums` — an ordered `label → number` mapping derived from `enum`/`bits`
-  constraints, e.g. `ifOperStatus` → `{"up": 1, "down": 2, "testing": 3}`. Omitted
+  constraints, e.g. `ifOperStatus` → `{"up": 1, "down": 2, "testing": 3, ...}`. Omitted
   for range/size/unions and for objects without constraints.
-- `units` — the SMIv2 `UNITS` clause string, e.g. `ifSpeed` → `"bits/second"`.
-  SMIv1 has no UNITS clause, so this field never appears in SMIv1 output.
+- `units` — the SMIv2 `UNITS` clause string, e.g. `igmpInterfaceQueryInterval` →
+  `"seconds"`. SMIv1 has no UNITS clause, so this field never appears in SMIv1 output.
 
-Examples from IF-MIB:
+Examples — `ifOperStatus` from IF-MIB and `igmpInterfaceQueryInterval` from
+IGMP-STD-MIB:
 
 ```json
 "ifOperStatus": {
   "syntax": "INTEGER",
-  "constraints": {"kind": "enum", "data": [["up", 1], ["down", 2], ["testing", 3]]},
-  "enums": {"up": 1, "down": 2, "testing": 3}
+  "constraints": {"kind": "enum", "data": [["up", 1], ["down", 2], ["testing", 3], ["unknown", 4], ["dormant", 5], ["notPresent", 6], ["lowerLayerDown", 7]]},
+  "enums": {"up": 1, "down": 2, "testing": 3, "unknown": 4, "dormant": 5, "notPresent": 6, "lowerLayerDown": 7}
 }
 ```
 
 ```json
-"ifSpeed": {
-  "syntax": "Gauge32",
-  "units": "bits/second"
+"igmpInterfaceQueryInterval": {
+  "syntax": "Integer32",
+  "units": "seconds"
 }
 ```
 

@@ -14,6 +14,9 @@ build/
 SDIST/
 wheels/
 
+# uv (not used by this repo's toolchain; local artifact only)
+uv.lock
+
 # Virtual environments
 .venv/
 venv/

@@ -1,13 +1,13 @@
 # trishul-smi — Architecture
 
-> **Last updated:** 2026-09-24
+> **Last updated:** 2026-09-28
 
 ---
 
 ## 1. Overview
 
 `trishul-smi` is a pipeline-based MIB compiler. Raw ASN.1 source text enters one end;
-structured JSON (and optionally PySNMP `.py` modules) exits the other. Every stage is a
+structured JSON exits the other. Every stage is a
 distinct, independently testable module with a clean interface.
 
 ```
@@ -47,15 +47,20 @@ docs/
 ├── architecture.md        ← this file
 ├── design-notes.md        ← design decisions and goals
 ├── roadmap.md             ← planned features and known limitations
+├── archive/               ← superseded release plans (v0.3.x–v0.4.0)
+├── plans/                 ← per-release implementation plans
 ├── release-checklist.md   ← maintainer release process
 └── CHANGELOG.md           ← version history
 
 trishul_smi/
 ├── __init__.py            ← package version export
+├── __main__.py            ← python -m trishul_smi entry
 ├── compiler.py            ← MibCompiler: pipeline orchestrator
 ├── config.py              ← CompilerConfig dataclass
 ├── errors.py              ← exception hierarchy
+├── lint.py                ← MIB lint engine — 7-check closure lint with optional --fix / --diff
 ├── version.py             ← producer version helpers for emitted JSON artifacts
+├── watch.py               ← Watch-mode engine — debounced mtime polling + invalidation set
 │
 ├── models/
 │   ├── mib_module.py      ← MibModule dataclass
@@ -96,30 +101,40 @@ trishul_smi/
 │   └── pysnmp_reader.py   ← PySNMPReader: compiled .py → MibModule (ast-based)
 │
 └── cli/
-    └── main.py            ← Typer app: compile + convert + version commands
+    └── main.py            ← Typer app: compile + lint + convert + version commands
 
 tests/
 ├── conftest.py            ← shared pytest fixtures
 ├── helpers.py             ← model builder helpers
+├── test_cache_fingerprint.py
 ├── test_cli.py
+├── test_cli_cached.py
 ├── test_compiler.py
 ├── test_compat_policy.py
+├── test_concurrency.py
 ├── test_config.py
 ├── test_convert.py
 ├── test_errors.py
 ├── test_httpreader.py
 ├── test_init.py
 ├── test_json_bundle.py
+├── test_json_fmt.py
 ├── test_json_ir.py
 ├── test_json_oid_index.py
+├── test_lint.py
+├── test_macro_stripping.py
 ├── test_models.py
+├── test_module_alias.py
 ├── test_oid_resolver.py
 ├── test_parser.py
 ├── test_plugins.py
 ├── test_readers.py
 ├── test_reproducible.py
 ├── test_resolver.py
-└── test_transformer.py
+├── test_transformer.py
+├── test_trap_type.py
+├── test_watch.py
+└── test_zip_reader_limits.py
 ```
 
 ---
@@ -143,6 +158,8 @@ class MibModule:
     organization: str | None = None
     contactinfo: str | None = None
     description: str | None = None
+    revisions: list[dict[str, str]] = field(default_factory=list)  # MODULE-IDENTITY REVISION entries
+    warnings: list[str] = field(default_factory=list)  # non-fatal parse warnings (e.g. lenient vendor syntax)
 
 @dataclass
 class MibObject:
@@ -178,6 +195,7 @@ class CompileResult:
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
     is_dependency: bool = False        # True for transitive deps, False for explicitly requested
+    missing_dependencies: list[str] = field(default_factory=list)  # unresolved non-base imports (failed/missing only)
 ```
 
 ---
@@ -261,6 +279,10 @@ deterministically, and returns a topologically ordered list.
 class ResolveResult:
     modules: list[MibModule]   # topologically ordered; deps before dependents
     errors: dict[str, str]     # mib_name → error message for failed modules
+    aliases: dict[str, str]    # requested name → declared name for misnamed MIB files
+    cached: set[str]           # declared names served from the disk cache this run
+    @property
+    def ok(self) -> bool: ...  # True when no errors occurred
 
 class MibResolver:
     async def resolve(self, mib_names: list[str]) -> ResolveResult:
@@ -279,6 +301,7 @@ class MibResolver:
 - Atomic writes via a uniquely-named `tempfile.mkstemp` temp file + rename (`rename(2)` on POSIX)
 - Invalidation by file mtime + configurable TTL; corrupted/unreadable files self-heal on next miss
 - Content fingerprinting (issue #12): each entry records the sha256 of the source text it was parsed from, and `get()` treats a fingerprint mismatch as a miss — the resolver always fetches first, so the cache saves parsing only (never fetch-avoidance), guaranteeing updated files can never serve stale entries
+- Offline fallback (v0.4.10): on a true `MibNotFoundError`, a warm, non-expired cache entry is served with a "source unavailable" warning; transport failures (`NetworkError`) never fall back
 
 ---
 
@@ -353,6 +376,8 @@ class CompilerConfig:
     no_texts: bool               # suppress descriptions/org/revisions; default: False
     emit_manifest: bool          # optional manifest.json sidecar; default: False
     emit_oid_index: bool         # optional oid_index.json sidecar; default: False
+    dry_run: bool                # skip all file writes; output_paths always empty; default: False
+    reproducible: bool           # pin generated_at to a fixed epoch for byte-identical output; default: False
 ```
 
 Unknown format names raise `ValueError` at `MibCompiler.__init__` time. Sidecar flags
@@ -382,11 +407,14 @@ TrishulError
 
 ```
 trishul-smi compile [MIB ...] [OPTIONS]
+trishul-smi lint [MIB ...] [OPTIONS]
 trishul-smi convert FILE.py   [OPTIONS]
 trishul-smi version
 ```
 
-**compile:** constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → optionally enables JSON sidecars via `--emit-manifest` / `--emit-oid-index` → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2. MIB names may be omitted to auto-discover every MIB file in `--mib-dir` directories. Explicit and discovered names are validated against a safe-character allowlist (`^[A-Za-z0-9][A-Za-z0-9._-]*$`); invalid names exit with code 2 before any fetch.
+**compile:** constructs a `CompilerConfig` from flags → builds `MibCompiler` with `FileReader` (if `--mib-dir` given) and `HttpReader` (if `--online` or `--source` given) → optionally enables JSON sidecars via `--emit-manifest` / `--emit-oid-index` → calls `compile()` → displays results via Rich table. HTTP is opt-in; running without any source exits with code 2. MIB names may be omitted to auto-discover every MIB file in `--mib-dir` directories. Explicit and discovered names are validated against a safe-character allowlist (`^[A-Za-z0-9][A-Za-z0-9._-]*$`); invalid names exit with code 2 before any fetch. `--watch` keeps the compile running and recompiles only the changed module plus its transitive dependents on file changes (debounced); `--no-texts` suppresses description/organization/contact text for leaner output; `--reproducible` pins `generated_at` to a fixed epoch so repeated compiles emit byte-identical files; `--list-formats` prints built-in and discovered plugin output formats and exits 0.
+
+**lint:** runs the same resolve pipeline as compile (fetch → parse → cache → OID resolution) and reports the 7-check set; no output files are written unless `--fix` is given. `--fail-level {error,all}` sets the exit-1 threshold. `--fix` applies the two mechanical fixes (type-role missing imports, unused imports) to local `--mib-dir` source files only; `--fix --diff` is the dry-run that prints the planned diffs and writes nothing. Exit codes: 0 clean — 1 findings or unresolved modules remain — 2 usage/config errors.
 
 **convert:** reads a compiled PySNMP `.py` file via `PySNMPReader` → emits JSON via `JsonFormatter`. No network or grammar required.
 
@@ -511,7 +539,7 @@ cli/main.py
 | Parser | `pytest` | Feed MIB text strings, assert `MibModule` shape |
 | Readers | `pytest` + `pytest-httpx` | Mock HTTP responses; tmp dirs for file/zip; size limit tests |
 | Resolver | `pytest-asyncio` | Mock reader+parser; verify BFS ordering + cycle detection |
-| Output | `pytest` | Known `MibModule` → assert JSON/py output structure |
+| Output | `pytest` | Known `MibModule` → assert JSON output structure |
 | Compiler | `pytest-asyncio` | Integration: full pipeline with in-memory fixture MIBs |
 | CLI | `typer.testing.CliRunner` | Smoke test commands end-to-end |
 
@@ -530,6 +558,11 @@ cli
  │    │    ├── oid_resolver
  │    │    └── cache
  │    └── output (json_fmt)
+ ├── lint
+ │    ├── reader
+ │    ├── resolver
+ │    └── parser
+ ├── watch
  └── convert (pysnmp_reader)
       └── output (json_fmt)
 

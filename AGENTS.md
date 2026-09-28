@@ -29,7 +29,7 @@ ruff check trishul_smi tests --fix
 ruff format trishul_smi tests
 
 # Run the CLI
-trishul-smi compile IF-MIB
+trishul-smi compile IF-MIB --online
 trishul-smi compile IF-MIB IP-MIB --format json -o ./out
 trishul-smi compile IF-MIB -d /usr/share/snmp/mibs --watch
 trishul-smi lint IF-MIB -d /usr/share/snmp/mibs
@@ -62,6 +62,8 @@ trishul_smi/
   compiler.py        MibCompiler — orchestrator, fluent reader API
   config.py          CompilerConfig dataclass (sources, cache, limits)
   errors.py          Flat exception hierarchy under TrishulError
+  lint.py            MIB lint engine — 7-check closure lint with --fix/--diff
+  version.py         producer version for emitted artifacts
   models/            MibModule, MibObject, MibType, CompileResult
   reader/            FileReader, HttpReader (httpx+tenacity), ZipReader, ReaderChain
   parser/            SmiParser + MibTransformer; grammars in parser/grammar/*.lark
@@ -75,7 +77,7 @@ trishul_smi/
 ### Key design points
 
 - **ReaderChain**: only `MibNotFoundError` triggers fallback to the next reader; other errors propagate immediately.
-- **SmiParser**: grammar is a singleton; `parse()` is CPU-bound and offloaded via `asyncio.to_thread` (never runs on the event-loop thread). Two separate grammars for SMIv1 and SMIv2 (`parser/grammar/`).
+- **SmiParser**: grammar text is cached process-wide and compiled `Lark` parsers are cached per thread; `parse()` is CPU-bound and offloaded via `asyncio.to_thread` (never runs on the event-loop thread). Two separate grammars for SMIv1 and SMIv2 (`parser/grammar/`).
 - **MibCache**: atomic writes via temp-file rename; mtime-based TTL; orjson for speed.
 - **Error strategy**: `MibSizeLimitError` and `CircularDependencyError` propagate immediately; per-module fetch/parse failures are collected in `ResolveResult.errors` and reported without halting the whole compile.
 - **Formatters** are selected by the `formats` list in `CompilerConfig` and conform to `FormatterProtocol` (structural protocol, not ABC).

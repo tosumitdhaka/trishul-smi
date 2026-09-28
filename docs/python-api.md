@@ -53,10 +53,12 @@ asyncio.run(main())
 dependencies.
 
 - `compiled`: the module was parsed and any requested outputs were written.
+- `cached`: the module was served from the compiled-module cache via a source-fingerprint match; not re-parsed.
 - `missing`: the module could not be found in any configured reader.
 - `failed`: parsing, resolution, network, or output emission failed.
 
-Each result also carries `output_paths`, `warnings`, `error`, and `is_dependency`.
+Each result also carries `output_paths`, `warnings`, `error`, `is_dependency`, and
+`missing_dependencies`.
 
 ---
 
