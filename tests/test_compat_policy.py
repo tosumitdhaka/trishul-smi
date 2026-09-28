@@ -78,3 +78,97 @@ class TestBundleCompatibilityContract:
 
         assert VERSION == __version__
         assert get_producer_version() == __version__
+
+
+# MIB exercising the v0.5.2 value-level enrichment (issue #35): an enum
+# constraint, a UNITS clause, a range constraint, and a plain object.
+VALUE_METADATA_MIB = """
+VALUE-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Gauge32, Integer32 FROM SNMPv2-SMI ;
+valueMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "One Org"
+    CONTACT-INFO "one@example.com"
+    DESCRIPTION  "Value metadata."
+    ::= { 1 102 }
+ifOperStatus OBJECT-TYPE
+    SYNTAX  INTEGER { up(1), down(2), testing(3) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Status."
+    ::= { valueMIB 1 }
+ifSpeed OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "bits/second"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Speed."
+    ::= { valueMIB 2 }
+ifMtu OBJECT-TYPE
+    SYNTAX      Integer32 (64..65535)
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Mtu."
+    ::= { valueMIB 3 }
+plain OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Plain."
+    ::= { valueMIB 4 }
+END
+"""
+
+
+class TestJsonIrAdditiveFields:
+    """v0.5.2 policy: the new object-level fields are additive and optional.
+
+    ``enums``, ``units``, and ``constraints`` appear only when the source
+    carries the data; consumers that predate them must see plain objects
+    unchanged. ``schema_version`` stays 1.1 (no breaking IR change).
+    """
+
+    @pytest.mark.asyncio
+    async def test_enrichment_fields_emitted_when_present(self, tmp_path: Path):
+        config = CompilerConfig(output_dir=tmp_path, formats=["json"], cache_dir=None)
+        compiler = MibCompiler(config).add_reader(MockReader({"VALUE-MIB": VALUE_METADATA_MIB}))
+
+        results = await compiler.compile("VALUE-MIB")
+        assert all(result.status == "compiled" for result in results)
+
+        module_json = json.loads((tmp_path / "VALUE-MIB.json").read_bytes())
+        assert module_json["schema_version"] == JSON_IR_SCHEMA_VERSION == "1.1"
+
+        oper_status = module_json["objects"]["ifOperStatus"]
+        assert oper_status["enums"] == {"up": 1, "down": 2, "testing": 3}
+        assert oper_status["constraints"] == {
+            "kind": "enum",
+            "data": [["up", 1], ["down", 2], ["testing", 3]],
+        }
+        assert "units" not in oper_status
+
+        speed = module_json["objects"]["ifSpeed"]
+        assert speed["units"] == "bits/second"
+        assert "enums" not in speed
+        assert "constraints" not in speed
+
+        mtu = module_json["objects"]["ifMtu"]
+        assert mtu["constraints"] == {"kind": "range", "data": [[64, 65535]]}
+        assert "enums" not in mtu
+        assert "units" not in mtu
+
+    @pytest.mark.asyncio
+    async def test_plain_objects_are_unchanged(self, tmp_path: Path):
+        """A source without value metadata must not gain the new keys —
+        older consumers keep parsing the JSON as before."""
+        config = CompilerConfig(output_dir=tmp_path, formats=["json"], cache_dir=None)
+        compiler = MibCompiler(config).add_reader(MockReader({"VALUE-MIB": VALUE_METADATA_MIB}))
+
+        results = await compiler.compile("VALUE-MIB")
+        assert all(result.status == "compiled" for result in results)
+
+        module_json = json.loads((tmp_path / "VALUE-MIB.json").read_bytes())
+        plain = module_json["objects"]["plain"]
+        for key in ("enums", "units", "constraints"):
+            assert key not in plain

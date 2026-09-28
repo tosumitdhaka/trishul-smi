@@ -10,6 +10,55 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.2] — 2026-09-28
+
+### Features
+
+- **`tsmi lint --fix`**: mechanical auto-remediation for the two fixable check kinds —
+  type-role `missing-import` (adds the missing `FROM` import when the symbol resolves
+  to exactly one provider module in the closure; ambiguous/unresolvable symbols are
+  reported, not fixed) and `unused-import` (removes the symbol; drops the clause or
+  the whole IMPORTS block when it empties). Local `--mib-dir` files only; HTTP/ZIP
+  sources are report-only. Safety rules, each pinned by a dedicated test: idempotency,
+  byte-preservation of untouched lines (span edits confined to the IMPORTS block),
+  rollback-on-unparseable (re-parse after edit), and atomic temp-file-rename writes.
+  SMIv1 modules with `EXPORTS … ;` before `IMPORTS` are handled (#31).
+- **`tsmi lint --fix --diff`**: unified diffs of what would change; writes nothing.
+  Dry-run exit codes reflect the hypothetical outcome (the working tree is
+  unchanged) — CI gating must use plain `tsmi lint` or `--fail-level error`
+  (#31).
+- **Object-level `enums` in the JSON IR**: ordered label→number mappings for
+  INTEGER/BITS inline constraints (e.g. `ifOperStatus` → `{"up": 1, "down": 2, …}`),
+  enabling value-level rendering in consumers (#35).
+- **Object-level `units` in the JSON IR**: the UNITS clause (e.g. `"bits/second"`,
+  `"octets"`), threaded from the grammar through the transformer and the MibCache
+  round-trip into the emitted JSON. SMIv1 has no UNITS clause (#35).
+- **Object-level `constraints` in the JSON IR**: numeric ranges and size limits are
+  now contract-pinned and documented in `docs/json-bundles.md` (the field itself
+  predates this release; DISMAN-PING-MIB `pingCtlDataSize` carries
+  `units: "octets"`, range `0..65507`) (#35).
+- **Lint/IR additions are additive**: `schema_version` stays `1.1` per the bundle
+  compatibility policy; older consumers load the enriched JSON unchanged (verified
+  against trishul-snmp 0.5.1) (#35).
+
+### Fixes
+
+- **`missing-description` scoping**: the module-level check fires only on
+  object-bearing modules; legal TC-only modules without MODULE-IDENTITY
+  (`SNMPv2-TC`, `SNMPv2-CONF`, `IPV6-TC`) are no longer false-flagged. The 412-module
+  corpus re-lint shows zero module-level findings on TC-only modules; genuine
+  module-level findings on object-bearing modules still fire (#34).
+- **BITS inline constraints no longer dropped**: the transformer now threads
+  `named_bits` into `MibObject.constraints`, so BITS objects gain
+  `constraints`/`enums` like INTEGER enums (#35).
+- **Release-gate coverage detection**: the gate's coverage step now fails when
+  pytest-cov prints a `FAIL Required test coverage` marker, not only on a non-zero
+  exit code. coverage.py's fail-under exit check rounds to default precision, so a
+  total in [94.5, 95.0) previously printed FAIL but exited 0 — silently passing the
+  gate (observed at 94.93% during this release's preparation).
+
+---
+
 ## [0.5.1] — 2026-09-24
 
 ### Features

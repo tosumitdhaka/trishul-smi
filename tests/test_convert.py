@@ -230,3 +230,19 @@ class TestRoundTrip:
         assert "ifMIB" in data["objects"]
         assert "ifDescr" in data["objects"]
         assert data["objects"]["ifDescr"]["syntax"] == "DisplayString"
+
+    def test_converted_objects_carry_no_value_metadata_fields(self):
+        """The ast-based pysnmp reader never sets units/enums/constraints —
+        the v0.5.2 enrichment fields must be absent from converted JSON, so the
+        convert round-trip is unaffected (issue #35)."""
+        import json
+
+        from trishul_smi.output.json_fmt import JsonFormatter
+
+        src = "ifSpeed = MibTableColumn((1, 3, 6, 1, 2, 1, 2, 2, 1, 5,), Gauge32())\n"
+        module = _read(src)
+        data = json.loads(JsonFormatter().format(module))
+        obj = data["objects"]["ifSpeed"]
+        assert obj["syntax"] == "Gauge32"
+        for key in ("units", "enums", "constraints"):
+            assert key not in obj

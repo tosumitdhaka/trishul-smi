@@ -158,6 +158,7 @@ class MibObject:
     augments: str | None = None
     oid_parent: str | None = None      # pre-resolution parent name arc
     constraints: dict[str, Any] | None = None  # inline SYNTAX constraint
+    units: str | None = None          # UNITS clause (SMIv2 only; e.g. "bits/second")
     members: list[str] | None = None   # OBJECTS/NOTIFICATIONS clause members
 
 @dataclass

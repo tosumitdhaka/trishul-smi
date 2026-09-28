@@ -135,6 +135,11 @@ class _DisplayHintInfo:
     value: str
 
 
+@dataclass
+class _UnitsInfo:
+    value: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -354,6 +359,7 @@ class MibTransformer(Transformer[Token, MibModule]):
         augments_info = next((c for c in children if isinstance(c, _AugmentsInfo)), None)
         syntax_info = next((c for c in children if isinstance(c, _SyntaxInfo)), None)
         constraint = syntax_info.constraint if syntax_info else None
+        units_info = next((c for c in children if isinstance(c, _UnitsInfo)), None)
         return MibObject(
             name=name,
             oid=oid_str,
@@ -367,6 +373,7 @@ class MibTransformer(Transformer[Token, MibModule]):
             augments=augments_info.row if augments_info else None,
             oid_parent=oid_parent,
             constraints=constraint.to_dict() if constraint else None,
+            units=units_info.value if units_info else None,
         )
 
     # ------------------------------------------------------------------
@@ -572,8 +579,8 @@ class MibTransformer(Transformer[Token, MibModule]):
     def trap_variables_clause(self, children: list[Any]) -> _MembersInfo:
         return _MembersInfo(children[0] if children else [])
 
-    def units_clause(self, _: list[Any]) -> None:
-        return None
+    def units_clause(self, children: list[Any]) -> _UnitsInfo:
+        return _UnitsInfo(_unquote(children[0]))
 
     def reference_clause(self, _: list[Any]) -> None:
         return None
@@ -701,8 +708,9 @@ class MibTransformer(Transformer[Token, MibModule]):
     def gauge_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("Gauge")
 
-    def bits_type(self, _: list[Any]) -> _SyntaxInfo:
-        return _SyntaxInfo("BITS")
+    def bits_type(self, children: list[Any]) -> _SyntaxInfo:
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("BITS", constraint=c)
 
     @v_args(meta=True)
     def bit_string_type(self, meta: Any, children: list[Any]) -> _SyntaxInfo:
@@ -713,7 +721,8 @@ class MibTransformer(Transformer[Token, MibModule]):
             f"line {line}: 'BIT STRING {{ ... }}' used instead of "
             f"'BITS {{ ... }}' — accepted as alias (non-standard)"
         )
-        return _SyntaxInfo("BITS")
+        c = next((x for x in children if isinstance(x, _ConstraintInfo)), None)
+        return _SyntaxInfo("BITS", constraint=c)
 
     def sequence_type(self, _: list[Any]) -> _SyntaxInfo:
         return _SyntaxInfo("SEQUENCE")

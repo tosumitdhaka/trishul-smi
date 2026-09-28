@@ -246,15 +246,20 @@ Lint & watch ergonomics from first real usage of the v0.5.0 features (details: `
 
 ---
 
-## v0.5.2 — planned
+## v0.5.2 — shipped 2026-09-28
 
-`tsmi lint --fix` auto-remediation (details: `docs/plans/v0.5.2_plan.md`).
+`tsmi lint --fix` auto-remediation, lint scoping fix, and JSON IR enrichment (details: `docs/plans/v0.5.2_plan.md`).
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | `tsmi lint --fix` | planned | Mechanical fixes for type-role `missing-import` (add import when uniquely resolvable) and `unused-import`; local files only. |
-| 2 | `--diff` dry-run | planned | Unified diffs, writes nothing. |
-| 3 | Safety rules | planned | Idempotency, byte-preservation of untouched lines, rollback-on-unparseable, HTTP/ZIP sources report-only. |
+| 1 | `tsmi lint --fix` | done | Mechanical fixes for type-role `missing-import` (add import when uniquely resolvable) and `unused-import`; local files only; span-confined edits; SMIv1 `EXPORTS` handled. (#31) |
+| 2 | `--diff` dry-run | done | Unified diffs, writes nothing; dry-run exit codes documented as hypothetical-outcome. |
+| 3 | Safety rules | done | Idempotency, byte-preservation of untouched lines, rollback-on-unparseable, HTTP/ZIP sources report-only — each pinned by test; clause removal is span-granular (review blocker fixed pre-tag). |
+| 4 | `missing-description` scoping fix | done | Module-level check fires only on object-bearing modules; TC-only modules without MODULE-IDENTITY (`SNMPv2-TC` et al.) no longer false-flagged — corpus re-lint confirms zero TC-only firings. (#34) |
+| 5 | Object-level `enums` in JSON IR | done | INTEGER/BITS label→number mappings for value-level rendering (`ifOperStatus` → `up(1)`). Additive field; `schema_version` stays 1.1. (#35) |
+| 6 | Object-level `units` in JSON IR | done | UNITS clause threaded from grammar through transformer to formatter; round-trips the MibCache; SMIv1 has none. (#35) |
+| 7 | Object-level `constraints` in JSON IR | done | Numeric ranges and size limits when present; also fixed BITS `named_bits` being dropped at transform time. (#35) |
+| 8 | IR schema policy + docs | done | New fields additive and optional; contract tests pin them; `docs/json-bundles.md` updated. Verified loadable by trishul-snmp 0.5.1 (the consumer rendering follow-up stays on the tsnmp roadmap). (#35) |
 
 ---
 

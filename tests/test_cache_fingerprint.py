@@ -18,6 +18,7 @@ import pytest
 
 from tests.helpers import MockReader
 from trishul_smi.models.mib_module import MibModule
+from trishul_smi.models.mib_object import MibObject
 from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.resolver.cache import MibCache
 from trishul_smi.resolver.resolver import MibResolver
@@ -92,6 +93,48 @@ class TestMibCacheFingerprint:
         old = time.time() - 365 * 86_400
         os.utime(path, (old, old))
         assert cache.get("IF-MIB", _fp("raw v1")) is not None
+
+    def test_units_round_trips_through_cache(self, tmp_path: Path):
+        """The v0.5.2 ``units`` model field must survive the orjson cache
+        round-trip — a cached compile must not lose it (issue #35)."""
+        cache = MibCache(tmp_path, ttl_days=7)
+        module = _make_module("IF-MIB")
+        module.objects["ifSpeed"] = MibObject(
+            name="ifSpeed",
+            oid="1.3.6.1.2.1.2.2.1.5",
+            oid_path=[1, 3, 6, 1, 2, 1, 2, 2, 1, 5],
+            object_type="OBJECT-TYPE",
+            syntax="Gauge32",
+            units="bits/second",
+        )
+        cache.put("IF-MIB", module, _fp("raw v1"))
+
+        restored = cache.get("IF-MIB", _fp("raw v1"))
+        assert restored is not None
+        assert restored.objects["ifSpeed"].units == "bits/second"
+        # Objects without units stay None.
+        assert restored.objects["ifSpeed"].max_access is None
+
+    def test_enums_and_constraints_round_trip_through_cache(self, tmp_path: Path):
+        """``constraints`` (and hence the derived ``enums``) survive the cache."""
+        cache = MibCache(tmp_path, ttl_days=7)
+        module = _make_module("IF-MIB")
+        module.objects["ifOperStatus"] = MibObject(
+            name="ifOperStatus",
+            oid="1.3.6.1.2.1.2.2.1.8",
+            oid_path=[1, 3, 6, 1, 2, 1, 2, 2, 1, 8],
+            object_type="OBJECT-TYPE",
+            syntax="INTEGER",
+            constraints={"kind": "enum", "data": [["up", 1], ["down", 2]]},
+        )
+        cache.put("IF-MIB", module, _fp("raw v1"))
+
+        restored = cache.get("IF-MIB", _fp("raw v1"))
+        assert restored is not None
+        assert restored.objects["ifOperStatus"].constraints == {
+            "kind": "enum",
+            "data": [["up", 1], ["down", 2]],
+        }
 
 
 class TestResolverFingerprintIntegration:

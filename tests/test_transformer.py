@@ -280,6 +280,14 @@ END
         mib = _parse(self.MIB)
         assert mib.objects["portFlags"].syntax == "BITS"
 
+    def test_bits_constraint_stored(self):
+        """BITS { up(0), down(1), testing(2) } → bits constraint + enum data."""
+        mib = _parse(self.MIB)
+        obj = mib.objects["portFlags"]
+        assert obj.constraints is not None
+        assert obj.constraints["kind"] == "bits"
+        assert obj.constraints["data"] == [["up", 0], ["down", 1], ["testing", 2]]
+
 
 class TestSequenceTypes:
     MIB = """
@@ -800,6 +808,30 @@ END
     def test_units_and_defval_parsed(self):
         mib = _parse(self.MIB_UNITS_REF_DEFVAL)
         assert "ifSpeed" in mib.objects
+        assert mib.objects["ifSpeed"].units == "bits per second"
+
+    def test_units_absent_is_none(self):
+        mib = _parse(self.MIB_NOTIFICATION_OBJECTS)
+        assert mib.objects["ifIndex"].units is None
+
+    def test_units_smiv1_is_none(self):
+        """SMIv1 (RFC 1155/1212) has no UNITS clause — the field stays None."""
+        parser = SmiParser(dialect="smiv1")
+        mib = parser.parse(
+            """
+V1-UNITS-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    OBJECT-TYPE FROM RFC-1212
+    enterprises FROM RFC1155-SMI ;
+v1Speed OBJECT-TYPE
+    SYNTAX  Gauge
+    ACCESS  read-only
+    STATUS  mandatory
+    ::= { enterprises 1 1 }
+END
+"""
+        )
+        assert mib.objects["v1Speed"].units is None
 
     def test_display_hint_tc_parsed(self):
         mib = _parse(self.MIB_DISPLAY_HINT)

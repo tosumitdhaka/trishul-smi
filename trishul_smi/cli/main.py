@@ -40,9 +40,11 @@ compile:
     2   Configuration error (bad CLI option value).
 lint:
     0   No findings and no unresolved modules (with --fail-level error:
-        no error-severity findings and no unresolved modules).
-    1   One or more findings or unresolved modules (with --fail-level error:
-        one or more error-severity findings or unresolved modules).
+        no error-severity findings and no unresolved modules). With --fix:
+        nothing to fix, or all fixable findings were fixed and none remain.
+    1   One or more findings or unresolved modules remain (with --fail-level
+        error: error-severity findings or unresolved modules). With --fix:
+        unfixed findings remain.
     2   Configuration error (bad CLI option value).
 """
 
@@ -427,6 +429,27 @@ def lint(
             "modules; warnings report but exit 0).",
         ),
     ] = "all",
+    fix: Annotated[
+        bool,
+        typer.Option(
+            "--fix",
+            help="Apply mechanical fixes for fixable findings — type-role "
+            "missing-import (add the missing FROM import when the symbol "
+            "resolves to exactly one provider module in the closure) and "
+            "unused-import (remove the unused symbol; drop the IMPORTS "
+            "clause when it empties) — to local --mib-dir source files. "
+            "Other findings are report-only, and HTTP/ZIP-sourced modules "
+            "are never modified.",
+        ),
+    ] = False,
+    diff: Annotated[
+        bool,
+        typer.Option(
+            "--diff",
+            help="Dry-run: print unified diffs of what --fix would change and "
+            "write nothing. Requires --fix.",
+        ),
+    ] = False,
     mib_dirs: Annotated[
         list[Path] | None,
         typer.Option(
@@ -479,13 +502,32 @@ def lint(
     """Validate one or more MIB definitions and their transitive dependencies.
 
     Runs the same resolve pipeline as compile (fetch → parse → cache →
-    resolve_oids) and reports the v1 lint check set. No output files are
-    written. With no NAME arguments, lints every MIB discovered in
-    --mib-dir (stem-deduped, first --mib-dir wins — the same discovery
-    semantics as compile). Exits 0 when clean, 1 when findings or unresolved
-    modules are reported (under --fail-level error: only error-severity
-    findings and unresolved modules), 2 on configuration errors.
+    resolve_oids) and reports the v1 lint check set. With no NAME arguments,
+    lints every MIB discovered in --mib-dir (stem-deduped, first --mib-dir
+    wins — the same discovery semantics as compile).
+
+    With --fix, the two fixable check kinds are applied to local --mib-dir
+    source files: type-role missing-import (add the missing FROM import when
+    the symbol resolves to exactly one provider module in the closure) and
+    unused-import (remove the unused symbol; drop the IMPORTS clause when it
+    empties). Files are rewritten atomically (temp-file rename) and a fix
+    that would leave the file unparseable is rolled back with an error.
+    Everything else is report-only and HTTP/ZIP-sourced modules are never
+    modified. --fix --diff is a dry-run: it prints unified diffs and writes
+    nothing.
+
+    Exits 0 when clean (under --fix: nothing to fix or all fixed), 1 when
+    findings or unresolved modules remain (under --fail-level error: only
+    error-severity findings and unresolved modules; under --fix: unfixed
+    findings remain), 2 on configuration or usage errors.
     """
+    if diff and not fix:
+        err.print(
+            "[bold red]Error:[/bold red] --diff requires --fix "
+            "(it is a dry-run of the fix; without --fix nothing would be written)."
+        )
+        raise typer.Exit(2)
+
     try:
         # dict[str, Any]: values are either list[str] or left absent entirely.
         # Any is correct here — mypy cannot check **kwargs spread into a dataclass.
@@ -564,7 +606,14 @@ def lint(
 
     try:
         report = asyncio.run(
-            run_lint(resolved_names, config, mib_dirs=mib_dirs or [], use_http=use_http)
+            run_lint(
+                resolved_names,
+                config,
+                mib_dirs=mib_dirs or [],
+                use_http=use_http,
+                fix=fix,
+                diff=diff,
+            )
         )
     except KeyboardInterrupt:
         err.print("\n[yellow]Interrupted.[/yellow]")
@@ -591,6 +640,15 @@ def lint(
             markup=False,
             soft_wrap=not console.is_terminal,
         )
+        # --diff dry-run: print the planned unified diffs (text mode only —
+        # in JSON mode the diffs are part of the document on stdout).
+        # soft_wrap=True: diff hunks must print unwrapped at any terminal
+        # width (a wrapped hunk would be misleading in review).
+        if diff:
+            for file_path, diff_text in report.diffs.items():
+                console.print()
+                console.print(file_path, markup=False, soft_wrap=True)
+                console.print(diff_text, markup=False, soft_wrap=True)
 
     if fail_level == "error":
         # CI gating mode: only error-severity findings exit 1; warnings report

@@ -173,17 +173,7 @@ def _run_release_gate(settings: Settings) -> ReleaseGateReport:
     _record_step(
         report,
         "pytest coverage",
-        lambda: _run_checked(
-            [
-                str(settings.tool_python),
-                "-m",
-                "pytest",
-                "--cov=trishul_smi",
-                "--cov-report=term-missing:skip-covered",
-                "--cov-fail-under=95",
-                "-q",
-            ]
-        ),
+        lambda: _run_coverage_step(settings),
     )
     _record_step(
         report,
@@ -350,6 +340,45 @@ def _run_checked(command: list[str]) -> subprocess.CompletedProcess[str]:
         check=True,
         env=_subprocess_env(),
     )
+
+
+def _run_coverage_step(settings: Settings) -> str:
+    """Run the coverage gate and fail on the exit code OR the printed FAIL marker.
+
+    pytest-cov can exit 0 while printing "FAIL Required test coverage ..." when the
+    total rounds up to the threshold at coverage.py's default precision (e.g.
+    94.93% vs 95%): the exit-code check rounds to the configured precision, the
+    report text does not. The gate treats the printed marker as authoritative
+    regardless of the exit code.
+    """
+    proc = subprocess.run(
+        [
+            str(settings.tool_python),
+            "-m",
+            "pytest",
+            "--cov=trishul_smi",
+            "--cov-report=term-missing:skip-covered",
+            "--cov-fail-under=95",
+            "-q",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        env=_subprocess_env(),
+    )
+    marker = "FAIL Required test coverage"
+    if proc.returncode != 0:
+        raise RuntimeError(f"coverage run exited {proc.returncode}\n{_tail(proc.stdout)}")
+    if marker in proc.stdout:
+        raise RuntimeError(
+            "pytest-cov reported a coverage failure despite exit code 0 "
+            "(rounding boundary)\n" + _tail(proc.stdout)
+        )
+    return _tail(proc.stdout)
+
+
+def _tail(text: str, lines: int = 5) -> str:
+    return "\n".join(text.strip().splitlines()[-lines:])
 
 
 def _subprocess_env() -> dict[str, str]:

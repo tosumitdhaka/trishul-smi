@@ -20,6 +20,7 @@ class MibObject:
     augments: str | None = None  # columnar objects: AUGMENTS { <row> }
     oid_parent: str | None = None  # leading name arc before numeric arcs, e.g. "ifMIB"
     constraints: dict[str, Any] | None = None  # inline SYNTAX constraint (range/size/enum/bits)
+    units: str | None = None  # SMIv2 UNITS clause (e.g. "bits/second"); SMIv1 has no equivalent
     members: list[str] | None = None  # OBJECTS/NOTIFICATIONS clause members (groups, notifications)
     enterprise: str | None = None  # TRAP-TYPE: ENTERPRISE ref (symbolic name or numeric value)
     trap_number: int | None = None  # TRAP-TYPE: assignment subidentifier (last OID arc)

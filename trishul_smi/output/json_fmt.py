@@ -84,6 +84,35 @@ def _resolve_member(name: str, this_module: str, name_to_mod: dict[str, str]) ->
     return {"module": mod, "object": name}
 
 
+_ENUM_KINDS = ("enum", "bits")
+
+
+def _enum_map(constraints: dict[str, Any] | None) -> dict[str, int] | None:
+    """Derive an ordered label→number mapping from enum/bits constraints.
+
+    Inline INTEGER/BITS constraints are stored in ``MibObject.constraints``
+    (kind ``"enum"``/``"bits"``, data as ``[label, number]`` pairs). Emitted
+    as a separate additive ``enums`` field so consumers can render
+    ``ifOperStatus = 1`` as ``up(1)`` without interpreting the raw
+    constraints structure. Returns ``None`` when the constraint is not an
+    enum/bits mapping (range/size/unions), keeping the field optional.
+    """
+    if not constraints:
+        return None
+    if constraints.get("kind") not in _ENUM_KINDS:
+        return None
+    result: dict[str, int] = {}
+    for item in constraints.get("data") or []:
+        if (
+            isinstance(item, list)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and isinstance(item[1], int)
+        ):
+            result[item[0]] = item[1]
+    return result or None
+
+
 def _enterprise_ref(
     enterprise: str,
     this_module: str,
@@ -125,6 +154,11 @@ def _obj_dict(
         d["nodetype"] = nodetypes.get(o.name, "scalar")
     if o.constraints is not None:
         d["constraints"] = o.constraints
+    enums = _enum_map(o.constraints)
+    if enums is not None:
+        d["enums"] = enums
+    if o.units is not None:
+        d["units"] = o.units
     if o.members is not None:
         d["members"] = [_resolve_member(m, module_name, name_to_mod) for m in o.members]
     if o.enterprise is not None:

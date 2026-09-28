@@ -155,9 +155,15 @@ tsmi lint [MIB ...] [OPTIONS]
 Validate one or more MIBs and all their transitive dependencies against the
 v1 lint check set (plus the two v0.5.1 additions below). Runs the same
 resolve pipeline as `compile` (fetch → parse → cache → OID resolution) and
-reports findings; **no output files are written**. When no `MIB` names are
-given, the whole `--mib-dir` discovery set is linted — the same discovery
-semantics as `compile` (file stems, deduplicated, first `--mib-dir` wins).
+reports findings; **no output files are written** unless `--fix` is given.
+When no `MIB` names are given, the whole `--mib-dir` discovery set is linted
+— the same discovery semantics as `compile` (file stems, deduplicated,
+first `--mib-dir` wins).
+
+With `--fix`, mechanical fixes are applied to the **local `--mib-dir`
+source files** for the two fixable check kinds (see below); all other
+findings are report-only. `--fix --diff` is a dry-run: it prints the
+planned unified diffs and writes nothing.
 
 **Check set (v1 + v0.5.1)**
 
@@ -169,7 +175,37 @@ semantics as `compile` (file stems, deduplicated, first `--mib-dir` wins).
 | `unused-import` | warning | An IMPORTS symbol is never referenced by the module |
 | `duplicate-oid-arc` | warning | Two or more objects resolve to the same absolute OID |
 | `missing-status` | warning | A construct whose SMI macro mandates a STATUS clause lacks one (SMIv2 macros with STATUS: OBJECT-TYPE, OBJECT-IDENTITY, NOTIFICATION-TYPE, OBJECT-GROUP, NOTIFICATION-GROUP, MODULE-COMPLIANCE, AGENT-CAPABILITIES; TEXTUAL-CONVENTION) |
-| `missing-description` | warning | A construct whose SMI macro carries a DESCRIPTION clause lacks one (the STATUS-bearing macros above plus TRAP-TYPE, and the module-level description of a SMIv2 module) |
+| `missing-description` | warning | A construct whose SMI macro carries a DESCRIPTION clause lacks one (the STATUS-bearing macros above plus TRAP-TYPE, and the module-level description of an *object-bearing* SMIv2 module). TC-only modules (`SNMPv2-TC`, `SNMPv2-CONF`, `IPV6-TC`) conventionally carry no MODULE-IDENTITY and are not flagged at the module level |
+
+**Fix mode (`--fix`)**
+
+The v1 fixable set is exactly two check kinds, and only these ever modify a
+file:
+
+- **`missing-import` (TYPE-role only)** — the missing `symbol FROM provider`
+  import is added when the symbol resolves to exactly one provider module in
+  the loaded closure. Ambiguous (two or more providers) or unresolvable (no
+  provider) symbols are reported, not fixed. Member/OID-role
+  `missing-import` findings are NOT fixable (they are legal unimported OID
+  references, not defects).
+- **`unused-import`** — the unused symbol is removed from the IMPORTS
+  clause; the clause is removed entirely when it empties.
+
+Safety rules:
+
+- Only the two fixable check kinds above ever modify a file; every other
+  finding is report-only.
+- Idempotency: a second `--fix` run is a no-op.
+- Line endings and trailing whitespace of untouched lines are preserved
+  byte-for-byte (the fixer edits only the IMPORTS block).
+- A fix that would leave the file unparseable is detected (re-parse after
+  edit) and rolled back with an error.
+- No fix is attempted on modules fetched over HTTP or from ZIP sources —
+  local `--mib-dir` files only; out-of-scope sources are report-only.
+- Files are rewritten atomically (temp-file rename, same convention as the
+  compiled-module cache).
+
+`--diff` requires `--fix` (it is the dry-run form) and exits 2 without it.
 
 **Arguments**
 
@@ -183,6 +219,8 @@ semantics as `compile` (file stems, deduplicated, first `--mib-dir` wins).
 |---|---|---|
 | `-f` / `--format` | `text` | Output format: `text` (human-readable) or `json` (stable machine-readable document, for CI) |
 | `--fail-level` | `all` | Exit-1 threshold: `all` (any finding or unresolved module) or `error` (only error-severity findings and unresolved modules; warnings report but exit 0) |
+| `--fix` | off | Apply mechanical fixes for the two fixable check kinds (above) to local `--mib-dir` source files |
+| `--diff` | off | Dry-run: print unified diffs of what `--fix` would change and write nothing. Requires `--fix` |
 | `-d` / `--mib-dir` | — | Local MIB directory. Repeat for multiple. Searched before HTTP. |
 | `--online` | off | Fetch missing MIBs from HTTP sources (pysnmp.com + mibbrowser.online). Off by default. |
 | `-s` / `--source` | — | Custom HTTP URL template (`@mib@` replaced with MIB name). Implies `--online`. Repeat for multiple. |
@@ -193,14 +231,26 @@ semantics as `compile` (file stems, deduplicated, first `--mib-dir` wins).
 | `--retries` | `3` | HTTP retry count on transient failure. |
 | `--help` | — | Show help and exit. |
 
-**Exit codes:** `0` no findings and no unresolved modules — `1` one or more
-findings or unresolved modules (with `--fail-level error`: one or more
-error-severity findings or unresolved modules) — `2` bad option, no source
-configured, or invalid MIB name.
+**Exit codes:** `0` no findings and no unresolved modules (with `--fail-level
+error`: no error-severity findings or unresolved modules; with `--fix`:
+nothing to fix or all fixable findings fixed with none remaining) — `1` one
+or more findings or unresolved modules remain (with `--fail-level error`:
+error-severity findings or unresolved modules; with `--fix`: unfixed
+findings remain) — `2` bad option, no source configured, invalid MIB name,
+or `--diff` without `--fix`.
 
 Modules that cannot be fetched or parsed are reported as *unresolved* in the
 output (they cannot be inspected) and count toward exit code `1` under both
 `--fail-level` values.
+
+**`--fix --diff` exit codes.** In dry-run mode the fixer still moves
+fixable findings out of `findings` and reports them as `fixed`, so the exit
+code reflects the *hypothetical* outcome: `0` means everything fixable was
+hypothetically fixed (or there was nothing to fix), `1` means unfixable or
+unfixable-in-principle findings remain. The working tree is never modified.
+CI gating must therefore use plain `tsmi lint` (or `--fail-level error`) as
+the authoritative check — not `--fix --diff`, whose exit `0` does not mean
+"the tree is clean", only "the fix would have cleaned the fixable part".
 
 **Examples**
 
@@ -222,6 +272,13 @@ tsmi lint IF-MIB -d /usr/share/snmp/mibs --format json
 
 # Disable the disk cache
 tsmi lint IF-MIB --online --cache-dir ""
+
+# Fix fixable findings in local source files (unused imports; uniquely
+# resolvable type-role missing imports)
+tsmi lint -d /usr/share/snmp/mibs --fix
+
+# Dry-run: show the unified diffs the fix would make, write nothing
+tsmi lint -d /usr/share/snmp/mibs --fix --diff
 ```
 
 **Sample text output**
@@ -232,6 +289,16 @@ Errors:
 Warnings:
   [D-MIB] Integer32 (unused-import): imported symbol 'Integer32' from 'SNMPv2-SMI' is never referenced by module 'D-MIB'
 Summary: 2 modules checked, 1 error, 1 warning
+```
+
+With `--fix`, the report grows a `Fixed:` section (what was fixed) and a
+`Left (not fixed):` section (fixable findings that were left, with a reason):
+
+```
+Fixed:
+  [JUNIPER-MIB] DisplayString (missing-import): added import 'DisplayString' FROM 'SNMPv2-TC' to IMPORTS
+Left (not fixed):
+  [A-MIB] MysteryType (missing-import): symbol 'MysteryType' does not resolve to exactly one provider module in the loaded closure
 ```
 
 **JSON output (`--format json`)**
@@ -250,13 +317,30 @@ The document shape is stable and is the CI contract:
     }
   ],
   "summary": {"modules_checked": 2, "errors": 1, "warnings": 0},
-  "resolve_errors": {"NO-SUCH-MIB": "MIB 'NO-SUCH-MIB' not found"}
+  "resolve_errors": {"NO-SUCH-MIB": "MIB 'NO-SUCH-MIB' not found"},
+  "fixed": [
+    {
+      "check": "unused-import",
+      "severity": "warning",
+      "module": "D-MIB",
+      "symbol": "Integer32",
+      "file": "/mibs/D-MIB",
+      "status": "fixed",
+      "message": "removed unused import 'Integer32' from IMPORTS"
+    }
+  ],
+  "diffs": {"/mibs/JUNIPER-MIB": "--- /mibs/JUNIPER-MIB\n+++ /mibs/JUNIPER-MIB\n@@"}
 }
 ```
 
 `severity` is `error` or `warning`; `check` is one of the stable check ids
 above; `symbol` is `null` when a finding has no symbol; `resolve_errors`
 maps each module that could not be fetched or parsed to its error message.
+`fixed` lists the `--fix` outcomes (one entry per fixable finding: `status`
+`fixed` or `left`, `file` is the local source path when one exists,
+`message` describes the fix or the reason it was left; empty on plain lint
+runs). `diffs` maps each local file the fixer would change to its unified
+diff — populated only in `--fix --diff` dry-run mode.
 
 ---
 

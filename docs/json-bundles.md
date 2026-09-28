@@ -52,6 +52,49 @@ Module JSON remains authoritative for object, type, notification, and module met
 
 ---
 
+## Object-Level Value Metadata
+
+Module JSON objects may carry additive, optional fields that let consumers render
+SNMP values without re-reading raw MIB files. All three are absent when the
+source module does not provide the data, so older consumers keep parsing the
+JSON unchanged (the fields were introduced in v0.5.2 with `schema_version` still
+`1.1`).
+
+- `constraints` — the raw inline SYNTAX constraint, if any, as
+  `{"kind": ..., "data": [...]}`. `kind` is `range`, `size`, `enum`, `bits`, or
+  `union`. For `enum`/`bits`, `data` is an ordered list of `[label, number]`
+  pairs; for `range`/`size`, an ordered list of `[low, high]` bounds (a single
+  value like `(42)` is stored as `[42, 42]`; bounds may be the strings `MIN` /
+  `MAX`).
+- `enums` — an ordered `label → number` mapping derived from `enum`/`bits`
+  constraints, e.g. `ifOperStatus` → `{"up": 1, "down": 2, "testing": 3}`. Omitted
+  for range/size/unions and for objects without constraints.
+- `units` — the SMIv2 `UNITS` clause string, e.g. `ifSpeed` → `"bits/second"`.
+  SMIv1 has no UNITS clause, so this field never appears in SMIv1 output.
+
+Examples from IF-MIB:
+
+```json
+"ifOperStatus": {
+  "syntax": "INTEGER",
+  "constraints": {"kind": "enum", "data": [["up", 1], ["down", 2], ["testing", 3]]},
+  "enums": {"up": 1, "down": 2, "testing": 3}
+}
+```
+
+```json
+"ifSpeed": {
+  "syntax": "Gauge32",
+  "units": "bits/second"
+}
+```
+
+The same data is available on TEXTUAL-CONVENTION type entries via `constraints`
+(and `display_hint`); the `enums`/`units` convenience fields are object-level
+only.
+
+---
+
 ## `oid_index.json`
 
 - Optional reverse-lookup accelerator emitted only when

@@ -25,7 +25,15 @@ from click.testing import CliRunner
 
 from trishul_smi.cli.main import _compile_async, app
 from trishul_smi.config import CompilerConfig
-from trishul_smi.lint import CheckId, LintFinding, LintReport, LintSummary, Severity
+from trishul_smi.lint import (
+    CheckId,
+    FixedFinding,
+    FixStatus,
+    LintFinding,
+    LintReport,
+    LintSummary,
+    Severity,
+)
 from trishul_smi.models import CompileResult
 from trishul_smi.output.json_bundle import MANIFEST_FILENAME, OID_INDEX_FILENAME
 
@@ -881,3 +889,174 @@ class TestLintFailLevel:
     def test_unknown_fail_level_exits_2(self):
         result = _invoke(["lint", "A-MIB", "--online", "--fail-level", "warn"])
         assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# lint --fix / --diff (v0.5.2, plan items 1–3)
+# ---------------------------------------------------------------------------
+
+FIX_CLI_JUNIPER_MIB = """
+JUNIPER-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE FROM SNMPv2-SMI
+    ;
+jnxMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Juniper Networks"
+    CONTACT-INFO "jnx@example.com"
+    DESCRIPTION  "Juniper-style DisplayString missing-import fixture."
+    ::= { 1 3 }
+jnxString OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "References DisplayString without importing it."
+    ::= { jnxMIB 1 }
+END
+"""
+
+FIX_CLI_SNMPV2_TC_STUB = """
+SNMPv2-TC DEFINITIONS ::= BEGIN
+DisplayString ::= OCTET STRING
+END
+"""
+
+
+def _write_fix_fixtures(mib_dir: Path) -> None:
+    mib_dir.mkdir()
+    (mib_dir / "JUNIPER-MIB").write_text(FIX_CLI_JUNIPER_MIB, encoding="utf-8")
+    (mib_dir / "SNMPv2-TC").write_text(FIX_CLI_SNMPV2_TC_STUB, encoding="utf-8")
+
+
+def _fixed_finding(
+    check: CheckId = CheckId.UNUSED_IMPORT,
+    status: str = "fixed",
+    module: str = "D-MIB",
+    symbol: str = "Integer32",
+    message: str = "removed unused import 'Integer32' from IMPORTS",
+) -> FixedFinding:
+    return FixedFinding(
+        module=module,
+        check=check,
+        severity=Severity.WARNING,
+        symbol=symbol,
+        file=f"/mibs/{module}",
+        status=FixStatus(status),
+        message=message,
+    )
+
+
+class TestLintFixCli:
+    def test_diff_without_fix_exits_2(self):
+        result = _invoke(["lint", "IF-MIB", "--online", "--diff"])
+        assert result.exit_code == 2
+        assert "--diff requires --fix" in result.output
+
+    def test_fix_diff_dry_run_writes_nothing(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        _write_fix_fixtures(mib_dir)
+        result = _invoke(
+            [
+                "lint",
+                "JUNIPER-MIB",
+                "SNMPv2-TC",
+                "-d",
+                str(mib_dir),
+                "--cache-dir",
+                "",
+                "--fix",
+                "--diff",
+            ]
+        )
+        assert result.exit_code == 0, result.output
+        # Dry-run: nothing written.
+        assert "DisplayString FROM SNMPv2-TC" not in (mib_dir / "JUNIPER-MIB").read_text(
+            encoding="utf-8"
+        )
+        # The planned diff and the Fixed section appear on stdout.
+        assert "+    DisplayString FROM SNMPv2-TC" in result.output
+        assert "Fixed:" in result.output
+        assert "missing-import" in result.output
+
+    def test_fix_writes_corrected_files(self, tmp_path: Path):
+        mib_dir = tmp_path / "mibs"
+        _write_fix_fixtures(mib_dir)
+        result = _invoke(
+            ["lint", "JUNIPER-MIB", "SNMPv2-TC", "-d", str(mib_dir), "--cache-dir", "", "--fix"]
+        )
+        assert result.exit_code == 0, result.output
+        text = (mib_dir / "JUNIPER-MIB").read_text(encoding="utf-8")
+        assert "    DisplayString FROM SNMPv2-TC" in text
+        assert "Fixed:" in result.output
+
+    def test_fix_exit_zero_when_all_fixed(self):
+        report = LintReport(
+            findings=[],
+            summary=LintSummary(modules_checked=1, errors=0, warnings=0),
+            resolve_errors={},
+            fixed=[_fixed_finding()],
+        )
+        with _patch_lint(report):
+            result = _invoke(["lint", "D-MIB", "--online", "--fix"])
+        assert result.exit_code == 0
+        assert "Fixed:" in result.output
+
+    def test_fix_exit_one_when_findings_remain(self):
+        report = LintReport(
+            findings=[_lint_finding()],
+            summary=LintSummary(modules_checked=1, errors=1, warnings=0),
+            resolve_errors={},
+            fixed=[_fixed_finding(status="left", message="not a local --mib-dir file")],
+        )
+        with _patch_lint(report):
+            result = _invoke(["lint", "A-MIB", "--online", "--fix"])
+        assert result.exit_code == 1
+        assert "Left (not fixed):" in result.output
+        assert "not a local --mib-dir file" in result.output
+
+    def test_fix_json_output_includes_fixed_section(self):
+        report = LintReport(
+            findings=[],
+            summary=LintSummary(modules_checked=1, errors=0, warnings=0),
+            resolve_errors={},
+            fixed=[_fixed_finding()],
+            diffs={"/mibs/D-MIB": "@@ -1 +1 @@\n"},
+        )
+        with _patch_lint(report):
+            result = _invoke(["lint", "D-MIB", "--online", "--fix", "-f", "json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["fixed"] == [
+            {
+                "check": "unused-import",
+                "severity": "warning",
+                "module": "D-MIB",
+                "symbol": "Integer32",
+                "file": "/mibs/D-MIB",
+                "status": "fixed",
+                "message": "removed unused import 'Integer32' from IMPORTS",
+            }
+        ]
+        assert data["diffs"] == {"/mibs/D-MIB": "@@ -1 +1 @@\n"}
+        assert data["findings"] == []
+
+    def test_fix_fail_level_error_warnings_remain_exit_zero(self):
+        # Under --fail-level error, remaining warning findings exit 0 even
+        # with --fix (existing fail-level semantics preserved).
+        report = LintReport(
+            findings=[
+                _lint_finding(
+                    check=CheckId.MISSING_DESCRIPTION,
+                    severity=Severity.WARNING,
+                    module="R-MIB",
+                    symbol=None,
+                    message="module has no module-level DESCRIPTION",
+                )
+            ],
+            summary=LintSummary(modules_checked=1, errors=0, warnings=1),
+            resolve_errors={},
+            fixed=[],
+        )
+        with _patch_lint(report):
+            result = _invoke(["lint", "R-MIB", "--online", "--fix", "--fail-level", "error"])
+        assert result.exit_code == 0
