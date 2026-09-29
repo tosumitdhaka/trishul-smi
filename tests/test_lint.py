@@ -49,6 +49,7 @@ from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.models.mib_type import MibType
 from trishul_smi.parser.smi_parser import SmiParser
+from trishul_smi.resolver.resolver import _source_fingerprint
 
 # ---------------------------------------------------------------------------
 # Fixtures — one per check
@@ -288,6 +289,23 @@ END
 """
 
 
+# (g) missing-description, module level: a root/infrastructure module with
+# no OBJECT-TYPE instances and no notifications (bare OBJECT IDENTIFIER /
+# OBJECT-IDENTITY registry shape — the SNMPv2-SMI class) is legal SMI and
+# must NOT trigger the module-level check. Regression surfaced by the
+# v0.5.3 #41 dialect fix, which correctly labels import-free SMIv2 modules
+# (SNMPv2-SMI previously parsed as SMIv1 and skipped the SMIv2-only check).
+OID_ASSIGNMENT_ONLY_MODULE_MIB = """
+ROOT-SMI DEFINITIONS ::= BEGIN
+rootOid OBJECT IDENTIFIER ::= { 1 3 6 }
+registryEntry OBJECT-IDENTITY
+    STATUS      current
+    DESCRIPTION "A registry-style identity, not an OBJECT-TYPE instance."
+    ::= { rootOid 1 }
+END
+"""
+
+
 # Regression: an import used ONLY as an OID parent must count as a use for
 # the unused-import check. resolve_oids clears oid_parent on resolved
 # objects, so the reference-based checks must run before that pass.
@@ -334,6 +352,17 @@ def _lint(texts: dict[str, str], names: list[str] | None = None) -> LintReport:
     config = CompilerConfig(cache_dir=None)
     report = asyncio.run(run_lint(names or list(texts), config, readers=[MockReader(texts)]))
     return report
+
+
+def _unused_finding(module: str, symbol: str = "Integer32") -> LintFinding:
+    """A fixable unused-import finding for direct ``_apply_fixes`` tests."""
+    return LintFinding(
+        check=CheckId.UNUSED_IMPORT,
+        severity=Severity.WARNING,
+        module=module,
+        symbol=symbol,
+        message="unused",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +588,17 @@ class TestMissingDescription:
         assert report.findings == []
         assert report.summary.modules_checked == 1
 
+    def test_oid_assignment_only_module_no_module_level_finding(self) -> None:
+        # A root/infrastructure module whose objects are not OBJECT-TYPE
+        # instances (bare OBJECT IDENTIFIER / OBJECT-IDENTITY registry
+        # shape — the SNMPv2-SMI class) is legal SMI without
+        # MODULE-IDENTITY and must not fire the module-level check.
+        # Regression surfaced by the v0.5.3 #41 dialect fix, which
+        # correctly labels such import-free SMIv2 modules.
+        report = _lint({"ROOT-SMI": OID_ASSIGNMENT_ONLY_MODULE_MIB})
+        assert report.findings == []
+        assert report.summary.modules_checked == 1
+
     def test_silent_on_compliant_module(self) -> None:
         report = _lint({"CLEAN-MIB": CLEAN_MIB})
         assert not [f for f in report.findings if f.check is CheckId.MISSING_DESCRIPTION]
@@ -599,6 +639,101 @@ class TestOidParentImportIsAUse:
         )
         assert report.findings == []
         assert report.summary.modules_checked == 2
+
+
+# ---------------------------------------------------------------------------
+# Issue #37 — detection semantics: imported TEXTUAL-CONVENTION macro and
+# macro-definition body symbol uses count as uses for unused-import.
+# ---------------------------------------------------------------------------
+
+# Imports the TEXTUAL-CONVENTION macro and defines a TC: the macro keyword in
+# `MyTc ::= TEXTUAL-CONVENTION` is the reference, so the import is used.
+TC_MACRO_USE_MIB = """
+R-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+MyTc ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION "A TC."
+    SYNTAX      OCTET STRING
+END
+"""
+
+# Imports the TEXTUAL-CONVENTION macro but defines only a PLAIN type
+# assignment — the macro has not been used and must still be flagged.
+PLAIN_TYPE_TC_IMPORT_MIB = """
+R-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+MyType ::= OCTET STRING
+END
+"""
+
+# Modelled on SNMPv2-CONF: ObjectName / NotificationName / ObjectSyntax are
+# used ONLY inside the macro-definition body (value(ObjectName) & co.). They
+# must count as uses; macro-internal tokens that are not imported (Status,
+# Text, IA5String, ...) must not fire missing-import.
+MACRO_BODY_USE_MIB = """
+SNMPv2-CONF DEFINITIONS ::= BEGIN
+IMPORTS
+    ObjectName, NotificationName, ObjectSyntax FROM SNMPv2-SMI ;
+MODULE-COMPLIANCE MACRO ::=
+BEGIN
+    TYPE NOTATION ::=
+        "STATUS" Status
+        "DESCRIPTION" Text
+        "MODULE" Modules
+    VALUE NOTATION ::=
+        value(VALUE OBJECT IDENTIFIER)
+    Modules ::=
+        Module
+    Module ::=
+        "OBJECT" Objects
+    Objects ::=
+        value(ObjectName)
+    Syntax ::=
+        value(ObjectSyntax)
+    Notification ::=
+        value(NotificationName)
+    Status ::=
+        "current"
+    Text ::= value(IA5String)
+END
+END
+"""
+
+
+class TestMacroAndTcUseCounting:
+    """Issue #37: imported symbols used only as a TC macro or inside a
+    macro-definition body no longer fire unused-import."""
+
+    def test_textual_convention_import_counts_as_used_when_tc_defined(self) -> None:
+        report = _lint({"R-MIB": TC_MACRO_USE_MIB})
+        assert report.findings == []
+
+    def test_plain_type_assignment_does_not_count_textual_convention_used(self) -> None:
+        report = _lint({"R-MIB": PLAIN_TYPE_TC_IMPORT_MIB})
+        assert len(report.findings) == 1
+        finding = report.findings[0]
+        assert finding.check is CheckId.UNUSED_IMPORT
+        assert finding.symbol == "TEXTUAL-CONVENTION"
+
+    def test_macro_body_symbol_uses_counted(self) -> None:
+        report = _lint({"SNMPv2-CONF": MACRO_BODY_USE_MIB})
+        assert report.findings == []
+
+    def test_unrelated_macro_body_tokens_do_not_fire_missing_import(self) -> None:
+        """Harvested tokens that are NOT in the import map (Status, Text,
+        IA5String, ...) must not surface as missing-import — the counting is
+        restricted to imported symbols."""
+        report = _lint({"SNMPv2-CONF": MACRO_BODY_USE_MIB})
+        missing = [f for f in report.findings if f.check is CheckId.MISSING_IMPORT]
+        assert missing == []
+        # And they cannot mask a genuinely unused import: a module importing
+        # a symbol that appears nowhere (not even in a macro body) still
+        # fires unused-import even when its macro body mentions other tokens.
+        report2 = _lint({"D-MIB": UNUSED_IMPORT_MIB})
+        assert {f.symbol for f in report2.findings} == {"Integer32"}
 
 
 # ---------------------------------------------------------------------------
@@ -1833,6 +1968,82 @@ class TestFixSoleOnLineClauseRemoval:
         assert relint.findings == []
 
 
+# Issue #36: deleting a sole-line import clause retains its trailing comment
+# as a standalone comment line. Variant 1: the clause shares the block with a
+# surviving clause (individual-drop path). Variant 2: the clause is the
+# block's only clause (whole-block removal path).
+FIX_TRAILING_COMMENT_MIB = """
+C-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    Integer32 FROM OTHER-REF  -- legacy note
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    ;
+cMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Lint Test"
+    CONTACT-INFO "lint@example.com"
+    DESCRIPTION  "Trailing-comment fixture."
+    ::= { 1 3 }
+cObj OBJECT-TYPE
+    SYNTAX      OCTET STRING
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Uses only base types."
+    ::= { cMIB 1 }
+END
+"""
+
+FIX_SINGLE_CLAUSE_COMMENT_MIB = """
+E-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    Integer32 FROM SNMPv2-SMI  -- legacy note
+    ;
+eMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Lint Test"
+    CONTACT-INFO "lint@example.com"
+    DESCRIPTION  "Single-clause trailing-comment fixture."
+    ::= { 1 7 }
+END
+"""
+
+
+class TestLintFixTrailingCommentRetention:
+    """Issue #36: a trailing comment on a removed sole-line import clause is
+    retained as a standalone comment line (the comment documents the removed
+    import)."""
+
+    def test_surviving_clause_drop_retains_comment_as_standalone_line(self, tmp_path: Path) -> None:
+        report, mib_dir = _lint_fix(
+            {"C-MIB": FIX_TRAILING_COMMENT_MIB, "OTHER-REF": FIX_OTHER_REF_STUB},
+            ["C-MIB", "OTHER-REF"],
+            tmp_path,
+        )
+        text = (mib_dir / "C-MIB").read_text(encoding="utf-8")
+        assert "Integer32 FROM OTHER-REF" not in text
+        assert "    -- legacy note" in text
+        assert "    MODULE-IDENTITY FROM SNMPv2-SMI" in text
+        assert report.findings == []
+        # The comment must sit on its own line, not dangle after surviving
+        # clause content.
+        assert "-- legacy note\n    MODULE-IDENTITY" in text
+        relint = _lint({"C-MIB": text, "OTHER-REF": FIX_OTHER_REF_STUB}, names=["C-MIB"])
+        assert relint.findings == []
+
+    def test_whole_block_removal_retains_clause_comment(self, tmp_path: Path) -> None:
+        report, mib_dir = _lint_fix(
+            {"E-MIB": FIX_SINGLE_CLAUSE_COMMENT_MIB, "OTHER-REF": FIX_OTHER_REF_STUB},
+            ["E-MIB", "OTHER-REF"],
+            tmp_path,
+        )
+        text = (mib_dir / "E-MIB").read_text(encoding="utf-8")
+        assert "IMPORTS" not in text
+        assert "Integer32" not in text
+        assert "    -- legacy note" in text
+        assert "eMIB MODULE-IDENTITY" in text
+        assert report.findings == []
+
+
 # Priority-1 gap: an SMIv1 module with EXPORTS but NO IMPORTS clause at all —
 # the missing-import fix must insert the fresh IMPORTS block after EXPORTS.
 FIX_EXPORTS_NO_IMPORTS_MIB = """
@@ -2137,3 +2348,131 @@ class TestApplyFixesErrorPaths:
         assert len(remaining) == 1
         assert fixed[0].status is FixStatus.LEFT
         assert "failed to write" in fixed[0].message
+
+
+class TestSourceIdentityGuard:
+    """Issue #36: before editing a local file, the fixer compares its decoded
+    content fingerprint with the fingerprint of the source that produced the
+    resolved module; mismatches and offline-cache-fallback modules are
+    refused."""
+
+    def test_caller_reader_same_named_different_local_file_left_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller-supplied reader serving a same-named, different local file
+        must leave that file untouched — the resolved module came from the
+        reader, not from the local file."""
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        local_text = _UNUSED_IMPORT_SOURCE
+        (mib_dir / "R-MIB").write_text(local_text, encoding="utf-8")
+        foreign_text = _UNUSED_IMPORT_SOURCE.replace(
+            'LAST-UPDATED "200001010000Z"', 'LAST-UPDATED "200101010000Z"'
+        )
+        config = CompilerConfig(cache_dir=None)
+        report = asyncio.run(
+            run_lint(
+                ["R-MIB"],
+                config,
+                readers=[MockReader({"R-MIB": foreign_text})],
+                mib_dirs=[mib_dir],
+                fix=True,
+            )
+        )
+
+        assert (mib_dir / "R-MIB").read_text(encoding="utf-8") == local_text
+        assert len(report.findings) == 1  # the finding remains
+        left = [f for f in report.fixed if f.status is FixStatus.LEFT]
+        assert len(left) == 1
+        assert "differs from the resolved source" in left[0].message
+
+    def test_missing_source_fingerprint_refuses_fix(self, tmp_path: Path) -> None:
+        """A module with no recorded live-source fingerprint (served from the
+        offline compiled-module cache fallback) is unfixable."""
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        path = mib_dir / "R-MIB"
+        path.write_text(_UNUSED_IMPORT_SOURCE, encoding="utf-8")
+        module = SmiParser().parse(_UNUSED_IMPORT_SOURCE)
+
+        remaining, fixed, _ = asyncio.run(
+            _apply_fixes(
+                [_unused_finding("R-MIB")],
+                {"R-MIB": module},
+                [mib_dir],
+                SmiParser(),
+                source_fingerprints={},  # offline cache fallback: no entry
+                diff_only=False,
+            )
+        )
+
+        assert len(remaining) == 1
+        assert len(fixed) == 1 and fixed[0].status is FixStatus.LEFT
+        assert "offline cache fallback" in fixed[0].message
+        assert path.read_text(encoding="utf-8") == _UNUSED_IMPORT_SOURCE
+
+    def test_matching_fingerprint_allows_fix(self, tmp_path: Path) -> None:
+        """The normal path still works: a local file whose content matches the
+        resolved source fingerprint is edited."""
+        mib_dir = tmp_path / "mibs"
+        mib_dir.mkdir()
+        path = mib_dir / "R-MIB"
+        path.write_text(_UNUSED_IMPORT_SOURCE, encoding="utf-8")
+        module = SmiParser().parse(_UNUSED_IMPORT_SOURCE)
+
+        remaining, fixed, _ = asyncio.run(
+            _apply_fixes(
+                [_unused_finding("R-MIB")],
+                {"R-MIB": module},
+                [mib_dir],
+                SmiParser(),
+                source_fingerprints={"R-MIB": _source_fingerprint(_UNUSED_IMPORT_SOURCE)},
+                diff_only=False,
+            )
+        )
+
+        assert remaining == []
+        assert all(f.status is FixStatus.FIXED for f in fixed)
+        assert "Integer32" not in path.read_text(encoding="utf-8")
+
+
+class TestApplyFixesOverlapDegradation:
+    """Issue #36: an `_apply_edits` overlap-invariant failure must degrade to
+    per-finding `left` entries for that module and let the other modules keep
+    fixing — it must not abort the whole run."""
+
+    def test_overlapping_edits_degrade_per_module_not_abort(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trishul_smi.lint import _apply_edits as real_apply_edits
+
+        def _flaky_apply_edits(text: str, edits: list):
+            if "D-MIB" in text:
+                raise ValueError("overlapping fix edits: [1, 3) and [2, 4)")
+            return real_apply_edits(text, edits)
+
+        monkeypatch.setattr("trishul_smi.lint._apply_edits", _flaky_apply_edits)
+        report, mib_dir = _lint_fix(
+            {
+                "D-MIB": FIX_UNUSED_IMPORT_MIB,
+                "P-MIB": SOLE_ON_LINE_MIB,
+                "OTHER-REF": FIX_OTHER_REF_STUB,
+            },
+            ["D-MIB", "P-MIB", "OTHER-REF"],
+            tmp_path,
+        )
+
+        # D-MIB: the overlap failure is contained — file untouched, finding
+        # left with a clear reason.
+        assert (mib_dir / "D-MIB").read_text(encoding="utf-8") == FIX_UNUSED_IMPORT_MIB
+        d_left = [f for f in report.fixed if f.status is FixStatus.LEFT and f.module == "D-MIB"]
+        assert len(d_left) == 1
+        assert "overlapping fix edits" in d_left[0].message
+        assert len(report.findings) == 1 and report.findings[0].module == "D-MIB"
+
+        # P-MIB: still fixed — the run continued past the failure.
+        p_text = (mib_dir / "P-MIB").read_text(encoding="utf-8")
+        assert "Integer32 FROM OTHER-REF" not in p_text
+        assert "    MODULE-IDENTITY FROM SNMPv2-SMI" in p_text
+        p_fixed = [f for f in report.fixed if f.status is FixStatus.FIXED and f.module == "P-MIB"]
+        assert len(p_fixed) == 1

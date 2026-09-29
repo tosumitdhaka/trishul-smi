@@ -171,6 +171,48 @@ aliasValue OBJECT-TYPE
 END
 """
 
+# Issue #39(2): two providers exporting the same OID symbol. A-MIB imports
+# shared FROM B-MIB; its child must resolve under B-MIB's OID, not C-MIB's.
+PROVIDER_B_MIB = """
+B-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY FROM SNMPv2-SMI ;
+bMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "B Org"
+    CONTACT-INFO "b@example.com"
+    DESCRIPTION  "Provider B."
+    ::= { 1 292 }
+shared OBJECT IDENTIFIER ::= { enterprises 1 }
+END
+"""
+
+PROVIDER_C_MIB = """
+C-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY FROM SNMPv2-SMI ;
+cMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "C Org"
+    CONTACT-INFO "c@example.com"
+    DESCRIPTION  "Provider C."
+    ::= { 1 293 }
+shared OBJECT IDENTIFIER ::= { mib-2 5 }
+END
+"""
+
+IMPORTER_A_MIB = """
+A-MIB DEFINITIONS ::= BEGIN
+IMPORTS MODULE-IDENTITY FROM SNMPv2-SMI
+    shared FROM B-MIB ;
+aMIB MODULE-IDENTITY
+    LAST-UPDATED "202001010000Z"
+    ORGANIZATION "A Org"
+    CONTACT-INFO "a@example.com"
+    DESCRIPTION  "Imports shared from B-MIB."
+    ::= { 1 294 }
+aChild OBJECT IDENTIFIER ::= { shared 7 }
+END
+"""
+
 
 class TestOidIndexEmission:
     @pytest.mark.asyncio
@@ -427,3 +469,61 @@ class TestOidIndexEmission:
         with patch("pathlib.Path.write_bytes", autospec=True, side_effect=_write_bytes):
             with pytest.raises(WriterError, match="OID index"):
                 await compiler.compile("TABLE-MIB")
+
+
+class TestModuleScopedOidLookup:
+    """Issue #39(2): a symbol exported by two providers resolves per the
+    importing module's declared provider, not the last-visited provider.
+    Asserted on numeric OIDs in both the module JSON and oid_index.json."""
+
+    @pytest.mark.asyncio
+    async def test_imported_provider_oid_used_in_json_and_index(self, tmp_path: Path):
+        config = CompilerConfig(
+            output_dir=tmp_path,
+            formats=["json"],
+            cache_dir=None,
+            emit_oid_index=True,
+        )
+        compiler = MibCompiler(config).add_reader(
+            MockReader(
+                {
+                    "A-MIB": IMPORTER_A_MIB,
+                    "B-MIB": PROVIDER_B_MIB,
+                    "C-MIB": PROVIDER_C_MIB,
+                }
+            )
+        )
+
+        results = await compiler.compile("A-MIB", "C-MIB")
+        assert all(result.status == "compiled" for result in results)
+
+        # A-MIB resolved against its declared provider (B-MIB), not C-MIB.
+        a_json = json.loads((tmp_path / "A-MIB.json").read_bytes())
+        assert a_json["objects"]["aChild"]["oid"] == "1.3.6.1.4.1.1.7"
+        assert a_json["objects"]["aChild"]["oid_path"] == [1, 3, 6, 1, 4, 1, 1, 7]
+
+        # Each provider's own symbol keeps its own OID — no cross-pollution.
+        b_json = json.loads((tmp_path / "B-MIB.json").read_bytes())
+        assert b_json["objects"]["shared"]["oid"] == "1.3.6.1.4.1.1"
+        c_json = json.loads((tmp_path / "C-MIB.json").read_bytes())
+        assert c_json["objects"]["shared"]["oid"] == "1.3.6.1.2.1.5"
+
+        oid_index = json.loads((tmp_path / OID_INDEX_FILENAME).read_bytes())
+        assert oid_index["oids"]["1.3.6.1.4.1.1.7"] == {
+            "module": "A-MIB",
+            "object": "aChild",
+            "class": "objectidentifier",
+            "object_type": "OBJECT IDENTIFIER",
+        }
+        assert oid_index["oids"]["1.3.6.1.4.1.1"] == {
+            "module": "B-MIB",
+            "object": "shared",
+            "class": "objectidentifier",
+            "object_type": "OBJECT IDENTIFIER",
+        }
+        assert oid_index["oids"]["1.3.6.1.2.1.5"] == {
+            "module": "C-MIB",
+            "object": "shared",
+            "class": "objectidentifier",
+            "object_type": "OBJECT IDENTIFIER",
+        }

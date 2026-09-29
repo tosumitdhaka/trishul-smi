@@ -1694,3 +1694,77 @@ END
         src_lines = mib.splitlines()
         octet_line = next(i + 1 for i, ln in enumerate(src_lines) if "OCTET STRING (0..5)" in ln)
         assert f"line {octet_line}" in octet_warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Repeated IMPORTS clauses from the same provider — issue #37
+# ---------------------------------------------------------------------------
+
+
+class TestRepeatedImportClauses:
+    """Issue #37: repeated ``IMPORTS ... FROM P`` clauses merge union-style.
+
+    ASN.1 allows the same provider in several clauses::
+
+        IMPORTS
+            MODULE-IDENTITY FROM SNMPv2-SMI
+            OBJECT-TYPE FROM SNMPv2-SMI
+            ;
+
+    The old ``dict.update`` merge was last-wins and dropped the earlier
+    clause's symbols; they must now be appended in source order and
+    deduplicated per provider.
+    """
+
+    MIB = """
+MULTI-IMPORT-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    OBJECT-TYPE FROM SNMPv2-SMI
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+
+multiImportMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Repeated FROM clauses for the same provider."
+    ::= { 1 45 }
+
+END
+"""
+
+    def test_symbols_merged_in_source_order(self):
+        mib = _parse(self.MIB)
+        assert mib.imports["SNMPv2-SMI"] == ["MODULE-IDENTITY", "OBJECT-TYPE"]
+        assert mib.imports["SNMPv2-TC"] == ["TEXTUAL-CONVENTION"]
+
+    def test_repeated_symbol_deduplicated(self):
+        mib = _parse(self.MIB)
+        assert mib.imports["SNMPv2-SMI"].count("MODULE-IDENTITY") == 1
+        assert len(mib.imports["SNMPv2-SMI"]) == 2
+
+    def test_language_still_detected_via_marker(self):
+        mib = _parse(self.MIB)
+        assert mib.language == "SMIv2"
+
+    def test_imports_method_merges_union_style_and_skips_non_dicts(self):
+        """Direct unit coverage of the merge helper: clauses from the same
+        provider append in source order with dedup, and stray non-dict
+        children are skipped (the Lark shape always produces dicts)."""
+        from trishul_smi.parser.transformer import MibTransformer
+
+        result = MibTransformer().imports(
+            [
+                {"P-MIB": ["A"]},
+                "stray",
+                {"P-MIB": ["B", "A"]},
+                {"Q-MIB": ["C"]},
+            ]
+        )
+        assert result == {
+            "__imports__": {
+                "P-MIB": ["A", "B"],
+                "Q-MIB": ["C"],
+            }
+        }

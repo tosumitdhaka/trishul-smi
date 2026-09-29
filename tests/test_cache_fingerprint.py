@@ -36,6 +36,43 @@ testMIB MODULE-IDENTITY
 END
 """
 
+MULTI_IMPORT_V2 = """
+MULTI-IMPORT-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    OBJECT-TYPE FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+multiImportMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test Org"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Repeated FROM clauses for the same provider."
+    ::= { 1 45 }
+END
+"""
+
+MACRO_BODY_MIB = """
+MACRO-BODY-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    ObjectName, NotificationName FROM SNMPv2-SMI ;
+MY-MACRO MACRO ::=
+BEGIN
+    TYPE NOTATION ::=
+        "STATUS" Status
+        "OBJECTS" "{" Objects "}"
+    VALUE NOTATION ::=
+        value(VALUE OBJECT IDENTIFIER)
+    Objects ::=
+        value(ObjectName)
+    Notification ::=
+        value(NotificationName)
+    Status ::=
+        "current"
+    Text ::= value(IA5String)
+END
+END
+"""
+
 
 def _fp(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -135,6 +172,50 @@ class TestMibCacheFingerprint:
             "kind": "enum",
             "data": [["up", 1], ["down", 2]],
         }
+
+    def test_union_merged_imports_round_trip_through_cache(self, tmp_path: Path):
+        """Issue #37: union-merged repeated FROM clauses survive the cache
+        round-trip — a cached compile must not lose the earlier clause's
+        symbols."""
+        cache = MibCache(tmp_path, ttl_days=7)
+        module = SmiParser().parse(MULTI_IMPORT_V2)
+        assert module.imports["SNMPv2-SMI"] == ["MODULE-IDENTITY", "OBJECT-TYPE"]
+        cache.put("MULTI-IMPORT-MIB", module, _fp("raw v1"))
+
+        restored = cache.get("MULTI-IMPORT-MIB", _fp("raw v1"))
+        assert restored is not None
+        assert restored.imports == {
+            "SNMPv2-SMI": ["MODULE-IDENTITY", "OBJECT-TYPE"],
+            "SNMPv2-TC": ["TEXTUAL-CONVENTION"],
+        }
+
+    def test_aliases_round_trip_through_cache(self, tmp_path: Path):
+        """Issue #39: the requested→declared alias record survives the cache,
+        so a cached misnamed provider still feeds OID resolution on later
+        runs."""
+        cache = MibCache(tmp_path, ttl_days=7)
+        module = MibModule(name="Z-MIB", language="SMIv2", aliases={"ALIAS": "Z-MIB"})
+        cache.put("Z-MIB", module, _fp("raw v1"))
+
+        restored = cache.get("Z-MIB", _fp("raw v1"))
+        assert restored is not None
+        assert restored.aliases == {"ALIAS": "Z-MIB"}
+
+    def test_macro_body_symbols_round_trip_through_cache(self, tmp_path: Path):
+        """Issue #37: the macro-body token harvest survives the cache
+        round-trip — a cached compile must not lose the imported symbols the
+        lint engine counts as macro-body uses."""
+        cache = MibCache(tmp_path, ttl_days=7)
+        module = SmiParser().parse(MACRO_BODY_MIB)
+        assert "ObjectName" in module.macro_body_symbols
+        cache.put("MACRO-BODY-MIB", module, _fp("raw v1"))
+
+        restored = cache.get("MACRO-BODY-MIB", _fp("raw v1"))
+        assert restored is not None
+        assert restored.macro_body_symbols == module.macro_body_symbols
+
+    def test_macro_body_symbols_field_default_empty(self) -> None:
+        assert _make_module("PLAIN-MIB").macro_body_symbols == []
 
 
 class TestResolverFingerprintIntegration:

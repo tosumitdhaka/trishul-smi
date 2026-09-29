@@ -142,11 +142,17 @@ class MibCompiler:
         Formatter errors (e.g. a buggy Jinja2 template) are non-fatal:
         they are appended to ``result.warnings`` and logged at WARNING
         level so they surface in the CLI without aborting the entire run.
+        A module file write failure (e.g. an existing directory at the
+        intended output path, or a permission error) is the opposite: it
+        aborts the run with ``WriterError`` so a module is never reported
+        as compiled when its requested output could not be written.
 
         Raises:
             RuntimeError: if no readers were registered via add_reader().
             WriterError: if the output directory cannot be created (e.g.
-                permission denied).
+                permission denied), or a module output file cannot be
+                written (e.g. an existing directory at the module's JSON
+                path, or a permission error).
         """
         if not self._readers:
             raise RuntimeError("No readers registered. Call add_reader() before compile().")
@@ -245,24 +251,35 @@ class MibCompiler:
                 out_path = out_dir / f"{module.name}{formatter.FILE_SUFFIX}"
                 try:
                     content = formatter.format(module)
-                    if not self._config.dry_run:
+                except Exception as _fmt_exc:  # noqa: BLE001
+                    # Formatter generation failures stay non-fatal (plugin
+                    # contract): surface as a warning and keep compiling.
+                    msg = f"[{fmt_name}] formatter error for {module.name}: {_fmt_exc}"
+                    warnings.append(msg)
+                    logger.warning(msg)  # visible in CLI without aborting the run
+                    continue
+                if not self._config.dry_run:
+                    try:
                         if isinstance(content, bytes):
                             out_path.write_bytes(content)
                         else:
                             out_path.write_text(content, encoding="utf-8")
-                        output_paths.append(out_path)
-                    if fmt_name == "json":
-                        emitted_json_modules.append(
-                            JsonModuleArtifact(
-                                module=module.name,
-                                file=out_path.name,
-                                module_data=module,
-                            )
+                    except OSError as _write_exc:
+                        from trishul_smi.errors import WriterError
+
+                        raise WriterError(
+                            f"Cannot write {fmt_name} output for {module.name} "
+                            f"to {out_path}: {_write_exc}"
+                        ) from _write_exc
+                    output_paths.append(out_path)
+                if fmt_name == "json":
+                    emitted_json_modules.append(
+                        JsonModuleArtifact(
+                            module=module.name,
+                            file=out_path.name,
+                            module_data=module,
                         )
-                except Exception as _fmt_exc:  # noqa: BLE001
-                    msg = f"[{fmt_name}] formatter error for {module.name}: {_fmt_exc}"
-                    warnings.append(msg)
-                    logger.warning(msg)  # visible in CLI without aborting the run
+                    )
 
             results.append(
                 CompileResult(
@@ -273,6 +290,7 @@ class MibCompiler:
                     is_dependency=(
                         module.name not in requested_set and module.name not in explicit_declared
                     ),
+                    source_path=resolve_result.source_paths.get(module.name),
                 )
             )
 
@@ -291,6 +309,7 @@ class MibCompiler:
                         module.name not in requested_set and module.name not in explicit_declared
                     ),
                     missing_dependencies=blocked[module.name],
+                    source_path=resolve_result.source_paths.get(module.name),
                 )
             )
 
@@ -305,6 +324,7 @@ class MibCompiler:
                     error=str(exc),
                     is_dependency=name not in requested_set,
                     missing_dependencies=[name] if isinstance(exc, MibNotFoundError) else [],
+                    source_path=resolve_result.source_paths.get(name),
                 )
             )
 

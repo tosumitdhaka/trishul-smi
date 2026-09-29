@@ -99,6 +99,8 @@ def _module_to_bytes(module: MibModule, source_fingerprint: str | None = None) -
         "revisions": module.revisions,
         "description": module.description,
         "warnings": module.warnings,
+        "aliases": module.aliases,
+        "macro_body_symbols": module.macro_body_symbols,
     }
     if source_fingerprint is not None:
         payload["source_fingerprint"] = source_fingerprint
@@ -151,6 +153,8 @@ def _module_from_dict(d: dict[str, Any]) -> MibModule:
         revisions=d.get("revisions") or [],
         description=d.get("description"),
         warnings=d.get("warnings") or [],
+        aliases=d.get("aliases") or {},
+        macro_body_symbols=d.get("macro_body_symbols") or [],
     )
 
 

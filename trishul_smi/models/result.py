@@ -20,3 +20,14 @@ class CompileResult:
     error: str | None = None
     is_dependency: bool = False
     missing_dependencies: list[str] = field(default_factory=list)
+    source_path: Path | None = None
+    """Local filesystem path of the source file that supplied this module.
+
+    Populated by MibCompiler from ``ResolveResult.source_paths``: set when a
+    FileReader served the module from a live local file (fresh parse, cache
+    hit, or fallback-replacement). None for HTTP/ZIP-sourced modules, modules
+    served by the offline compiled-module cache fallback, and modules that
+    could not be fetched. Lets the watch engine poll the ACTUAL source path
+    (issue C2) — a misnamed file (stem != declared name) is tracked by its
+    real path, never reconstructed from the declared name.
+    """

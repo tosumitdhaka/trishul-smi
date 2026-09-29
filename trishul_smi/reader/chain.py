@@ -14,6 +14,8 @@ to a second reader that might return a truncated or stale copy.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from trishul_smi.errors import MibNotFoundError
 from trishul_smi.reader.base import FetchProtocol
 
@@ -69,3 +71,18 @@ class ReaderChain:
         if last_exc is None:  # pragma: no cover - unreachable by construction
             raise MibNotFoundError(f"MIB '{mib_name}' not found")
         raise last_exc
+
+    def local_path(self, mib_name: str) -> Path | None:
+        """Return the local file path the first reader that can serve
+        *mib_name* would read, or None when no reader has a local file for it.
+
+        Mirrors fetch()'s first-wins fallback order, so the path reported for
+        a module is the ACTUAL file that supplied it (issue C2). Readers
+        without a local-file notion (HTTP/ZIP) contribute None and are
+        skipped.
+        """
+        for reader in self._readers:
+            path = reader.local_path(mib_name)
+            if path is not None:
+                return path
+        return None

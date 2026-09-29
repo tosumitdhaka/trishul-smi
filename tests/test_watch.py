@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import typer
 from click.testing import CliRunner
 
@@ -191,6 +192,70 @@ END
 
 SIB_MIB_CHANGED = SIB_MIB.replace("::= { sibMIB 1 }", "::= { sibMIB 2 }")
 
+# Issue #38 fixtures: B-MIB depends on MISSING-MIB (absent at first compile),
+# and C-MIB depends on B-MIB. Adopting MISSING-MIB mid-watch must recompile
+# B-MIB and, transitively, C-MIB — without editing either dependent.
+MISSING_MIB = """
+MISSING-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-IDENTITY FROM SNMPv2-SMI ;
+missingMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Watch Test"
+    CONTACT-INFO "watch@example.com"
+    DESCRIPTION  "Adopted mid-watch."
+    ::= { 1 7 }
+vendorRoot OBJECT-IDENTITY
+    STATUS      current
+    DESCRIPTION "Root imported by B-MIB."
+    ::= { missingMIB 1 }
+END
+"""
+
+B_MIB_WAITING = """
+B-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-IDENTITY FROM SNMPv2-SMI
+    vendorRoot FROM MISSING-MIB ;
+bMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Watch Test"
+    CONTACT-INFO "watch@example.com"
+    DESCRIPTION  "Depends on MISSING-MIB."
+    ::= { vendorRoot 1 }
+bRoot OBJECT-IDENTITY
+    STATUS      current
+    DESCRIPTION "Root imported by C-MIB."
+    ::= { bMIB 1 }
+END
+"""
+
+C_MIB_WAITING = """
+C-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE FROM SNMPv2-SMI
+    bRoot FROM B-MIB ;
+cMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Watch Test"
+    CONTACT-INFO "watch@example.com"
+    DESCRIPTION  "Transitive dependent of MISSING-MIB."
+    ::= { bRoot 1 }
+cObj OBJECT-TYPE
+    SYNTAX      INTEGER
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Leaf object."
+    ::= { cMIB 1 }
+END
+"""
+
+# C2 fixture: a MISNAMED source file — stem "provider_file" declaring A-MIB.
+# The watch engine must poll its ACTUAL path and recompile A-MIB's dependents
+# when that file changes, even though no file is named after the declared
+# module.
+A_MIB_MISNAMED = A_MIB
+
 _MODULE_HEADER_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s+DEFINITIONS\s*::=\s*BEGIN", re.MULTILINE)
 
 
@@ -232,7 +297,7 @@ def _write_changed(path: Path, text: str, *, delta_ns: int = 1_000_000_000) -> N
 
 
 def _build_compiler(
-    mib_dir: Path, out_dir: Path, cache_dir: Path
+    mib_dir: Path, out_dir: Path, cache_dir: Path, *, reproducible: bool = False
 ) -> tuple[MibCompiler, CountingParser]:
     """MibCompiler over a tmp mib-dir with a counting parser injected."""
     parsers: list[CountingParser] = []
@@ -243,7 +308,12 @@ def _build_compiler(
         return p
 
     with patch("trishul_smi.compiler.SmiParser", make_parser):
-        config = CompilerConfig(output_dir=out_dir, cache_dir=cache_dir, cache_ttl_days=0)
+        config = CompilerConfig(
+            output_dir=out_dir,
+            cache_dir=cache_dir,
+            cache_ttl_days=0,
+            reproducible=reproducible,
+        )
         compiler = MibCompiler(config)
         compiler.add_reader(FileReader(mib_dir, max_size=config.max_mib_size))
     return compiler, parsers[0]
@@ -854,6 +924,262 @@ async def test_longer_chain_invalidates_all_transitive_dependents(tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
+# Engine: issue #38 — adoption of a missing dependency recompiles the failed
+# module and its transitive dependents, without editing the dependent
+# ---------------------------------------------------------------------------
+
+
+async def test_adopted_dependency_recompiles_failed_dependents(tmp_path: Path):
+    """B-MIB fails on an unresolved import of MISSING-MIB. When MISSING-MIB's
+    file appears mid-watch, adoption supplies the dependency and the failed
+    module B-MIB (and its dependent C-MIB, transitively) recompiles in the
+    next debounced cycle — neither dependent file is edited."""
+    mib_dir = tmp_path / "mibs"
+    out_dir = tmp_path / "out"
+    cache_dir = tmp_path / "cache"
+    _write_fixture(mib_dir, {"B-MIB": B_MIB_WAITING, "C-MIB": C_MIB_WAITING})
+    compiler, parser = _build_compiler(mib_dir, out_dir, cache_dir)
+
+    closures: list[set[str]] = []
+    cycle_done = {n: asyncio.Event() for n in (1, 2, 3)}
+    new_files: list[str] = []
+    new_seen = asyncio.Event()
+
+    def on_cycle(n: int, results) -> None:
+        closures.append({r.name for r in results})
+        if n in cycle_done:
+            cycle_done[n].set()
+
+    def on_new_files(files: list[str]) -> None:
+        new_files.extend(files)
+        new_seen.set()
+
+    task = asyncio.create_task(
+        run_watch(
+            _compiler_cycle(compiler),
+            initial_names=["B-MIB", "C-MIB"],
+            mib_dirs=[mib_dir],
+            output_dir=out_dir,
+            debounce_seconds=0.05,
+            poll_interval=0.005,
+            max_cycles=3,
+            on_cycle=on_cycle,
+            on_new_files=on_new_files,
+        )
+    )
+    await asyncio.wait_for(cycle_done[1].wait(), timeout=10)
+
+    # Cycle 1: B-MIB fails on MISSING-MIB, C-MIB fails on B-MIB. The missing
+    # dependency itself surfaces as a "missing" result row. No outputs are
+    # written yet.
+    assert closures[0] == {"B-MIB", "C-MIB", "MISSING-MIB"}
+    assert not (out_dir / "B-MIB.json").is_file()
+
+    # MISSING-MIB appears mid-watch — adoption compiles it in cycle 2.
+    _write_fixture(mib_dir, {"MISSING-MIB": MISSING_MIB})
+    await asyncio.wait_for(new_seen.wait(), timeout=10)
+    assert "MISSING-MIB" in new_files
+    await asyncio.wait_for(cycle_done[2].wait(), timeout=10)
+    assert closures[1] == {"MISSING-MIB"}
+    assert (out_dir / "MISSING-MIB.json").is_file()
+
+    # Cycle 3: the failed dependents were retried without being edited.
+    # MISSING-MIB re-enters the closure as their (cached) dependency.
+    await asyncio.wait_for(cycle_done[3].wait(), timeout=10)
+    assert closures[2] == {"B-MIB", "C-MIB", "MISSING-MIB"}
+    assert (out_dir / "B-MIB.json").is_file()
+    assert (out_dir / "C-MIB.json").is_file()
+    data = json.loads((out_dir / "C-MIB.json").read_text(encoding="utf-8"))
+    # 1.7 (missingMIB) .1 (vendorRoot) .1 (bMIB) .1 (bRoot) .1 (cMIB) .1 (cObj)
+    assert data["objects"]["cObj"]["oid"] == "1.7.1.1.1.1.1"
+
+    summary = await task
+    assert summary.cycles_run == 3
+    assert summary.modules_recompiled == 3  # adoption + transitive retry batch
+    assert summary.failed is False
+
+
+# ---------------------------------------------------------------------------
+# Engine: issue C2 — a misnamed source (stem != declared name) is watched at
+# its ACTUAL path; editing it recompiles the module and its dependents
+# ---------------------------------------------------------------------------
+
+
+async def test_misnamed_source_edit_recompiles_module_and_dependents(tmp_path: Path):
+    """The provider A-MIB lives in a misnamed file 'provider_file' (stem !=
+    declared name). Editing that file must recompile A-MIB and its dependent
+    B-MIB, even though no file is named after the declared module (the old
+    name-based lookup would not poll it at all)."""
+    mib_dir = tmp_path / "mibs"
+    out_dir = tmp_path / "out"
+    cache_dir = tmp_path / "cache"
+    # provider_file declares A-MIB (same text as the normal A-MIB fixture).
+    _write_fixture(mib_dir, {"provider_file": A_MIB, "B-MIB": B_MIB})
+    compiler, parser = _build_compiler(mib_dir, out_dir, cache_dir)
+
+    cycle_done = {n: asyncio.Event() for n in (1, 2)}
+
+    def on_cycle(n: int, results) -> None:
+        if n in cycle_done:
+            cycle_done[n].set()
+
+    task = asyncio.create_task(
+        _run_real_watch(
+            compiler,
+            mib_dir,
+            out_dir,
+            ["provider_file", "B-MIB"],
+            debounce=0.05,
+            poll=0.005,
+            max_cycles=2,
+            on_cycle=on_cycle,
+        )
+    )
+    await asyncio.wait_for(cycle_done[1].wait(), timeout=10)
+    b_before = (out_dir / "B-MIB.json").read_bytes()
+    assert json.loads(b_before)["objects"]["bObj"]["oid"] == "1.7.1.1.1"
+
+    # Edit the MISNAMED file (its stem never matches the declared name).
+    _write_changed(mib_dir / "provider_file", A_MIB_CHANGED)
+    await asyncio.wait_for(cycle_done[2].wait(), timeout=10)
+
+    b_after = (out_dir / "B-MIB.json").read_bytes()
+    assert b_after != b_before
+    assert json.loads(b_after)["objects"]["bObj"]["oid"] == "1.7.2.1.1"
+
+    summary = await task
+    assert summary.cycles_run == 2
+    assert summary.failed is False
+
+
+# ---------------------------------------------------------------------------
+# Engine: issue #38 — deletion marks outputs stale (offline cache fallback
+# must not mask a confirmed local deletion); restoration recovers
+# ---------------------------------------------------------------------------
+
+
+async def test_deleted_source_marks_stale_and_restoration_recovers(tmp_path: Path):
+    """Deleting a watched source invalidates the module and its dependents.
+    The offline compiled-module cache fallback must NOT silently turn the
+    confirmed local deletion into a successful compile: the output is marked
+    stale and its path reported. Existing output files are never deleted.
+    Restoring the file re-adopts it and clears the stale state."""
+    mib_dir = tmp_path / "mibs"
+    out_dir = tmp_path / "out"
+    cache_dir = tmp_path / "cache"
+    _write_fixture(mib_dir, {"A-MIB": A_MIB, "B-MIB": B_MIB})
+    # reproducible=True pins generated_at so the byte-equality assertion below
+    # is stable across cycles: the compiler rebuilds artifact metadata (with a
+    # second-granularity timestamp) on every compile() call, and a
+    # cache-served re-emission ~0.1s later otherwise straddles a wall-clock
+    # second ~5-15% of runs (v0.5.3 pre-release review finding M1).
+    compiler, parser = _build_compiler(mib_dir, out_dir, cache_dir, reproducible=True)
+
+    closures: list[set[str]] = []
+    cycle_done = {n: asyncio.Event() for n in (1, 2, 3)}
+    stale_paths: list[Path] = []
+
+    def on_cycle(n: int, results) -> None:
+        closures.append({r.name for r in results})
+        if n in cycle_done:
+            cycle_done[n].set()
+
+    def on_stale(paths: list[Path]) -> None:
+        stale_paths.extend(paths)
+
+    task = asyncio.create_task(
+        run_watch(
+            _compiler_cycle(compiler),
+            initial_names=["A-MIB", "B-MIB"],
+            mib_dirs=[mib_dir],
+            output_dir=out_dir,
+            debounce_seconds=0.05,
+            poll_interval=0.005,
+            max_cycles=3,
+            on_cycle=on_cycle,
+            on_stale=on_stale,
+        )
+    )
+    await asyncio.wait_for(cycle_done[1].wait(), timeout=10)
+    a_output = out_dir / "A-MIB.json"
+    assert a_output.is_file()
+    a_before = a_output.read_bytes()
+
+    # Delete the A-MIB source mid-watch.
+    (mib_dir / "A-MIB").unlink()
+    await asyncio.wait_for(cycle_done[2].wait(), timeout=10)
+    # The removed module and its dependent were invalidated and recompiled.
+    assert closures[1] == {"A-MIB", "B-MIB"}
+    # A-MIB is now served from the offline cache fallback — which must NOT
+    # count as a successful watch compile: its output is marked stale.
+    assert stale_paths == [a_output]
+    # Existing output files are never deleted.
+    assert a_output.is_file()
+    assert a_output.read_bytes() == a_before
+
+    # Restore the file — re-adoption recompiles A-MIB and B-MIB and clears
+    # the stale state.
+    _write_fixture(mib_dir, {"A-MIB": A_MIB})
+    await asyncio.wait_for(cycle_done[3].wait(), timeout=10)
+    assert closures[2] == {"A-MIB", "B-MIB"}
+
+    summary = await task
+    assert summary.cycles_run == 3
+    assert summary.failed is False  # stale state cleared by the restoration
+
+
+# ---------------------------------------------------------------------------
+# Engine: a misnamed file that fails to parse is still polled, and recovering
+# it migrates the watch tracking to its declared name (no phantom exit-1)
+# ---------------------------------------------------------------------------
+
+
+async def test_misnamed_parse_failure_recovers_without_phantom_failure(tmp_path: Path):
+    """A misnamed, unparseable file is watched at its actual path. Once fixed,
+    its module compiles under the DECLARED name and the alias (requested)
+    name stops counting as a failure — the session exits clean."""
+    mib_dir = tmp_path / "mibs"
+    out_dir = tmp_path / "out"
+    cache_dir = tmp_path / "cache"
+    _write_fixture(mib_dir, {"broken_src": "this is not a MIB module\n"})
+    compiler, parser = _build_compiler(mib_dir, out_dir, cache_dir)
+
+    closures: list[set[str]] = []
+    cycle_done = {n: asyncio.Event() for n in (1, 2)}
+
+    def on_cycle(n: int, results) -> None:
+        closures.append({r.name for r in results})
+        if n in cycle_done:
+            cycle_done[n].set()
+
+    task = asyncio.create_task(
+        run_watch(
+            _compiler_cycle(compiler),
+            initial_names=["broken_src"],
+            mib_dirs=[mib_dir],
+            output_dir=out_dir,
+            debounce_seconds=0.05,
+            poll_interval=0.005,
+            max_cycles=2,
+            on_cycle=on_cycle,
+        )
+    )
+    await asyncio.wait_for(cycle_done[1].wait(), timeout=10)
+    assert closures[0] == {"broken_src"}
+
+    # Fix the file so it declares a proper module name.
+    fixed = A_MIB.replace("A-MIB", "FIXED-MIB").replace("aMIB", "fixedMIB")
+    _write_changed(mib_dir / "broken_src", fixed)
+    await asyncio.wait_for(cycle_done[2].wait(), timeout=10)
+    assert closures[1] == {"FIXED-MIB"}
+    assert (out_dir / "FIXED-MIB.json").is_file()
+
+    summary = await task
+    assert summary.cycles_run == 2
+    assert summary.failed is False
+
+
+# ---------------------------------------------------------------------------
 # CLI: --watch guard, clean stop, Ctrl-C
 # ---------------------------------------------------------------------------
 
@@ -888,3 +1214,376 @@ class TestWatchCli:
             result = _invoke(["compile", "IF-MIB", "-d", str(tmp_path), "--watch"])
         assert result.exit_code == 0
         assert "Interrupted" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Engine: guard rails, import-graph fallbacks, mid-compile races
+# ---------------------------------------------------------------------------
+
+
+class TestWatchGuards:
+    async def test_run_watch_rejects_empty_initial_names(self, tmp_path: Path):
+        async def _cycle(names: list[str]) -> list[CompileResult]:
+            return []
+
+        with pytest.raises(ValueError):
+            await run_watch(
+                _cycle,
+                initial_names=[],
+                mib_dirs=[tmp_path],
+                output_dir=tmp_path,
+            )
+
+    async def test_run_watch_rejects_zero_max_cycles(self, tmp_path: Path):
+        async def _cycle(names: list[str]) -> list[CompileResult]:
+            return []
+
+        with pytest.raises(ValueError):
+            await run_watch(
+                _cycle,
+                initial_names=["A-MIB"],
+                mib_dirs=[tmp_path],
+                output_dir=tmp_path,
+                max_cycles=0,
+            )
+
+    async def test_initial_compile_keyboard_interrupt_returns_summary(self, tmp_path: Path):
+        """A KeyboardInterrupt during the INITIAL compile returns a summary
+        (cycles_run 0) instead of propagating."""
+
+        async def _cycle(names: list[str]) -> list[CompileResult]:
+            raise KeyboardInterrupt
+
+        summary = await run_watch(
+            _cycle,
+            initial_names=["A-MIB"],
+            mib_dirs=[tmp_path],
+            output_dir=tmp_path,
+        )
+        assert summary.cycles_run == 0
+        assert summary.modules_recompiled == 0
+        assert summary.failed is False
+
+
+class TestWatchGraphFallbacks:
+    def test_imports_from_json_falls_back_on_missing_corrupt_or_shape(self, tmp_path: Path):
+        from trishul_smi.watch import _imports_from_json
+
+        out = tmp_path / "out"
+        out.mkdir()
+        # Absent file → None.
+        assert _imports_from_json(out, "NO-SUCH") is None
+        # Corrupt JSON → None (falls back to a source scan).
+        (out / "A-MIB.json").write_text("{not json", encoding="utf-8")
+        assert _imports_from_json(out, "A-MIB") is None
+        # Valid JSON without an imports section → None.
+        (out / "B-MIB.json").write_text('{"module": "B-MIB"}', encoding="utf-8")
+        assert _imports_from_json(out, "B-MIB") is None
+        # Valid imports section → exact set.
+        (out / "C-MIB.json").write_text(
+            '{"module": "C-MIB", "imports": {"SNMPv2-SMI": ["OBJECT-TYPE"]}}',
+            encoding="utf-8",
+        )
+        assert _imports_from_json(out, "C-MIB") == {"SNMPv2-SMI"}
+
+    def test_imports_from_source_path_unreadable(self, tmp_path: Path):
+        from trishul_smi.watch import _imports_from_source_path
+
+        assert _imports_from_source_path(None) is None
+        # A directory cannot be read as text → OSError → None.
+        d = tmp_path / "adir"
+        d.mkdir()
+        assert _imports_from_source_path(d) is None
+
+    def test_notice_new_files_skips_non_files_and_known_stems(self, tmp_path: Path):
+        from trishul_smi.watch import _notice_new_files
+
+        mib_dir = tmp_path / "mibs"
+        (mib_dir / "sub").mkdir(parents=True)  # directory, not a file
+        (mib_dir / "bad.py").write_text("x", encoding="utf-8")  # wrong suffix
+        (mib_dir / "NEW-MIB").write_text("x", encoding="utf-8")  # adoptable
+        (mib_dir / "KNOWN-MIB").write_text("x", encoding="utf-8")  # already watched
+
+        noticed: set[str] = set()
+        # A missing --mib-dir is skipped (iterdir OSError); sub/bad.py are
+        # skipped; KNOWN-MIB is already tracked; NEW-MIB is reported.
+        new = _notice_new_files([tmp_path / "no-such-dir", mib_dir], {"KNOWN-MIB"}, noticed, None)
+        assert new == ["NEW-MIB"]
+        assert noticed == {"NEW-MIB"}
+        # A repeated scan reports nothing (noticed is idempotent).
+        assert _notice_new_files([mib_dir], {"KNOWN-MIB"}, noticed, None) == []
+
+
+class TestWatchDeletionEdges:
+    async def test_deleted_misnamed_source_marks_stale_conservatively(self, tmp_path: Path):
+        """No cache: deleting a misnamed source leaves the DECLARED module
+        without a result row (the compile of its stem reports the stem name),
+        so the conservative stale branch applies and the output path is
+        reported. The output file itself is never deleted."""
+        from trishul_smi.watch import run_watch
+
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        _write_fixture(mib_dir, {"provider_file": A_MIB, "B-MIB": B_MIB})
+        config = CompilerConfig(output_dir=out_dir, cache_dir=None)
+        compiler = MibCompiler(config)
+        compiler.add_reader(FileReader(mib_dir, max_size=config.max_mib_size))
+
+        stale_paths: list[Path] = []
+        started = asyncio.Event()
+        done = asyncio.Event()
+
+        def on_cycle(n: int, results) -> None:
+            if n == 1:
+                started.set()
+            if n >= 2:
+                done.set()
+
+        def on_stale(paths: list[Path]) -> None:
+            stale_paths.extend(paths)
+
+        task = asyncio.create_task(
+            run_watch(
+                _compiler_cycle(compiler),
+                initial_names=["provider_file", "B-MIB"],
+                mib_dirs=[mib_dir],
+                output_dir=out_dir,
+                debounce_seconds=0.05,
+                poll_interval=0.005,
+                max_cycles=2,
+                on_cycle=on_cycle,
+                on_stale=on_stale,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=10)
+        assert (out_dir / "A-MIB.json").is_file()
+
+        (mib_dir / "provider_file").unlink()
+        await asyncio.wait_for(done.wait(), timeout=10)
+
+        # The declared module's output is marked stale and reported.
+        assert stale_paths == [out_dir / "A-MIB.json"]
+        assert (out_dir / "A-MIB.json").is_file()  # never deleted
+
+        summary = await task
+        assert summary.failed is True  # stale at stop
+
+    async def test_deleted_source_recreated_during_compile_not_stale(self, tmp_path: Path):
+        """A transient deletion — the file is recreated while the compile is
+        running — is NOT stale: the result carries a live source path for the
+        very file that was momentarily gone (issue #38)."""
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        _write_fixture(mib_dir, {"A-MIB": A_MIB})
+
+        recreated = False
+        started = asyncio.Event()
+        done = asyncio.Event()
+        stale_paths: list[Path] = []
+
+        async def fake_cycle(names: list[str]) -> list[CompileResult]:
+            nonlocal recreated
+            if not recreated:
+                recreated = True
+                # The file deleted between polls comes back mid-compile.
+                _write_fixture(mib_dir, {"A-MIB": A_MIB})
+            return [
+                CompileResult(name=n, status="compiled", source_path=mib_dir / "A-MIB")
+                for n in names
+            ]
+
+        def on_cycle(n: int, results) -> None:
+            if n == 1:
+                started.set()
+            if n >= 2:
+                done.set()
+
+        task = asyncio.create_task(
+            run_watch(
+                fake_cycle,
+                initial_names=["A-MIB"],
+                mib_dirs=[mib_dir],
+                output_dir=out_dir,
+                debounce_seconds=0.05,
+                poll_interval=0.005,
+                max_cycles=2,
+                on_cycle=on_cycle,
+                on_stale=lambda paths: stale_paths.extend(paths),
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=10)
+        (mib_dir / "A-MIB").unlink()
+        await asyncio.wait_for(done.wait(), timeout=10)
+
+        assert stale_paths == []
+        summary = await task
+        assert summary.failed is False
+
+    async def test_source_changed_during_compile_rearms_debounce(self, tmp_path: Path):
+        """The source keeps changing while a cycle compiles — the debounce is
+        re-armed so the newest state still gets compiled. The re-armed window
+        then produces an empty cycle (no changed paths) that is skipped, and
+        the session stops cleanly on stop_event."""
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        _write_fixture(mib_dir, {"A-MIB": A_MIB})
+
+        writes = 0
+        cycle_done = {n: asyncio.Event() for n in (1, 2)}
+        stop = asyncio.Event()
+
+        async def fake_cycle(names: list[str]) -> list[CompileResult]:
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                # The second (incremental) cycle changes the file mid-compile.
+                _write_changed(mib_dir / "A-MIB", A_MIB_CHANGED)
+            return [CompileResult(name=n, status="compiled") for n in names]
+
+        def on_cycle(n: int, results) -> None:
+            if n in cycle_done:
+                cycle_done[n].set()
+
+        task = asyncio.create_task(
+            run_watch(
+                fake_cycle,
+                initial_names=["A-MIB"],
+                mib_dirs=[mib_dir],
+                output_dir=out_dir,
+                debounce_seconds=0.05,
+                poll_interval=0.005,
+                stop_event=stop,
+                on_cycle=on_cycle,
+            )
+        )
+        await asyncio.wait_for(cycle_done[1].wait(), timeout=10)
+        _write_changed(mib_dir / "A-MIB", A_MIB_CHANGED)
+        await asyncio.wait_for(cycle_done[2].wait(), timeout=10)
+
+        # Let the re-armed debounce fire its (empty, skipped) cycle, then stop.
+        await asyncio.sleep(0.3)
+        stop.set()
+        summary = await task
+        assert summary.cycles_run == 2
+        assert summary.modules_recompiled == 1
+
+    async def test_deleted_module_without_result_row_marks_stale(self, tmp_path: Path):
+        """A deleted watched file whose module is absent from the cycle's
+        results (e.g. the compile returns a differently-declared module) is
+        conservatively marked stale — the defensive branch of _mark_stale."""
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        _write_fixture(mib_dir, {"A-MIB": A_MIB})
+
+        second = False
+        started = asyncio.Event()
+        done = asyncio.Event()
+        stale_paths: list[Path] = []
+
+        async def fake_cycle(names: list[str]) -> list[CompileResult]:
+            nonlocal second
+            if not second:
+                second = True
+                return [
+                    CompileResult(name=n, status="compiled", source_path=mib_dir / "A-MIB")
+                    for n in names
+                ]
+            # The module vanished from the results entirely.
+            return [CompileResult(name="OTHER-MIB", status="compiled")]
+
+        def on_cycle(n: int, results) -> None:
+            if n == 1:
+                started.set()
+            if n >= 2:
+                done.set()
+
+        task = asyncio.create_task(
+            run_watch(
+                fake_cycle,
+                initial_names=["A-MIB"],
+                mib_dirs=[mib_dir],
+                output_dir=out_dir,
+                debounce_seconds=0.05,
+                poll_interval=0.005,
+                max_cycles=2,
+                on_cycle=on_cycle,
+                on_stale=lambda paths: stale_paths.extend(paths),
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=10)
+        (mib_dir / "A-MIB").unlink()
+        await asyncio.wait_for(done.wait(), timeout=10)
+
+        assert stale_paths == [out_dir / "A-MIB.json"]
+        summary = await task
+        assert summary.failed is True
+
+    async def test_deleted_module_failed_result_keeps_failed(self, tmp_path: Path):
+        """A deleted watched file whose result comes back 'failed' (not
+        missing/cached) stays failed — the final else branch of _mark_stale."""
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        _write_fixture(mib_dir, {"A-MIB": A_MIB})
+
+        second = False
+        started = asyncio.Event()
+        done = asyncio.Event()
+
+        async def fake_cycle(names: list[str]) -> list[CompileResult]:
+            nonlocal second
+            if not second:
+                second = True
+                return [
+                    CompileResult(name=n, status="compiled", source_path=mib_dir / "A-MIB")
+                    for n in names
+                ]
+            return [CompileResult(name="A-MIB", status="failed", error="boom")]
+
+        def on_cycle(n: int, results) -> None:
+            if n == 1:
+                started.set()
+            if n >= 2:
+                done.set()
+
+        task = asyncio.create_task(
+            run_watch(
+                fake_cycle,
+                initial_names=["A-MIB"],
+                mib_dirs=[mib_dir],
+                output_dir=out_dir,
+                debounce_seconds=0.05,
+                poll_interval=0.005,
+                max_cycles=2,
+                on_cycle=on_cycle,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=10)
+        (mib_dir / "A-MIB").unlink()
+        await asyncio.wait_for(done.wait(), timeout=10)
+
+        summary = await task
+        assert summary.failed is True
+
+    async def test_keyboard_interrupt_during_poll_returns_summary(self, tmp_path: Path):
+        """A KeyboardInterrupt raised while the loop is polling (not during a
+        cycle) returns a summary instead of propagating."""
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        _write_fixture(mib_dir, {"A-MIB": A_MIB})
+
+        async def fake_cycle(names: list[str]) -> list[CompileResult]:
+            return [CompileResult(name=n, status="compiled") for n in names]
+
+        async def _boom(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        with patch("trishul_smi.watch.asyncio.sleep", new=_boom):
+            summary = await run_watch(
+                fake_cycle,
+                initial_names=["A-MIB"],
+                mib_dirs=[mib_dir],
+                output_dir=out_dir,
+            )
+
+        assert summary.cycles_run == 1  # initial cycle only
+        assert summary.modules_recompiled == 0

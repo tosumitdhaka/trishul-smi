@@ -23,7 +23,7 @@ import pytest
 import typer
 from click.testing import CliRunner
 
-from trishul_smi.cli.main import _compile_async, app
+from trishul_smi.cli.main import _compile_async, _watch_async, app
 from trishul_smi.config import CompilerConfig
 from trishul_smi.lint import (
     CheckId,
@@ -353,6 +353,39 @@ class TestCompileOutput:
             "object_type": "MODULE-IDENTITY",
         }
 
+    def test_real_cli_compile_exits_1_when_module_path_is_directory(self, tmp_path: Path):
+        """A directory at <output_dir>/<module>.json is a module-file write
+        failure: the compile CLI must exit 1 with a clear error, not 0 with a
+        warning (issue #40)."""
+        mib_dir = tmp_path / "mibs"
+        out_dir = tmp_path / "out"
+        mib_dir.mkdir()
+        (mib_dir / "TEST-MIB").write_text(MINIMAL_V2, encoding="utf-8")
+        (out_dir / "TEST-MIB.json").mkdir(parents=True)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "trishul_smi",
+                "compile",
+                "TEST-MIB",
+                "-d",
+                str(mib_dir),
+                "-o",
+                str(out_dir),
+                "--cache-dir",
+                "",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Cannot write json output for TEST-MIB" in result.stderr
+        assert "Traceback" not in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # compile — cache-dir option
@@ -522,6 +555,124 @@ class TestCompileAsyncWiring:
 
 
 # ---------------------------------------------------------------------------
+# watch — WriterError containment in compile_cycle + exit contract
+# ---------------------------------------------------------------------------
+
+
+class TestWatchCompileCycle:
+    def test_writer_error_marks_module_failed_and_session_survives(self, tmp_path: Path):
+        """A WriterError raised by the compile pipeline inside a watch cycle
+        must be contained by cli/main.py's compile_cycle (run_watch() only
+        catches KeyboardInterrupt) and must MARK the affected module failed —
+        not vanish (issue #40). The session survives, and the engine's exit
+        contract reports the failure at stop."""
+        from trishul_smi.errors import WriterError
+        from trishul_smi.watch import WatchSummary
+
+        captured: dict[str, object] = {}
+
+        async def _fake_run_watch(compile_cycle, **_kwargs):
+            captured["compile_cycle"] = compile_cycle
+            # A WriterError in a cycle marks the module failed, which the
+            # engine tracks; a later successful cycle clears it.
+            results = await compile_cycle(["TEST-MIB"])
+            assert len(results) == 1
+            assert results[0].name == "TEST-MIB"
+            assert results[0].status == "failed"
+            assert "Cannot write json output for TEST-MIB" in results[0].error
+            # A clean stop after the failure reports exit-1 state.
+            return WatchSummary(cycles_run=2, modules_recompiled=1, failed=True)
+
+        compiler = MagicMock()
+        compiler.add_reader.return_value = compiler
+        compiler.compile = AsyncMock(
+            side_effect=WriterError(
+                "Cannot write json output for TEST-MIB to /out/TEST-MIB.json: boom"
+            )
+        )
+
+        config = CompilerConfig(cache_dir=tmp_path / "cache", output_dir=tmp_path / "out")
+
+        with patch("trishul_smi.watch.run_watch", new=_fake_run_watch):
+            summary = asyncio.run(
+                _watch_async(
+                    compiler,
+                    config,
+                    [tmp_path / "mibs"],
+                    ["TEST-MIB"],
+                    use_http=False,
+                    verbose=False,
+                )
+            )
+
+        assert summary.cycles_run == 2
+        assert summary.failed is True
+        compile_cycle = captured["compile_cycle"]
+        assert callable(compile_cycle)
+        compiler.compile.assert_awaited_with("TEST-MIB")
+
+    def test_writer_error_for_bundle_level_returns_empty_results(self, tmp_path: Path):
+        """A WriterError that does not name a module (output-dir creation, OID
+        index, manifest) keeps the session alive with no module-level failure:
+        last-known-good module outputs still stand."""
+        from trishul_smi.errors import WriterError
+        from trishul_smi.watch import WatchSummary
+
+        captured: dict[str, object] = {}
+
+        async def _fake_run_watch(compile_cycle, **_kwargs):
+            captured["compile_cycle"] = compile_cycle
+            return WatchSummary(cycles_run=1, modules_recompiled=0)
+
+        compiler = MagicMock()
+        compiler.add_reader.return_value = compiler
+        compiler.compile = AsyncMock(
+            side_effect=WriterError("Cannot create output directory /out: permission denied")
+        )
+
+        config = CompilerConfig(cache_dir=tmp_path / "cache", output_dir=tmp_path / "out")
+
+        with patch("trishul_smi.watch.run_watch", new=_fake_run_watch):
+            asyncio.run(
+                _watch_async(
+                    compiler,
+                    config,
+                    [tmp_path / "mibs"],
+                    ["TEST-MIB"],
+                    use_http=False,
+                    verbose=False,
+                )
+            )
+
+        compile_cycle = captured["compile_cycle"]
+        results = asyncio.run(compile_cycle(["TEST-MIB"]))
+        assert results == []
+        compiler.compile.assert_awaited_with("TEST-MIB")
+
+    def test_watch_cli_exits_1_on_failed_summary(self, tmp_path: Path):
+        """The --watch exit contract (issue #40): a clean stop with any module
+        still failed/missing/stale exits 1; a clean stop exits 0."""
+        from trishul_smi.watch import WatchSummary
+
+        with patch(
+            "trishul_smi.cli.main._watch_async",
+            new=AsyncMock(
+                return_value=WatchSummary(cycles_run=3, modules_recompiled=2, failed=True)
+            ),
+        ):
+            result = _invoke(["compile", "IF-MIB", "-d", str(tmp_path), "--watch"])
+        assert result.exit_code == 1
+        assert "outstanding failures" in result.output
+
+        with patch(
+            "trishul_smi.cli.main._watch_async",
+            new=AsyncMock(return_value=WatchSummary(cycles_run=3, modules_recompiled=2)),
+        ):
+            result = _invoke(["compile", "IF-MIB", "-d", str(tmp_path), "--watch"])
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
 # Package integrity
 # ---------------------------------------------------------------------------
 
@@ -586,6 +737,57 @@ class TestConvertCommand:
         out_dir = tmp_path / "out"
         result = _invoke(["convert", str(py_file), "-o", str(out_dir)])
         assert "IF-MIB" in result.output
+
+    def test_convert_invalid_module_name_rejected(self, tmp_path: Path):
+        """A crafted exportSymbols('../outside', ...) must fail with a clear
+        error and write nothing outside --output-dir (C1)."""
+        py_file = tmp_path / "evil.py"
+        py_file.write_text(
+            "foo = MibScalar((1,), Integer32())\n"
+            "mibBuilder.exportSymbols('../outside', **{'foo': foo})\n",
+            encoding="utf-8",
+        )
+        out_dir = tmp_path / "out"
+        result = _invoke(["convert", str(py_file), "-o", str(out_dir)])
+        assert result.exit_code == 1
+        assert "Invalid module name" in result.output
+        assert "Invalid MIB name" in result.output
+        assert "../outside" in result.output
+        assert "Traceback" not in result.output
+        # Nothing written — not even the output directory.
+        assert not out_dir.exists()
+        assert not (tmp_path / "outside.json").exists()
+
+    @pytest.mark.parametrize(
+        "bad_name",
+        ["../outside", "foo/bar", "..", "a?b", "@evil", "x y"],
+    )
+    def test_convert_invalid_module_names_fail_without_output(self, tmp_path: Path, bad_name: str):
+        py_file = tmp_path / "bad.py"
+        py_file.write_text(
+            f"foo = MibScalar((1,), Integer32())\n"
+            f"mibBuilder.exportSymbols({bad_name!r}, **{{'foo': foo}})\n",
+            encoding="utf-8",
+        )
+        out_dir = tmp_path / "out"
+        result = _invoke(["convert", str(py_file), "-o", str(out_dir)])
+        assert result.exit_code == 1, result.output
+        assert "Invalid module name" in result.output
+        assert not out_dir.exists()
+
+    def test_convert_valid_legacy_module_name_still_converts(self, tmp_path: Path):
+        """Dots, underscores, and hyphens in a module name (legacy pysnmp
+        output) are valid and must still convert (C1)."""
+        py_file = tmp_path / "legacy.py"
+        py_file.write_text(
+            "foo = MibScalar((1,), Integer32())\n"
+            "mibBuilder.exportSymbols('MY_VENDOR-MIB.v2', **{'foo': foo})\n",
+            encoding="utf-8",
+        )
+        out_dir = tmp_path / "out"
+        result = _invoke(["convert", str(py_file), "-o", str(out_dir)])
+        assert result.exit_code == 0, result.output
+        assert (out_dir / "MY_VENDOR-MIB.v2.json").is_file()
 
 
 # ---------------------------------------------------------------------------

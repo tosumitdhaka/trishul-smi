@@ -66,6 +66,40 @@ sysDescr OBJECT-TYPE
 END
 """
 
+IMPORT_FREE_SMIV2 = """
+ROOT-MIB DEFINITIONS ::= BEGIN
+
+root MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test Org"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Import-free SMIv2 root module."
+    ::= { iso 42 }
+
+END
+"""
+
+IMPORT_FREE_SMIV1 = """
+ROOT-V1-MIB DEFINITIONS ::= BEGIN
+
+rootScalar OBJECT-TYPE
+    SYNTAX  INTEGER
+    ACCESS  read-only
+    STATUS  mandatory
+    DESCRIPTION "Import-free SMIv1 module."
+    ::= { 1 42 }
+
+END
+"""
+
+FORCED_DIALECT_MIB = """
+FORCED-MIB DEFINITIONS ::= BEGIN
+
+x OBJECT IDENTIFIER ::= { 1 3 6 1 4 1 99 }
+
+END
+"""
+
 INVALID_MIB = "this is not a valid MIB"
 
 TAGGED_TYPES_MIB = """
@@ -235,6 +269,39 @@ DisplayString ::= TEXTUAL-CONVENTION
 END
 """
 
+# Issue #37: macro-definition bodies are stripped before parsing, but their
+# identifier tokens must be harvested onto the model so the lint engine can
+# count import-map-restricted symbols (e.g. ObjectName) as uses. Harvesting
+# runs on the quote/comment-masked body, so quoted strings ("current") and
+# comments (-- ... mentioning Token) never leak in.
+MACRO_BODY_SYMBOLS_MIB = """
+MACRO-BODY-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    ObjectName, NotificationName, ObjectSyntax FROM SNMPv2-SMI ;
+
+MY-MACRO MACRO ::=
+BEGIN
+    TYPE NOTATION ::=
+        "STATUS" Status
+        "OBJECTS" "{" Objects "}"
+    VALUE NOTATION ::=
+        value(VALUE OBJECT IDENTIFIER)
+    Objects ::=
+        value(ObjectName)
+    Notification ::=
+        value(NotificationName)
+    Syntax ::=
+        value(ObjectSyntax)
+    Status ::=
+        "current"
+    -- a comment mentioning Token
+    Text ::= value(IA5String)
+END
+
+END
+"""
+
 AGENT_CAPS_NOT_IMPLEMENTED_ACCESS_MIB = """
 JNX-IP-CAPABILITY DEFINITIONS ::= BEGIN
 
@@ -398,6 +465,24 @@ class TestParserCompatibilityFixes:
         ]
         assert mib.types["DisplayString"].base_type == "OCTET STRING"
 
+    def test_macro_body_symbols_harvested_from_stripped_bodies(self):
+        """Issue #37: identifier tokens from macro-definition bodies are
+        harvested onto the model, excluding quoted strings and comments."""
+        mib = SmiParser().parse(MACRO_BODY_SYMBOLS_MIB)
+
+        symbols = mib.macro_body_symbols
+        assert "ObjectName" in symbols
+        assert "NotificationName" in symbols
+        assert "ObjectSyntax" in symbols
+        assert "IA5String" in symbols  # bare identifier inside the body
+        # Quoted strings ("current") and comments (-- ... Token) are masked
+        # before harvesting and must never leak in.
+        assert "current" not in symbols
+        assert "Token" not in symbols
+        assert "comment" not in symbols
+        # Deduplicated: ObjectName appears once despite two mentions.
+        assert symbols.count("ObjectName") == 1
+
     def test_agent_capabilities_variation_access_not_implemented_parses(self):
         mib = SmiParser().parse(AGENT_CAPS_NOT_IMPLEMENTED_ACCESS_MIB)
 
@@ -438,6 +523,38 @@ class TestAutoDetect:
         from trishul_smi.parser.smi_parser import _detect_dialect
 
         assert _detect_dialect(MINIMAL_V1) == "smiv1"
+
+
+class TestImportFreeDialect:
+    """Issue #41: the grammar dialect actually used to parse must reach
+    ``MibModule.language``, so import-free SMIv2 root modules are not
+    mislabelled SMIv1 (their only SMIv2 signal is a construct keyword)."""
+
+    def test_import_free_smiv2_module_language(self):
+        mib = SmiParser().parse(IMPORT_FREE_SMIV2)
+        assert mib.name == "ROOT-MIB"
+        assert mib.language == "SMIv2"
+
+    def test_import_free_smiv1_module_language(self):
+        mib = SmiParser().parse(IMPORT_FREE_SMIV1)
+        assert mib.name == "ROOT-V1-MIB"
+        assert mib.language == "SMIv1"
+
+    def test_forced_smiv2_dialect_sets_smiv2_language(self):
+        """A forced dialect wins over detection: the same source that auto-
+        detects as SMIv1 is SMIv2 when the smiv2 grammar is forced."""
+        mib = SmiParser(dialect="smiv2").parse(FORCED_DIALECT_MIB)
+        assert mib.language == "SMIv2"
+
+    def test_auto_detects_forced_dialect_fixture_as_smiv1(self):
+        mib = SmiParser().parse(FORCED_DIALECT_MIB)
+        assert mib.language == "SMIv1"
+
+    def test_detect_dialect_recognises_import_free_smiv2(self):
+        from trishul_smi.parser.smi_parser import _detect_dialect
+
+        assert _detect_dialect(IMPORT_FREE_SMIV2) == "smiv2"
+        assert _detect_dialect(IMPORT_FREE_SMIV1) == "smiv1"
 
 
 class TestParserErrorPaths:

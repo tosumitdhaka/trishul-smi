@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from trishul_smi.errors import MibNotFoundError, MibSizeLimitError
 from trishul_smi.models.mib_module import MibModule
@@ -93,6 +94,28 @@ class ResolveResult:
     callers can surface a distinct ``cached`` status instead of ``compiled``.
     Includes modules served by the offline fallback (a warm cache entry used
     because the source was unreachable — L1).
+    """
+    source_fingerprints: dict[str, str] = field(default_factory=dict)
+    """Declared module name -> sha256 fingerprint of the source that produced it.
+
+    Recorded whenever a live source was fetched (fresh parse, cache hit, or
+    the v0.5.0 M1 fallback-replacement). Modules served from the OFFLINE
+    cache fallback (source unreachable) have no entry — the lint ``--fix``
+    source-identity guard treats a missing fingerprint as unfixable (issue
+    #36): a local file that differs from the resolved source must never be
+    edited.
+    """
+    source_paths: dict[str, Path] = field(default_factory=dict)
+    """Declared module name -> local filesystem path of the source file that
+    supplied it (issue C2).
+
+    Recorded whenever a LIVE LOCAL source was fetched (fresh parse, cache
+    hit, or the M1 fallback-replacement): the path is looked up by the
+    REQUESTED name through the reader chain's ``local_path`` query, so a
+    misnamed file (stem != declared module name) is mapped to its real file.
+    HTTP/ZIP-sourced modules and modules served by the offline cache
+    fallback have no entry. A module that FAILED to parse is recorded under
+    its requested name so the watch engine can keep polling the broken file.
     """
 
     @property
@@ -180,6 +203,11 @@ class MibResolver:
         if module.name == requested:
             return
         aliases[requested] = module.name
+        # Carry the alias on the module itself so later consumers that only
+        # receive the resolved modules (e.g. oid_resolver.resolve_oids, which
+        # the compiler calls with the module list) can still map an importer's
+        # alias-named provider back to the declared name (issue #39).
+        module.aliases[requested] = module.name
         warning = (
             f"Module requested as {requested!r} but declares itself as "
             f"{module.name!r}; using the declared name."
@@ -214,6 +242,17 @@ class MibResolver:
         # source. Such entries may be stale, so a genuine fresh fetch for the
         # same declared name must be allowed to replace them (v0.5.0 M1).
         fallback_served: set[str] = set()
+        # Declared name -> fingerprint of the live source that produced it.
+        # Modules served by the offline fallback are deliberately absent
+        # (issue #36): the lint --fix source-identity guard refuses to edit a
+        # local file when no live-source fingerprint is recorded.
+        source_fps: dict[str, str] = {}
+        # Declared name -> local path of the live source that produced it
+        # (issue C2). Recorded at the same points as source_fps, via the
+        # reader chain's local_path() query on the REQUESTED name (so a
+        # misnamed file maps to its real path). Parse failures are recorded
+        # under the requested name so the watch engine keeps polling them.
+        source_paths: dict[str, Path] = {}
 
         while pending:
             # --- Queue the wave: fetch raw text first (issue #12) ---
@@ -292,8 +331,12 @@ class MibResolver:
                                 # not served from the disk cache — drop the
                                 # cached status the fallback recorded for it.
                                 cached.discard(name)
+                                fingerprint = _source_fingerprint(result)
+                                source_fps[fresh_module.name] = fingerprint
+                                fresh_path = self._reader.local_path(name)
+                                if fresh_path is not None:
+                                    source_paths[fresh_module.name] = fresh_path
                                 if self._cache is not None:
-                                    fingerprint = _source_fingerprint(result)
                                     self._cache.put(fresh_module.name, fresh_module, fingerprint)
                                     if fresh_module.name != name:
                                         self._cache.put(name, fresh_module, fingerprint)
@@ -357,6 +400,7 @@ class MibResolver:
                         # expensive parse. The source is always fetched so an
                         # updated file can never serve a stale entry.
                         fingerprint = _source_fingerprint(result)
+                        local_path = self._reader.local_path(name)
                         if self._cache is not None:
                             cached_module = self._cache.get(name, fingerprint)
                             if cached_module is not None:
@@ -369,6 +413,9 @@ class MibResolver:
                                 )
                                 self._reconcile_name(aliases, name, cached_module)
                                 cached.add(cached_module.name)
+                                source_fps[cached_module.name] = fingerprint
+                                if local_path is not None:
+                                    source_paths[cached_module.name] = local_path
                                 continue
                         try:
                             # CPU-bound Lark parse — off the event-loop thread
@@ -378,12 +425,21 @@ class MibResolver:
                             module = await asyncio.to_thread(self._parser.parse, result)
                         except Exception as exc:  # noqa: BLE001
                             errors[name] = exc
+                            # The file exists but does not parse — record its
+                            # path under the requested name so the watch
+                            # engine can poll the broken file and recompile
+                            # once it is fixed (issue C2).
+                            if local_path is not None:
+                                source_paths[name] = local_path
                             continue
                         # Key by the module's DECLARED name so dependents that
                         # import it (by its real name) resolve against this
                         # entry instead of triggering a phantom fetch.
                         self._record_module(fetched, declared_by, resolved_this_wave, name, module)
                         self._reconcile_name(aliases, name, module)
+                        source_fps[module.name] = fingerprint
+                        if local_path is not None:
+                            source_paths[module.name] = local_path
                         if self._cache is not None:
                             self._cache.put(module.name, module, fingerprint)
                             if module.name != name:
@@ -411,11 +467,17 @@ class MibResolver:
         # Raises CircularDependencyError on cycle — propagates uncaught.
         # No try/except wrapper needed: catching and immediately re-raising
         # is a no-op that only adds noise.
-        order = topological_sort(fetched)
+        # Import edges are mapped through `aliases` first (issue #39): a
+        # dependent that imports a misnamed file by its REQUESTED name must
+        # still contribute the edge to the file's DECLARED name, or the
+        # provider can sort after its importer and its OIDs stay unresolved.
+        order = topological_sort(fetched, aliases)
 
         return ResolveResult(
             modules=[fetched[name] for name in order],
             errors=errors,
             aliases=aliases,
             cached=cached,
+            source_fingerprints=source_fps,
+            source_paths=source_paths,
         )

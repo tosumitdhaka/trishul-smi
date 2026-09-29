@@ -160,7 +160,7 @@ from trishul_smi.reader.chain import ReaderChain
 from trishul_smi.reader.localfile import _EXTENSIONS
 from trishul_smi.resolver.cache import MibCache
 from trishul_smi.resolver.oid_resolver import WELL_KNOWN_OIDS, resolve_oids
-from trishul_smi.resolver.resolver import MibResolver
+from trishul_smi.resolver.resolver import MibResolver, _source_fingerprint
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -331,6 +331,7 @@ _ROLE_LABELS: dict[str, str] = {
     "member": "as a group/notification member",
     "enterprise": "in an ENTERPRISE clause",
     "macro": "as an assignment macro",
+    "macro-body": "inside a MACRO definition body",
 }
 
 # Roles that are OID references, not symbol imports: referencing a symbol in
@@ -393,9 +394,23 @@ def _iter_references(module: MibModule) -> Iterator[tuple[str, str]]:
     """Yield every structural symbol reference in *module* as ``(symbol, role)``.
 
     Roles: ``type``, ``oid-parent``, ``index``, ``augments``, ``member``,
-    ``enterprise``, ``macro``. Base-type references are included (a module
-    that imports ``Integer32`` and uses ``SYNTAX Integer32`` has used it).
+    ``enterprise``, ``macro``, ``macro-body``. Base-type references are
+    included (a module that imports ``Integer32`` and uses ``SYNTAX
+    Integer32`` has used it).
+
+    Macro-definition body tokens (issue #37) are counted as uses restricted
+    to symbols already in the module's import map: a symbol that appears only
+    inside a MACRO body (e.g. ``ObjectName`` in SNMPv2-CONF's
+    MODULE-COMPLIANCE body) has genuinely been used by the module, while an
+    unrelated token inside the body must not count — otherwise it could mask
+    a genuinely unused import. Restricting the yield also keeps the
+    ``missing-import`` check blind to macro-body tokens (they are all
+    imported by construction).
     """
+    imported_symbols = set(module.import_reverse_map())
+    for symbol in module.macro_body_symbols:
+        if symbol in imported_symbols:
+            yield symbol, "macro-body"
     for obj in (*module.objects.values(), *module.notifications.values()):
         for symbol in _syntax_symbols(obj.syntax):
             yield symbol, "type"
@@ -582,8 +597,21 @@ def _check_unresolvable_oids(modules: list[MibModule], findings: list[LintFindin
 
 
 def _check_unused_imports(module: MibModule, findings: list[LintFinding]) -> None:
-    """Check (d): IMPORTS declared but never referenced by the module."""
+    """Check (d): IMPORTS declared but never referenced by the module.
+
+    Two issue-#37 use-counting extensions:
+    - ``TEXTUAL-CONVENTION`` (an imported macro) counts as used whenever the
+      module defines at least one TEXTUAL-CONVENTION — the macro keyword in
+      ``Foo ::= TEXTUAL-CONVENTION`` is the reference, but the model does not
+      record it. A module with only *plain* type assignments (``Foo ::=
+      INTEGER``) has not used the macro and is still flagged (issue #37).
+    - Macro-definition body tokens harvested by the parser are yielded by
+      ``_iter_references`` restricted to import-map symbols (the
+      ``macro-body`` role).
+    """
     used: set[str] = {symbol for symbol, _ in _iter_references(module)}
+    if any(_is_tc_shaped(typ) for typ in module.types.values()):
+        used.add("TEXTUAL-CONVENTION")
     for source_module, symbols in module.imports.items():
         for symbol in symbols:
             if symbol in used:
@@ -679,14 +707,17 @@ def _check_missing_description(module: MibModule, findings: list[LintFinding]) -
             )
         )
     # Module-level check (issue #34): fires only on OBJECT-BEARING SMIv2
-    # modules — those that declare objects or notifications — that have no
-    # MODULE-IDENTITY DESCRIPTION. A TC-only module (e.g. SNMPv2-TC,
-    # SNMPv2-CONF, IPV6-TC) conventionally carries no MODULE-IDENTITY at
-    # all, and is legal SMI, so it is never flagged.
+    # modules — those that declare actual object instances (an OBJECT-TYPE
+    # assignment or a notification) — that have no MODULE-IDENTITY
+    # DESCRIPTION. Bare OBJECT IDENTIFIER assignments do not count: a
+    # root/infrastructure module (SNMPv2-SMI, an OID-registry module, or a
+    # TC-only module like SNMPv2-TC / IPV6-TC) conventionally carries no
+    # MODULE-IDENTITY at all, and is legal SMI, so it is never flagged.
+    has_object_instances = any(obj.object_type == "OBJECT-TYPE" for obj in module.objects.values())
     if (
         module.language == "SMIv2"
         and module.description is None
-        and (module.objects or module.notifications)
+        and (has_object_instances or module.notifications)
     ):
         findings.append(
             LintFinding(
@@ -1091,6 +1122,27 @@ def _fix_imports_text(text: str, plan: _FixPlan) -> str:
     return _edit_imports_block(text, block, plan)
 
 
+def _clause_trailing_comment(text: str, block: _ImportsBlock, clause: _ImportClause) -> str:
+    """The clause's trailing comment as a standalone comment line, or ``""``.
+
+    When a sole-line clause carries a trailing comment (``Integer32 FROM
+    OTHER-REF  -- note``), deleting the whole line would take the comment
+    with it — the comment documents the removed import, so it is retained as
+    a standalone comment line using the block's indentation and line ending
+    (issue #36). Returns ``""`` when there is no trailing comment, so the
+    plain whole-line removal is unchanged.
+    """
+    line_start, line_end = _clause_line_span(text, clause)
+    if line_start >= line_end:
+        return ""
+    line = text[line_start:line_end]
+    comment_col = line.find("--", clause.end - line_start)
+    if comment_col == -1:
+        return ""
+    comment = line[comment_col:].rstrip("\r\n")
+    return _block_indent(text, block) + comment + _block_line_ending(text, block)
+
+
 def _edit_imports_block(text: str, block: _ImportsBlock, plan: _FixPlan) -> str:
     """Edit the IMPORTS block for removed/added symbols.
 
@@ -1099,7 +1151,9 @@ def _edit_imports_block(text: str, block: _ImportsBlock, plan: _FixPlan) -> str:
     entire rest of the file — keeps its exact bytes.
     """
     rewrite_edits: list[tuple[int, int, str]] = []
-    drop_spans: list[tuple[int, int]] = []
+    # Drop edits carry their replacement text: a retained trailing comment
+    # (issue #36) or "" (plain removal).
+    drop_edits: list[tuple[int, int, str]] = []
     surviving: set[str] = set()
     for clause in block.clauses:
         to_remove = set(plan.removed.get(clause.module, ()))
@@ -1118,11 +1172,18 @@ def _edit_imports_block(text: str, block: _ImportsBlock, plan: _FixPlan) -> str:
             # grammar allows several clauses, the IMPORTS keyword, and the
             # `;` to share a line — deleting the line would silently destroy
             # that neighbouring content, and the re-parse cannot catch it
-            # because the imports clause is grammar-optional).
+            # because the imports clause is grammar-optional). A trailing
+            # comment on the dropped sole-line clause is retained as a
+            # standalone comment line.
             if _clause_is_sole_on_line(text, block, clause):
-                drop_spans.append(_clause_line_span(text, clause))
+                drop_edits.append(
+                    (
+                        *_clause_line_span(text, clause),
+                        _clause_trailing_comment(text, block, clause),
+                    )
+                )
             else:
-                drop_spans.append((clause.start, clause.end))
+                drop_edits.append((clause.start, clause.end, ""))
         else:
             surviving.add(clause.module)
             if target != current:
@@ -1136,16 +1197,20 @@ def _edit_imports_block(text: str, block: _ImportsBlock, plan: _FixPlan) -> str:
                     )
                 )
 
-    if drop_spans and len(drop_spans) == len(block.clauses):
+    if drop_edits and len(drop_edits) == len(block.clauses):
         # The whole clause empties: either drop the IMPORTS block entirely,
-        # or rebuild it from scratch when new imports must be added.
+        # or rebuild it from scratch when new imports must be added. Retained
+        # trailing comments (if any) survive as standalone comment lines.
+        retained_comments = "".join(replacement for _, _, replacement in drop_edits)
         if not plan.added:
             start, end = _block_span(text, block)
+            if retained_comments:
+                return text[:start] + retained_comments + text[end:]
             return text[:start] + text[end:]
-        return _rebuild_imports_block(text, block, plan.added)
+        return _rebuild_imports_block(text, block, plan.added, retained=retained_comments)
 
-    if drop_spans or rewrite_edits:
-        text = _apply_edits(text, rewrite_edits + [(start, end, "") for start, end in drop_spans])
+    if drop_edits or rewrite_edits:
+        text = _apply_edits(text, rewrite_edits + drop_edits)
 
     new_clauses = [
         (provider, symbols) for provider, symbols in plan.added.items() if provider not in surviving
@@ -1183,8 +1248,18 @@ def _insert_new_clauses(text: str, new_clauses: list[tuple[str, list[str]]]) -> 
     return text[:end] + line_ending + insertion + text[end:]
 
 
-def _rebuild_imports_block(text: str, block: _ImportsBlock, added: dict[str, list[str]]) -> str:
-    """Replace a fully-emptied IMPORTS block with a fresh one from *added*."""
+def _rebuild_imports_block(
+    text: str,
+    block: _ImportsBlock,
+    added: dict[str, list[str]],
+    retained: str = "",
+) -> str:
+    """Replace a fully-emptied IMPORTS block with a fresh one from *added*.
+
+    ``retained`` is the concatenation of standalone comment lines kept from
+    the dropped clauses' trailing comments (issue #36); it is placed before
+    the rebuilt block so the comment survives the block replacement.
+    """
     start, end = _block_span(text, block)
     indent = _block_indent(text, block)
     line_ending = _block_line_ending(text, block)
@@ -1192,7 +1267,7 @@ def _rebuild_imports_block(text: str, block: _ImportsBlock, added: dict[str, lis
     new_block = (
         "IMPORTS" + line_ending + line_ending.join(lines) + line_ending + indent + ";" + line_ending
     )
-    return text[:start] + new_block + text[end:]
+    return text[:start] + retained + new_block + text[end:]
 
 
 def _insert_new_imports_block(text: str, added: dict[str, list[str]]) -> str:
@@ -1329,6 +1404,7 @@ async def _apply_fixes(
     parser: SmiParser,
     *,
     diff_only: bool,
+    source_fingerprints: dict[str, str] | None = None,
 ) -> tuple[list[LintFinding], list[FixedFinding], dict[str, str]]:
     """Run the ``--fix`` pass over the fixable findings.
 
@@ -1336,6 +1412,15 @@ async def _apply_fixes(
     findings that are fixed are moved out of ``remaining`` into
     ``fixed_entries`` (status ``fixed``); fixable findings that cannot be
     fixed stay in ``remaining`` and get a ``left`` entry explaining why.
+
+    ``source_fingerprints`` maps declared module name -> fingerprint of the
+    live source that produced the resolved module (issue #36). When provided,
+    a local file is only edited if its own decoded-content fingerprint
+    matches — a same-named local file that differs from the resolved source
+    (e.g. a caller-supplied reader serving foreign content) is left
+    untouched, as is any module with no recorded fingerprint (served from the
+    offline cache fallback). ``None`` disables the guard (direct API use
+    without a resolver).
     """
     remaining: list[LintFinding] = []
     fixed: list[FixedFinding] = []
@@ -1383,7 +1468,54 @@ async def _apply_fixes(
             )
             continue
 
-        new_text = _fix_imports_text(original, plan)
+        # Source-identity guard (issue #36): only edit a local file whose
+        # decoded content is the exact source that produced the resolved
+        # module. A fingerprint mismatch means the resolved module came from a
+        # different (caller-supplied / HTTP) source with the same name — a
+        # caller-supplied reader serving a same-named, different local file
+        # must leave that file untouched. A missing fingerprint means the
+        # module was served from the offline cache fallback (no live source
+        # was fetched) — also unfixable.
+        if source_fingerprints is not None:
+            expected_fp = source_fingerprints.get(module_name)
+            if expected_fp is None:
+                remaining.extend(editable)
+                fixed.extend(
+                    _left_finding(
+                        f,
+                        "no live-source fingerprint recorded for the resolved module "
+                        "(offline cache fallback); refusing to edit",
+                        str(path),
+                    )
+                    for f in editable
+                )
+                continue
+            if _source_fingerprint(original) != expected_fp:
+                remaining.extend(editable)
+                fixed.extend(
+                    _left_finding(
+                        f,
+                        "local file content differs from the resolved source; refusing to edit",
+                        str(path),
+                    )
+                    for f in editable
+                )
+                continue
+
+        try:
+            new_text = _fix_imports_text(original, plan)
+        except ValueError as exc:
+            # An overlapping-edit invariant failure must not abort the whole
+            # run: degrade to per-finding `left` entries for this module and
+            # keep fixing the others (issue #36).
+            remaining.extend(editable)
+            fixed.extend(
+                _left_finding(
+                    f, f"overlapping fix edits for this module; left unchanged ({exc})", str(path)
+                )
+                for f in editable
+            )
+            continue
         if new_text == original:
             remaining.extend(editable)
             fixed.extend(
@@ -1535,7 +1667,12 @@ async def _lint_async(
     diffs: dict[str, str] = {}
     if fix or diff:
         findings, fixed, diffs = await _apply_fixes(
-            findings, modules_by_name, local_dirs, parser, diff_only=diff
+            findings,
+            modules_by_name,
+            local_dirs,
+            parser,
+            diff_only=diff,
+            source_fingerprints=resolve_result.source_fingerprints,
         )
         findings = _order_findings(findings)
 

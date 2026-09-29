@@ -209,3 +209,105 @@ class TestEdgeCases:
         m = _module("TEST-MIB", {"deep": obj})
         resolve_oids([m])
         assert obj.oid_path == [1, 3, 6, 1, 1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped lookup — issue #39(2)
+# ---------------------------------------------------------------------------
+
+
+class TestModuleScopedLookup:
+    """OID parents resolve in the importing module's namespace: own
+    definitions → explicitly imported provider → well-known roots → unique
+    provider in the resolved closure. The old global symbol-keyed map let the
+    last-visited provider win; that must not happen anymore."""
+
+    def _shared_symbol_fixture(self):
+        """B-MIB and C-MIB both export ``shared``; A-MIB imports it from
+        B-MIB and hangs a child under it."""
+        shared_b = _obj("shared", [1], oid_parent="enterprises")  # 1.3.6.1.4.1.1
+        mod_b = _module("B-MIB", {"shared": shared_b})
+        shared_c = _obj("shared", [5], oid_parent="mib-2")  # 1.3.6.1.2.1.5
+        mod_c = _module("C-MIB", {"shared": shared_c})
+        child = _obj("aChild", [7], oid_parent="shared")
+        mod_a = MibModule(
+            name="A-MIB",
+            language="SMIv2",
+            imports={"B-MIB": ["shared"]},
+            objects={"aChild": child},
+        )
+        return mod_a, mod_b, mod_c, child
+
+    def test_imported_provider_wins_over_other_provider(self):
+        mod_a, mod_b, mod_c, child = self._shared_symbol_fixture()
+        resolve_oids([mod_b, mod_c, mod_a])
+        assert child.oid_path == [1, 3, 6, 1, 4, 1, 1, 7]
+        assert child.oid == "1.3.6.1.4.1.1.7"
+
+    def test_imported_provider_wins_regardless_of_visit_order(self):
+        """C-MIB visited before the imported B-MIB — the old last-visited-wins
+        map would have picked C-MIB's definition here."""
+        mod_a, mod_b, mod_c, child = self._shared_symbol_fixture()
+        resolve_oids([mod_c, mod_b, mod_a])
+        assert child.oid_path == [1, 3, 6, 1, 4, 1, 1, 7]
+
+    def test_each_provider_keeps_its_own_symbol_path(self):
+        mod_a, mod_b, mod_c, _child = self._shared_symbol_fixture()
+        resolve_oids([mod_b, mod_c, mod_a])
+        assert mod_b.objects["shared"].oid_path == [1, 3, 6, 1, 4, 1, 1]
+        assert mod_c.objects["shared"].oid_path == [1, 3, 6, 1, 2, 1, 5]
+
+    def test_ambiguous_symbol_without_import_left_unresolved(self):
+        """Two providers export ``shared`` and A-MIB imports neither — the
+        parent is ambiguous and must stay unresolved."""
+        mod_a, mod_b, mod_c, child = self._shared_symbol_fixture()
+        mod_a.imports = {}
+        resolve_oids([mod_b, mod_c, mod_a])
+        assert child.oid_path == [7]
+        assert child.oid_parent == "shared"
+
+    def test_imported_provider_mapped_through_alias(self):
+        """An import naming a misnamed provider by its REQUESTED name resolves
+        against the module that declares that name — even when another
+        provider exports the same symbol and the closure alone is ambiguous."""
+        shared_b = _obj("shared", [1], oid_parent="enterprises")  # 1.3.6.1.4.1.1
+        mod_b = _module("Z-MIB", {"shared": shared_b})
+        mod_b.aliases = {"ALIAS": "Z-MIB"}
+        shared_c = _obj("shared", [5], oid_parent="mib-2")  # 1.3.6.1.2.1.5
+        mod_c = _module("C-MIB", {"shared": shared_c})
+        child = _obj("aChild", [7], oid_parent="shared")
+        mod_a = MibModule(
+            name="A-MIB",
+            language="SMIv2",
+            imports={"ALIAS": ["shared"]},
+            objects={"aChild": child},
+        )
+        resolve_oids([mod_b, mod_c, mod_a])
+        assert child.oid_path == [1, 3, 6, 1, 4, 1, 1, 7]
+
+    def test_well_known_root_wins_over_unique_provider(self):
+        """Lookup order pins well-known roots BEFORE the unique-provider
+        fallback: a closure provider defining a well-known root name does not
+        shadow the root for unimported references."""
+        custom = _obj("internet", [9], oid_parent="iso")  # 1.9
+        mod_p = _module("P-MIB", {"internet": custom})
+        child = _obj("aChild", [1], oid_parent="internet")
+        mod_a = _module("A-MIB", {"aChild": child})
+        resolve_oids([mod_p, mod_a])
+        # Well-known internet (1.3.6.1) wins over P-MIB's unique definition.
+        assert child.oid_path == [1, 3, 6, 1, 1]
+
+    def test_own_module_definition_shadows_imported_provider(self):
+        """Lookup order pins own-module definitions FIRST: a module that
+        redefines an imported symbol resolves against its own definition."""
+        own = _obj("shared", [3], oid_parent="enterprises")  # 1.3.6.1.4.1.3
+        mod_b = _module("B-MIB", {"shared": _obj("shared", [1], oid_parent="enterprises")})
+        child = _obj("aChild", [7], oid_parent="shared")
+        mod_a = MibModule(
+            name="A-MIB",
+            language="SMIv2",
+            imports={"B-MIB": ["shared"]},
+            objects={"shared": own, "aChild": child},
+        )
+        resolve_oids([mod_b, mod_a])
+        assert child.oid_path == [1, 3, 6, 1, 4, 1, 3, 7]

@@ -376,6 +376,33 @@ class TestMibCompiler:
             with pytest.raises(WriterError, match="permission denied"):
                 await compiler.compile("TEST-MIB")
 
+    @pytest.mark.asyncio
+    async def test_writer_error_raised_when_module_path_is_directory(self, tmp_path: Path):
+        """An existing directory at the intended <output_dir>/<module>.json path
+        is a write failure: WriterError must abort the run, never downgrade to
+        a warning while the result claims status='compiled' (issue #40)."""
+        from trishul_smi.errors import WriterError
+
+        (tmp_path / "TEST-MIB.json").mkdir()
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        with pytest.raises(WriterError, match="TEST-MIB.json"):
+            await compiler.compile("TEST-MIB")
+
+    @pytest.mark.asyncio
+    async def test_writer_error_raised_on_mocked_write_oserror(self, tmp_path: Path):
+        """A mocked write OSError on the module file must raise WriterError
+        (issue #40) rather than degrade into a warning."""
+        from unittest.mock import patch
+
+        from trishul_smi.errors import WriterError
+
+        config = CompilerConfig(output_dir=tmp_path, cache_dir=None, formats=["json"])
+        compiler = MibCompiler(config).add_reader(MockReader({"TEST-MIB": MINIMAL_V2}))
+        with patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")):
+            with pytest.raises(WriterError, match="disk full"):
+                await compiler.compile("TEST-MIB")
+
 
 # ---------------------------------------------------------------------------
 # JsonFormatter — types and notifications serialisation

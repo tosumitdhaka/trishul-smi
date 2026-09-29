@@ -263,10 +263,30 @@ Lint & watch ergonomics from first real usage of the v0.5.0 features (details: `
 
 ---
 
+## v0.5.3 — shipped 2026-09-29
+
+Open-issue closure and workflow hardening: watch dependency recovery and exit contract, alias-aware module-scoped OID resolution, lint detection-semantics fixes, `lint --fix` safety guards, and output write-failure handling (details: `docs/plans/v0.5.3_plan.md`).
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | Verify + close stale issues | done | #31 and #34 verified as delivered in v0.5.2 (regression groups green, changelog records both) and closed. |
+| 2 | Repeated `FROM` merge + macro/TC use counting | done | Union-style import merge in source order; TC macro and macro-body symbol uses counted (import-map-restricted token harvest). Corpus `unused-import` 650→450; `IPV6-TC`/`SNMPv2-CONF` at zero. (#37) |
+| 3 | SMIv2 language for import-free roots | done | Parsed dialect carried into `MibModule.language`. (#41) |
+| 4 | Alias-aware order + module-scoped OIDs | done | Import edges mapped through aliases before sort/cycle detection; OID parent lookup own module → imported provider → well-known → unique closure, ambiguous left unresolved. (#39) |
+| 5 | `lint --fix` hardening | done | Source-identity fingerprint guard (offline-cache fallback refused), per-module overlap degradation, trailing-comment retention. (#36) |
+| 6 | Write failures + watch exit contract | done | Module write failures raise `WriterError` → CLI exit 1; watch exits 1 on outstanding failed/missing/stale at stop, recovery clears. (#40) |
+| 7 | `convert` path validation | done | `validate_mib_name()` on `exportSymbols()` names before path construction. (local review C1) |
+| 8 | Watch recovery + actual-source tracking | done | Adoption recompiles failed dependents; deletion marks outputs stale (cache fallback cannot mask); watch keyed by actual source path, misnamed files polled. (#38, C2) |
+| 9 | Module-level `missing-description` rescope | done | Follow-on from #41: object-bearing = actual OBJECT-TYPE/notification instances; registry/root modules cleared — zero module-level corpus findings. |
+| 10 | Deferred review findings | filed | v0.5.3 review chain minors/nits and gate dev-deps gaps tracked in #42 for post-release triage. |
+
+---
+
 ## Backlog
 
-(empty — items are promoted into per-release plans; see `docs/plans/`. MIB borrowing
-was dropped 2026-09-22: its value is already covered by the curated local corpus, the
-fingerprinted cache, the offline fallback, and the HTTP sources — and it would
-reintroduce un-fingerprintable third-party compiled artifacts, the exact failure class
-the 0.4.x program closed off.)
+(empty — items are promoted into per-release plans; see `docs/plans/`. The v0.5.3
+review chain's deferred findings are tracked in
+[#42](https://github.com/tosumitdhaka/trishul-smi/issues/42). MIB borrowing was dropped
+2026-09-22: its value is already covered by the curated local corpus, the fingerprinted
+cache, the offline fallback, and the HTTP sources — and it would reintroduce compiled
+artifacts that cannot be fingerprinted against an available source.)

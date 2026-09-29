@@ -9,14 +9,13 @@ Description/status/access fields use typed wrappers for the same reason.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from lark import Token, Transformer, Tree, v_args
 
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.models.mib_type import MibType
-from trishul_smi.parser._constants import SMIv2_MARKERS
 
 # ---------------------------------------------------------------------------
 # Internal typed wrapper dataclasses
@@ -187,10 +186,20 @@ def _resolve_oid(components: list[Any]) -> tuple[str, list[int], str | None]:
 
 
 class MibTransformer(Transformer[Token, MibModule]):
-    """Walks the Lark parse tree and builds a MibModule."""
+    """Walks the Lark parse tree and builds a MibModule.
 
-    def __init__(self) -> None:
+    Args:
+        dialect: The grammar dialect actually used to parse the source
+            (``"smiv2"`` or ``"smiv1"``). Recorded as ``MibModule.language``
+            so an import-free SMIv2 root module (parsed with the SMIv2
+            grammar via the construct-keyword fallback) is no longer
+            mislabelled SMIv1 because it has no SMIv2 import markers
+            (issue #41).
+    """
+
+    def __init__(self, dialect: Literal["smiv2", "smiv1"] = "smiv2") -> None:
         super().__init__()
+        self._dialect = dialect
         # Non-fatal warnings collected while transforming (e.g. non-standard
         # vendor syntax accepted leniently). Attached to the MibModule at the
         # end of module_definition (which runs last, bottom-up).
@@ -241,7 +250,11 @@ class MibTransformer(Transformer[Token, MibModule]):
         for child in children:
             _process_child(child)
 
-        language = "SMIv2" if any(m in imports for m in SMIv2_MARKERS) else "SMIv1"
+        # The language is the grammar dialect actually used to parse the
+        # source (issue #41). SmiParser._detect_dialect already recognises
+        # SMIv2-only construct keywords for import-free root modules, so the
+        # old import-marker-only inference would mislabel them as SMIv1.
+        language = "SMIv2" if self._dialect == "smiv2" else "SMIv1"
 
         return MibModule(
             name=module_name,
@@ -266,10 +279,29 @@ class MibTransformer(Transformer[Token, MibModule]):
     # ------------------------------------------------------------------
 
     def imports(self, children: list[Any]) -> dict[str, Any]:
+        """Merge repeated ``IMPORTS ... FROM P`` clauses union-style.
+
+        ASN.1 permits the same provider module in several clauses:
+
+            IMPORTS
+                A FROM P
+                B FROM P
+                ;
+
+        The old ``dict.update`` merge was last-wins and silently dropped
+        ``A``, blinding the linter and the ``--fix`` machinery (issue #37).
+        Symbols are now appended in source order, deduplicated per provider,
+        with one entry per provider module.
+        """
         result: dict[str, list[str]] = {}
         for clause in children:
-            if isinstance(clause, dict):
-                result.update(clause)
+            if not isinstance(clause, dict):
+                continue
+            for module, symbols in clause.items():
+                merged = result.setdefault(module, [])
+                for symbol in symbols:
+                    if symbol not in merged:
+                        merged.append(symbol)
         return {"__imports__": result}
 
     def import_clause(self, children: list[Any]) -> dict[str, list[str]]:

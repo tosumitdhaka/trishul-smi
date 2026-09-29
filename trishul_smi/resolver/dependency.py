@@ -15,7 +15,10 @@ from trishul_smi.errors import CircularDependencyError
 from trishul_smi.models.mib_module import MibModule
 
 
-def topological_sort(modules: dict[str, MibModule]) -> list[str]:
+def topological_sort(
+    modules: dict[str, MibModule],
+    aliases: dict[str, str] | None = None,
+) -> list[str]:
     """Return MIB names in dependency order (dependencies before dependents).
 
     Edges run: dependency → dependent  (compile the dependency first).
@@ -25,6 +28,13 @@ def topological_sort(modules: dict[str, MibModule]) -> list[str]:
 
     Args:
         modules: All fully-parsed MibModule objects keyed by name.
+        aliases: Requested name -> declared name for misnamed MIB files
+            (issue #21). Each import edge is mapped through this map before
+            edge counting and cycle detection, so an importer that names a
+            misnamed provider by its *requested* name (``IMPORTS z FROM
+            ALIAS`` where the file fetched as ``ALIAS`` declares ``Z-MIB``)
+            still contributes the ``Z-MIB`` edge — otherwise the provider can
+            sort after its importer and its OIDs stay unresolved (issue #39).
 
     Returns:
         List of module names in safe compilation order.
@@ -32,6 +42,7 @@ def topological_sort(modules: dict[str, MibModule]) -> list[str]:
     Raises:
         CircularDependencyError: If the import graph contains a cycle.
     """
+    aliases = aliases or {}
     # in_degree[name] = number of imports that are present in `modules`
     in_degree: dict[str, int] = {name: 0 for name in modules}
     # dependents[dep] = list of module names that import `dep`
@@ -39,6 +50,7 @@ def topological_sort(modules: dict[str, MibModule]) -> list[str]:
 
     for name, module in modules.items():
         for dep in sorted(module.all_imports()):  # sorted → deterministic
+            dep = aliases.get(dep, dep)
             if dep in modules:
                 in_degree[name] += 1
                 dependents[dep].append(name)
@@ -67,15 +79,20 @@ def topological_sort(modules: dict[str, MibModule]) -> list[str]:
 
 def build_dependency_graph(
     modules: dict[str, MibModule],
+    aliases: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """Return a plain adjacency dict for inspection / debugging.
 
     Keys are module names; values are the names of modules that import the key.
-    Only edges within the provided ``modules`` dict are included.
+    Only edges within the provided ``modules`` dict are included. Import
+    edges are mapped through ``aliases`` (requested -> declared name) the same
+    way ``topological_sort`` does, so the graph matches the sort's view.
     """
+    aliases = aliases or {}
     graph: dict[str, list[str]] = {name: [] for name in modules}
     for name, module in modules.items():
         for dep in module.all_imports():
+            dep = aliases.get(dep, dep)
             if dep in modules:
                 graph[dep].append(name)
     return graph

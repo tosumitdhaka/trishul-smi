@@ -60,13 +60,13 @@ trishul_smi/
 ├── errors.py              ← exception hierarchy
 ├── lint.py                ← MIB lint engine — 7-check closure lint with optional --fix / --diff
 ├── version.py             ← producer version helpers for emitted JSON artifacts
-├── watch.py               ← Watch-mode engine — debounced mtime polling + invalidation set
+├── watch.py               ← Watch-mode engine — debounced mtime polling + invalidation set + failure/stale tracking + dependency recovery
 │
 ├── models/
 │   ├── mib_module.py      ← MibModule dataclass
 │   ├── mib_object.py      ← MibObject dataclass
 │   ├── mib_type.py        ← MibType dataclass
-│   └── result.py          ← CompileResult dataclass
+│   └── result.py          ← CompileResult dataclass (+ source_path for watch polling)
 │
 ├── parser/
 │   ├── grammar/
@@ -86,7 +86,7 @@ trishul_smi/
 ├── resolver/
 │   ├── resolver.py        ← MibResolver (BFS + asyncio.gather) + ResolveResult
 │   ├── dependency.py      ← build_dependency_graph, topological_sort (Kahn's)
-│   ├── oid_resolver.py    ← resolve_oids: rewrites MibObject.oid/oid_path to absolute paths
+│   ├── oid_resolver.py    ← resolve_oids: module-scoped symbolic-parent lookup (own → imported provider → well-known → unique closure), rewrites oid/oid_path to absolute paths
 │   └── cache.py           ← MibCache (orjson disk cache, mtime TTL)
 │
 ├── output/
@@ -160,6 +160,8 @@ class MibModule:
     description: str | None = None
     revisions: list[dict[str, str]] = field(default_factory=list)  # MODULE-IDENTITY REVISION entries
     warnings: list[str] = field(default_factory=list)  # non-fatal parse warnings (e.g. lenient vendor syntax)
+    aliases: dict[str, str] = field(default_factory=dict)  # requested name → declared name for misnamed files (not emitted)
+    macro_body_symbols: list[str] = field(default_factory=list)  # identifier tokens harvested from stripped macro bodies (lint use counting; not emitted)
 
 @dataclass
 class MibObject:
@@ -196,6 +198,7 @@ class CompileResult:
     error: str | None = None
     is_dependency: bool = False        # True for transitive deps, False for explicitly requested
     missing_dependencies: list[str] = field(default_factory=list)  # unresolved non-base imports (failed/missing only)
+    source_path: Path | None = None    # actual local file that supplied the module (watch polling; None for non-local sources)
 ```
 
 ---
@@ -213,13 +216,16 @@ class AbstractReader(ABC):
 # FetchProtocol is a structural protocol — duck typing, not ABC inheritance
 class FetchProtocol(Protocol):
     async def fetch(self, mib_name: str) -> str: ...
+    def local_path(self, mib_name: str) -> Path | None: ...
+    # local_path (v0.5.3): the actual local file fetch() would read, or None for
+    # non-local readers — plumbed to CompileResult.source_path for watch polling.
 ```
 
 **Key contracts:**
 - `FileReader` — reads from local filesystem directories, enforces `max_mib_size`
 - `HttpReader` — `httpx.AsyncClient` (follows redirects), `tenacity` retry with exponential backoff, `async with` context manager; responses are consumed as a stream with an early abort once the byte count exceeds `max_mib_size`; 404/410 on the GET is authoritative for `MibNotFoundError`, other non-2xx and transport failures map to `NetworkError`
 - `ZipReader` — reads MIBs from in-memory ZIP archives
-- `ReaderChain` — tries each reader in order; **only `MibNotFoundError` triggers fallback**, all other errors propagate immediately
+- `ReaderChain` — tries each reader in order; **only `MibNotFoundError` triggers fallback**, all other errors propagate immediately. `local_path()` aggregates first-wins over the chain
 
 ---
 
@@ -240,7 +246,11 @@ class SmiParser:
 Dialect is auto-detected from the MIB source: SMIv2 iff an IMPORTS clause references an
 SMIv2 module (recognised as `FROM` targets on a quote/comment-masked copy, so mentions in
 comments or descriptions cannot flip it); import-less root modules (e.g. `SNMPv2-SMI`
-itself) fall back to SMIv2-only construct keywords. Grammar text is cached process-wide and
+itself) fall back to SMIv2-only construct keywords. The selected dialect is carried into
+`MibModule.language` (#41), so an import-free SMIv2 root module is emitted as `SMIv2`.
+The macro-body preprocessor harvests identifier tokens from the (masked) spans it strips
+into `MibModule.macro_body_symbols` for lint use counting (#37); they are not emitted.
+Grammar text is cached process-wide and
 compiled `Lark` parsers are cached per thread. Tagged ASN.1 type assignments such as
 `[APPLICATION 0] IMPLICIT OCTET STRING` are preserved as the underlying base type plus
 constraint metadata. The parser also performs narrow pre-parse normalization for wrapped
@@ -281,6 +291,8 @@ class ResolveResult:
     errors: dict[str, str]     # mib_name → error message for failed modules
     aliases: dict[str, str]    # requested name → declared name for misnamed MIB files
     cached: set[str]           # declared names served from the disk cache this run
+    source_fingerprints: dict[str, str]  # declared name → sha256 of the live source (lint --fix identity guard)
+    source_paths: dict[str, Path]         # declared name → actual local file (watch polling)
     @property
     def ok(self) -> bool: ...  # True when no errors occurred
 
@@ -292,7 +304,7 @@ class MibResolver:
 **Algorithm:**
 1. BFS over the import graph — each wave fetched concurrently via `asyncio.gather(return_exceptions=True)`
 2. Check the cache against the fetched text's sha256 fingerprint; parse cache-missing text in the thread pool (`asyncio.to_thread`) after the fetch wave completes
-3. Topological sort via Kahn's algorithm (`resolver/dependency.py`) — `sorted()` for deterministic output
+3. Topological sort via Kahn's algorithm (`resolver/dependency.py`) — import edges are mapped through the alias map first (#39); `sorted()` for deterministic output
 4. `CircularDependencyError` includes the cycle members and propagates immediately
 5. `MibSizeLimitError` propagates immediately; per-module fetch/parse failures are collected in `ResolveResult.errors`
 
@@ -524,6 +536,8 @@ cli/main.py
         │
         └─ for each module in ordered list:
              JsonFormatter.format(module)     → IF-MIB.json
+               (formatter errors → result warning; a module file write error
+                raises WriterError → the CLI exits 1)
         │
         ├─ build_oid_index_bytes(...)         → oid_index.json   [optional; final file set]
         └─ build_manifest_bytes(...)          → manifest.json    [optional; final file set]

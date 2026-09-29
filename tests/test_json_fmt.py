@@ -15,6 +15,47 @@ import orjson
 from trishul_smi.models.mib_module import MibModule
 from trishul_smi.models.mib_object import MibObject
 from trishul_smi.output.json_fmt import JsonFormatter, _compact_int_arrays, _enum_map
+from trishul_smi.parser.smi_parser import SmiParser
+
+# Issue #41 fixtures: import-free SMIv2 / SMIv1 modules whose only dialect
+# signal is their construct keywords / clause set.
+IMPORT_FREE_SMIV2 = """
+ROOT-MIB DEFINITIONS ::= BEGIN
+root MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test Org"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Import-free SMIv2 root module."
+    ::= { iso 42 }
+END
+"""
+
+IMPORT_FREE_SMIV1 = """
+ROOT-V1-MIB DEFINITIONS ::= BEGIN
+rootScalar OBJECT-TYPE
+    SYNTAX  INTEGER
+    ACCESS  read-only
+    STATUS  mandatory
+    DESCRIPTION "Import-free SMIv1 module."
+    ::= { 1 42 }
+END
+"""
+
+# Issue #37 fixture: the same provider appears in several IMPORTS clauses.
+MULTI_IMPORT_MIB = """
+MULTI-IMPORT-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    OBJECT-TYPE FROM SNMPv2-SMI
+    TEXTUAL-CONVENTION FROM SNMPv2-TC ;
+multiImportMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Test"
+    CONTACT-INFO "test@example.com"
+    DESCRIPTION  "Repeated FROM clauses for the same provider."
+    ::= { 1 45 }
+END
+"""
 
 # Array-like DESCRIPTION text: brackets, digit runs, literal newlines that
 # _norm_desc collapses, and escaped-newline (backslash-n) sequences that
@@ -246,3 +287,32 @@ class TestEnumMapHelper:
 
     def test_empty_mapping_returns_none(self):
         assert _enum_map({"kind": "enum", "data": []}) is None
+
+
+class TestLanguageEmission:
+    """Issue #41: the language emitted in JSON is the dialect used to parse,
+    so import-free SMIv2 modules no longer emit language='SMIv1'."""
+
+    def test_import_free_smiv2_module_emits_smiv2(self):
+        module = SmiParser().parse(IMPORT_FREE_SMIV2)
+        data = json.loads(JsonFormatter().format(module))
+        assert data["language"] == "SMIv2"
+        assert data["module"] == "ROOT-MIB"
+
+    def test_import_free_smiv1_module_emits_smiv1(self):
+        module = SmiParser().parse(IMPORT_FREE_SMIV1)
+        data = json.loads(JsonFormatter().format(module))
+        assert data["language"] == "SMIv1"
+        assert data["module"] == "ROOT-V1-MIB"
+
+
+class TestUnionImportEmission:
+    """Issue #37: union-merged repeated FROM clauses flow into the JSON."""
+
+    def test_merged_imports_emitted_in_json(self):
+        module = SmiParser().parse(MULTI_IMPORT_MIB)
+        data = json.loads(JsonFormatter().format(module))
+        assert data["imports"] == {
+            "SNMPv2-SMI": ["MODULE-IDENTITY", "OBJECT-TYPE"],
+            "SNMPv2-TC": ["TEXTUAL-CONVENTION"],
+        }

@@ -8,6 +8,7 @@ verify the .fetch() contract without requiring inheritance from AbstractReader.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
@@ -29,6 +30,16 @@ class FetchProtocol(Protocol):
         """
         ...
 
+    def local_path(self, mib_name: str) -> Path | None:
+        """Return the local filesystem path that would serve *mib_name*.
+
+        None for readers that have no local file for the name (HTTP/ZIP
+        sources, or a name with no matching file). Mirrors ``fetch()``'s
+        search order so callers can identify the actual source file a
+        resolved module was served from (issue C2).
+        """
+        ...
+
 
 class AbstractReader(ABC):
     """Base class for concrete readers (FileReader, HttpReader, ZipReader)."""
@@ -36,3 +47,11 @@ class AbstractReader(ABC):
     @abstractmethod
     async def fetch(self, mib_name: str) -> str:
         """Fetch raw ASN.1 text for *mib_name*."""
+
+    def local_path(self, mib_name: str) -> Path | None:
+        """Return the local filesystem path that would serve *mib_name*.
+
+        Default: None — most readers (HTTP, ZIP) have no local file path for
+        a name. FileReader overrides this with its real directory search.
+        """
+        return None

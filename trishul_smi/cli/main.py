@@ -53,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import re
 import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -64,6 +65,7 @@ from rich.table import Table
 
 from trishul_smi.compiler import MibCompiler
 from trishul_smi.config import CompilerConfig, validate_mib_name
+from trishul_smi.errors import WriterError
 from trishul_smi.lint import Severity, format_lint_report_text, lint_report_to_dict, run_lint
 from trishul_smi.models import CompileResult
 from trishul_smi.output.registry import BUILTIN_FORMATTERS, discover_plugins
@@ -101,6 +103,22 @@ def _resolve_cache_dir(raw: str | None) -> Path | None:
     if raw is None:
         return Path.home() / ".cache" / "trishul-smi"
     return Path(raw)
+
+
+# WriterError messages from the compile pipeline name the affected module:
+# "Cannot write <fmt> output for <MODULE> to <path>: ...". Bundle-level
+# failures (output-dir creation, OID index, manifest) do not.
+_WRITER_ERROR_MODULE_RE = re.compile(r"\boutput for ([A-Za-z0-9_.-]+) to ")
+
+
+def _module_from_writer_error(message: str) -> str | None:
+    """Extract the module name from a WriterError message, if it names one.
+
+    Returns None for bundle-level WriterErrors (output-dir creation, OID
+    index, manifest) that do not blame a single module.
+    """
+    match = _WRITER_ERROR_MODULE_RE.search(message)
+    return match.group(1) if match else None
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +391,18 @@ def compile(  # noqa: A001
             f"[dim]Watch stopped: {summary.cycles_run} cycle(s) run, "
             f"{summary.modules_recompiled} module(s) recompiled.[/dim]"
         )
+        # Exit contract (issue #40): the exit code reflects the state at stop,
+        # not history. Exit 1 when any watched module is still failed, missing,
+        # or stale; a successful recovery clears the module's state, so a
+        # module that failed mid-session and recovered does not keep the run
+        # at exit 1. Ctrl-C routes through stop_event and follows the same
+        # contract (a failed or stale watch set still exits 1).
+        if summary.failed:
+            err.print(
+                "[bold red]Watch stopped with outstanding failures: one or more "
+                "modules are still failed, missing, or stale.[/bold red]"
+            )
+            raise typer.Exit(1)
         raise typer.Exit(0)
 
     console.print(
@@ -736,13 +766,36 @@ async def _watch_async(
             f"[dim]Note: new MIB file(s) appeared in --mib-dir, adopting: {', '.join(files)}[/dim]"
         )
 
+    def on_stale(paths: list[Path]) -> None:
+        for p in paths:
+            err.print(
+                f"[bold yellow]Stale output:[/bold yellow] {p} — source file "
+                "removed and not re-supplied by any reader"
+            )
+
     async def compile_cycle(names: list[str]) -> list[CompileResult]:
-        return await compiler.compile(*names)
+        try:
+            return await compiler.compile(*names)
+        except WriterError as exc:
+            # A module-file write failure must not end the watch session, but
+            # it must also not vanish: mark the affected module failed so the
+            # engine's exit contract (issue #40) sees the failure — the
+            # session survives, and the module recovers once a later cycle
+            # writes its output successfully.
+            err.print(f"[bold red]Write error:[/bold red] {exc}")
+            module = _module_from_writer_error(str(exc))
+            if module is None:
+                # A bundle-level failure (output-dir creation, OID index,
+                # manifest) does not name a single module — keep the session
+                # alive; the last-known-good module outputs still stand.
+                return []
+            return [CompileResult(name=module, status="failed", error=str(exc))]
 
     # Ctrl-C / SIGTERM end the watch session instead of interrupting it
     # mid-cycle: route the signal to the engine's stop_event so it returns a
-    # summary (and exits 0). A KeyboardInterrupt raised during compile_cycle
-    # is still caught by the engine as a fallback.
+    # summary whose exit contract (issue #40) is evaluated by the caller. A
+    # KeyboardInterrupt raised during compile_cycle is still caught by the
+    # engine as a fallback.
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
     installed: list[signal.Signals] = []
@@ -774,6 +827,7 @@ async def _watch_async(
                     stop_event=stop_event,
                     on_cycle=on_cycle,
                     on_new_files=on_new_files,
+                    on_stale=on_stale,
                 )
 
         return await run_watch(
@@ -784,6 +838,7 @@ async def _watch_async(
             stop_event=stop_event,
             on_cycle=on_cycle,
             on_new_files=on_new_files,
+            on_stale=on_stale,
         )
     finally:
         for sig in installed:
@@ -879,6 +934,16 @@ def convert(
         module = PySNMPReader().read(input_file)
     except Exception as exc:  # noqa: BLE001
         err.print(f"[bold red]Parse error:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Path-safety choke point (C1): the module name comes from the file's
+    # exportSymbols() call and is interpolated into the output filename below.
+    # A crafted name like '../outside' must never escape --output-dir — reject
+    # it before any directory is created or file is written.
+    try:
+        validate_mib_name(module.name)
+    except ValueError as exc:
+        err.print(f"[bold red]Invalid module name:[/bold red] {exc}")
         raise typer.Exit(1) from exc
 
     try:

@@ -110,10 +110,32 @@ when a MIB source file changes. It requires explicit MIB names or at least one
   the new module joins the watch set, gets an initial compile folded into the
   next debounced cycle, and is watched like any other from then on (first
   `--mib-dir` wins on stem collisions). A new file that fails to parse
-  surfaces as a `failed` result row without stopping the watcher. Removed
-  files are reported with a one-line notice only.
+  surfaces as a `failed` result row without stopping the watcher.
+- **Dependency recovery:** a module that failed on an unresolved dependency
+  keeps its missing-dependency edges. When a newly adopted or restored file
+  supplies that dependency, the failed module **and its transitive
+  dependents** are recompiled in the next debounced cycle — without editing
+  the dependents.
+- **Deletion:** removing a watched source file invalidates the removed module
+  and its dependents. The compile pipeline retries every remaining reader; if
+  none can supply the module, the affected output is marked **stale** and its
+  path is printed — the offline compiled-module cache fallback is never
+  treated as a successful watch compile for a confirmed local deletion.
+  Existing output files are **never deleted**. Recreating the file re-adopts
+  it and clears the stale state.
+- Misnamed source files (file stem ≠ declared module name) are watched at
+  their **actual path**: the watcher uses the path the compile pipeline
+  reports for each module (never a name-based reconstruction), so editing a
+  misnamed file recompiles it and its dependents like any other.
+- **Exit contract:** the exit code reflects the state at stop, not history.
+  A normal stop (Ctrl-C, or any other clean stop) exits `0` when every
+  watched module's latest result is compiled or cached, and exits `1` when
+  any module is still failed, missing, or stale at stop. A successful
+  recovery clears the module's state, so a module that failed mid-session and
+  recovered does not keep the run at exit 1.
 - **Ctrl-C** stops the session cleanly: a short summary (cycles run, modules
-  recompiled) is printed and the process exits `0`.
+  recompiled) is printed and the process exits according to the contract
+  above (exit `1` if any module is still failed, missing, or stale).
 
 **Example**
 
@@ -141,8 +163,6 @@ Notes:
 - Dependents tracking relies on the emitted JSON module files (`imports`
   section); with a non-json `--format` the invalidation set falls back to a
   source-text `FROM` scan, so dependent tracking is best-effort.
-- Misnamed source files (file stem ≠ declared module name) are tracked under
-  their declared name; if no file matches, that module is not polled.
 - A same-size rewrite landing on the same coarse filesystem timestamp tick as
   the last poll may be missed (mtime polling limitation).
 
@@ -177,7 +197,7 @@ planned unified diffs and writes nothing.
 | `unused-import` | warning | An IMPORTS symbol is never referenced by the module |
 | `duplicate-oid-arc` | warning | Two or more objects resolve to the same absolute OID |
 | `missing-status` | warning | A construct whose SMI macro mandates a STATUS clause lacks one (SMIv2 macros with STATUS: OBJECT-TYPE, OBJECT-IDENTITY, NOTIFICATION-TYPE, OBJECT-GROUP, NOTIFICATION-GROUP, MODULE-COMPLIANCE, AGENT-CAPABILITIES; TEXTUAL-CONVENTION) |
-| `missing-description` | warning | A construct whose SMI macro carries a DESCRIPTION clause lacks one (the STATUS-bearing macros above plus TRAP-TYPE, and the module-level description of an *object-bearing* SMIv2 module). TC-only modules (`SNMPv2-TC`, `SNMPv2-CONF`, `IPV6-TC`) conventionally carry no MODULE-IDENTITY and are not flagged at the module level |
+| `missing-description` | warning | A construct whose SMI macro carries a DESCRIPTION clause lacks one (the STATUS-bearing macros above plus TRAP-TYPE, and the module-level description of an SMIv2 module that declares actual object instances — OBJECT-TYPE assignments or notifications). Modules without object instances — TC-only modules (`SNMPv2-TC`, `IPV6-TC`) and OID-registry/root modules (`SNMPv2-SMI`, `JUNIPER-EXPERIMENT-MIB`) — conventionally carry no MODULE-IDENTITY and are not flagged at the module level |
 
 **Fix mode (`--fix`)**
 
@@ -204,6 +224,19 @@ Safety rules:
   edit) and rolled back with an error.
 - No fix is attempted on modules fetched over HTTP or from ZIP sources —
   local `--mib-dir` files only; out-of-scope sources are report-only.
+- **Source-identity guard:** a local file is edited only when its decoded
+  content fingerprint matches the fingerprint of the source that produced
+  the resolved module. A same-named local file whose content differs from
+  the resolved source (e.g. a caller-supplied reader serving a different
+  file) is left untouched, as is any module served from the offline
+  compiled-module cache fallback (no live source was fetched).
+- **Trailing-comment retention:** deleting a sole-line import clause that
+  carries a trailing comment (`    Integer32 FROM OTHER-REF  -- note`)
+  keeps the comment as a standalone comment line — the comment documents
+  the removed import and survives the fix.
+- A per-module fix failure (e.g. an overlapping-edit invariant) degrades to
+  `left` entries for that module's findings; the other modules are still
+  fixed.
 - Files are rewritten atomically (temp-file rename, same convention as the
   compiled-module cache).
 

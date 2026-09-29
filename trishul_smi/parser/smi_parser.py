@@ -20,9 +20,9 @@ from __future__ import annotations
 import importlib.resources
 import re
 import threading
-from typing import ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
-from lark import Lark, UnexpectedInput
+from lark import Lark, Tree, UnexpectedInput
 
 from trishul_smi.errors import ParseError
 from trishul_smi.models.mib_module import MibModule
@@ -33,8 +33,9 @@ _DIALECT = Literal["smiv2", "smiv1", "auto"]
 
 # Dialect detection pattern: SMIv2 markers recognised only as IMPORTS targets
 # ("FROM SNMPv2-SMI"). The word-boundary lookarounds keep e.g. "SNMPv2-SMI-v1"
-# (the SMIv1 compatibility shim) from matching — the transformer records
-# language the same way ("SMIv2" iff an imported module is an SMIv2 marker).
+# (the SMIv1 compatibility shim) from matching. The chosen dialect is carried
+# into MibModule.language (issue #41): the transformer records "SMIv2" iff the
+# SMIv2 grammar was actually used to parse.
 _FROM_SMIV2_PATTERN = re.compile(
     r"\bFROM\b\s*(?<![A-Za-z0-9\-])("
     + "|".join(re.escape(m) for m in SMIv2_MARKERS)
@@ -59,8 +60,14 @@ _SMIV2_CONSTRUCT_PATTERN = re.compile(
 # _mask_quotes_and_comments) so the words MACRO/END inside DESCRIPTION strings
 # or -- comments can neither start nor end a match (issue #11). The "::= BEGIN"
 # anchor additionally stops a module name containing "MACRO" (e.g. X-MACRO-MIB)
-# from being mistaken for a macro assignment.
+# from being mistaken for a macro assignment. Identifier tokens harvested from
+# the body spans are attached to the MibModule (issue #37): the lint engine
+# counts them as symbol uses so imports used only inside macro bodies (e.g.
+# ObjectName in SNMPv2-CONF) stop firing `unused-import`.
 _MACRO_BODY_RE = re.compile(r"\bMACRO\b\s*::=\s*BEGIN(.*?)\bEND\b", re.DOTALL)
+# LOWER_ID / UPPER_ID tokens (the grammar's identifier terminals), found on
+# the masked body content so tokens inside strings/comments are excluded.
+_MACRO_BODY_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]*")
 _WRAPPED_COMMENT_TEXT_RE = re.compile(r"[a-z][A-Za-z0-9\-]*(?:[ \t]+[A-Za-z0-9][A-Za-z0-9\-]*)*")
 
 
@@ -113,20 +120,34 @@ def _mask_quotes_and_comments(text: str) -> str:
     return "".join(chars)
 
 
-def _strip_macro_bodies(text: str) -> str:
+def _strip_macro_bodies(text: str) -> tuple[str, list[str]]:
+    """Return ``(stripped_text, macro_body_symbols)``.
+
+    The stripped text reduces every MACRO body to ``MACRO ::= BEGIN END``
+    (newlines preserved); the harvested symbols are the identifier tokens
+    found inside those body spans, in first-occurrence order, deduplicated.
+    Harvesting runs on the quote/comment-masked body content, so tokens
+    inside DESCRIPTION strings or ``--`` comments cannot leak in.
+    """
     masked = _mask_quotes_and_comments(text)
 
     def _keep_newlines(m: re.Match[str]) -> str:
         return "MACRO ::= BEGIN" + "".join(c for c in m.group(1) if c in "\r\n") + "END"
 
     parts: list[str] = []
+    symbols: list[str] = []
+    seen: set[str] = set()
     last = 0
     for match in _MACRO_BODY_RE.finditer(masked):
         parts.append(text[last : match.start()])
         parts.append(_keep_newlines(match))
         last = match.end()
+        for token in _MACRO_BODY_TOKEN_RE.findall(match.group(1)):
+            if token not in seen:
+                seen.add(token)
+                symbols.append(token)
     parts.append(text[last:])
-    return "".join(parts)
+    return "".join(parts), symbols
 
 
 def _split_line_ending(line: str) -> tuple[str, str]:
@@ -209,10 +230,10 @@ def _detect_dialect(text: str) -> Literal["smiv2", "smiv1"]:
 
     Detection runs on a quote/comment-masked copy of *text* and only
     recognises SMIv2 marker modules as ``FROM <module>`` import targets
-    (issue #24). This mirrors the transformer's language decision — "SMIv2"
-    iff any imported module is an SMIv2 marker (transformer.py) — so a
-    comment or DESCRIPTION merely mentioning "SNMPv2-SMI" can no longer
-    force the v2 grammar onto an SMIv1 module.
+    (issue #24). The result is the grammar that will parse the module and is
+    carried into ``MibModule.language`` (issue #41), so a comment or
+    DESCRIPTION merely mentioning "SNMPv2-SMI" can no longer force the v2
+    grammar onto an SMIv1 module.
     """
     masked = _mask_quotes_and_comments(text)
     if _FROM_SMIV2_PATTERN.search(masked):
@@ -274,16 +295,23 @@ class SmiParser:
     def parse(self, text: str) -> MibModule:
         """Parse raw ASN.1 text. Raises ParseError on invalid input."""
         text = _normalize_wrapped_comments(text)
-        text = _strip_macro_bodies(text)
+        text, macro_body_symbols = _strip_macro_bodies(text)
         dialect: Literal["smiv2", "smiv1"] = (
             _detect_dialect(text) if self._dialect == "auto" else self._dialect
         )
 
-        transformer = MibTransformer()
+        transformer = MibTransformer(dialect=dialect)
+
+        def _finish(tree: Tree[Any]) -> MibModule:
+            module = transformer.transform(tree)
+            # Attach the macro-body token harvest (issue #37) — the lint
+            # engine counts import-map-restricted tokens as symbol uses.
+            module.macro_body_symbols = macro_body_symbols
+            return module
 
         try:
             tree = self._get_parser(dialect, earley=False).parse(text)
-            return transformer.transform(tree)
+            return _finish(tree)
         except UnexpectedInput:
             pass
         except Exception as exc:
@@ -291,7 +319,7 @@ class SmiParser:
 
         try:
             tree = self._get_parser(dialect, earley=True).parse(text)
-            return transformer.transform(tree)
+            return _finish(tree)
         except UnexpectedInput as exc:
             context = getattr(exc, "get_context", lambda t: "")(text)
             raise ParseError(

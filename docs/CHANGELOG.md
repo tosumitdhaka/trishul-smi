@@ -10,6 +10,67 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.3] — 2026-09-29
+
+### Added
+
+- **Watch dependency recovery** (#38): a module that failed on an unresolved import is
+  recompiled (with its dependents) when the missing dependency's file later appears in
+  `--mib-dir`. Deleting a watched source invalidates the module and its dependents, marks
+  affected outputs stale and prints their paths — the offline compiled-module cache
+  fallback can no longer mask a confirmed local deletion — and existing outputs are never
+  deleted. Restoring the file recovers on the next cycle.
+- **Watch actual-source tracking** (local review C2): the watched set is keyed by the
+  actual local file that supplied each module (`CompileResult.source_path`, plumbed from a
+  new `local_path()` reader method through `ResolveResult.source_paths`), so misnamed
+  files (stem ≠ declared module name) are polled and editing them recompiles the module
+  and its dependents.
+- **Watch exit contract** (#40): `tsmi compile --watch` exits 1 when stopped if any
+  watched module is still failed, missing, or stale; a successful recovery clears the
+  state. The contract (state at stop, not history) is documented in `docs/cli.md`.
+- **Source-identity guard for `lint --fix`** (#36): before editing a local file, the fixer
+  compares its decoded source fingerprint with the fingerprint of the source that produced
+  the resolved module (recorded per module in `ResolveResult.source_fingerprints`);
+  mismatches and offline-cache-fallback modules are refused. A caller-supplied reader with
+  a same-named, different local file is never edited.
+- **Module-scoped OID resolution** (#39): symbolic OID parents resolve in the importing
+  module's namespace — own module first, then the explicitly imported provider (mapped
+  through the requested-name alias map), then well-known roots, then a unique provider in
+  the resolved closure for legal unimported references; ambiguous names stay unresolved.
+  Dependency ordering and cycle detection map import edges through the alias map, so a
+  misnamed provider file can no longer sort after its importer.
+
+### Fixed
+
+- **Repeated `FROM`-clause merging** (#37): clauses importing from the same module now
+  merge union-style in source order (previously last-wins, blinding lint and `--fix` on
+  the legal multi-clause form).
+- **Macro/TC use counting in lint** (#37): an imported `TEXTUAL-CONVENTION` macro counts
+  as used when the module defines TCs, and symbols used only inside macro-definition
+  bodies (e.g. `SNMPv2-CONF`'s `ObjectName`/`ObjectSyntax`/`NotificationName` in its
+  `MODULE-COMPLIANCE`/`AGENT-CAPABILITIES` bodies) count as uses. Corpus false-positive
+  `unused-import` warnings drop 650 → 450; `IPV6-TC` and `SNMPv2-CONF` are at zero.
+- **Import-free SMIv2 root modules mislabeled `SMIv1`** (#41): the dialect selected by
+  auto-detection is carried into `MibModule.language`; a module with `MODULE-IDENTITY`
+  but no `IMPORTS` is emitted as `language: "SMIv2"`.
+- **Module-level `missing-description` rescope**: "object-bearing" now requires actual
+  `OBJECT-TYPE` assignments or notifications; OID-registry/root modules (`SNMPv2-SMI`,
+  `JUNIPER-EXPERIMENT-MIB`) are no longer false-flagged. Zero module-level findings on
+  the 412-module corpus.
+- **Output write failures are failures** (#40): a module file write error (e.g. a
+  directory at the output path) raises `WriterError` and the compile CLI exits 1 instead
+  of reporting the module as compiled with a warning. Formatter plugin errors remain
+  non-fatal warnings (plugin contract unchanged).
+- **`lint --fix` hardening** (#36): an edit-overlap invariant failure now degrades to
+  per-module `left` findings instead of aborting the whole run, and removing a sole-line
+  import clause retains its trailing comment as a standalone comment line.
+- **`tsmi convert` output-path validation** (local review C1): the module name parsed
+  from `exportSymbols()` is validated with `validate_mib_name()` before constructing the
+  output path — crafted names such as `../outside` fail without writing anything outside
+  `--output-dir`.
+
+---
+
 ## [0.5.2] — 2026-09-28
 
 ### Added

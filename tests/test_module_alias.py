@@ -7,6 +7,7 @@ sort, cache keying, output naming, and ``is_dependency`` all agree.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,11 +15,13 @@ import pytest
 from tests.helpers import MockReader
 from trishul_smi.compiler import MibCompiler
 from trishul_smi.config import CompilerConfig
-from trishul_smi.errors import MibNotFoundError
+from trishul_smi.errors import CircularDependencyError, MibNotFoundError
 from trishul_smi.models.mib_module import MibModule
+from trishul_smi.output.json_bundle import OID_INDEX_FILENAME
 from trishul_smi.parser.smi_parser import SmiParser
 from trishul_smi.reader.base import AbstractReader
 from trishul_smi.resolver.cache import MibCache
+from trishul_smi.resolver.dependency import build_dependency_graph, topological_sort
 from trishul_smi.resolver.resolver import MibResolver
 
 # The misnamed file lives in the reader under the requested name "A" but its
@@ -76,6 +79,68 @@ testMIB MODULE-IDENTITY
     CONTACT-INFO "test@example.com"
     DESCRIPTION  "Normally named module."
     ::= { 1 53 }
+END
+"""
+
+# Issue #39 fixtures: a misnamed PROVIDER. The file is requested as "ALIAS"
+# but declares itself as Z-MIB and exports the OID symbol zRoot. A-MIB
+# imports zRoot FROM ALIAS — the requested name — and hangs a child under it.
+ALIAS_PROVIDER_TEXT = """
+Z-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI ;
+zMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Z Org"
+    CONTACT-INFO "z@example.com"
+    DESCRIPTION  "File requested as ALIAS, declares Z-MIB."
+    ::= { 1 60 }
+zRoot OBJECT IDENTIFIER ::= { zMIB 1 }
+END
+"""
+
+ALIAS_IMPORTER_TEXT = """
+A-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    zRoot FROM ALIAS ;
+aMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "A Org"
+    CONTACT-INFO "a@example.com"
+    DESCRIPTION  "Imports the misnamed provider by its requested name."
+    ::= { 1 61 }
+aChild OBJECT IDENTIFIER ::= { zRoot 1 }
+END
+"""
+
+# A cycle reached through a requested-name alias: A-MIB imports ALIAS (which
+# declares Z-MIB), and Z-MIB imports A-MIB back.
+CYCLE_ALIAS_PROVIDER_TEXT = """
+Z-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    aSymbol FROM A-MIB ;
+zMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "Z Org"
+    CONTACT-INFO "z@example.com"
+    DESCRIPTION  "Aliased module that imports back into the importer."
+    ::= { 1 62 }
+END
+"""
+
+CYCLE_ALIAS_IMPORTER_TEXT = """
+A-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY FROM SNMPv2-SMI
+    zSymbol FROM ALIAS ;
+aMIB MODULE-IDENTITY
+    LAST-UPDATED "200001010000Z"
+    ORGANIZATION "A Org"
+    CONTACT-INFO "a@example.com"
+    DESCRIPTION  "Imports the misnamed provider that imports back."
+    ::= { 1 63 }
 END
 """
 
@@ -352,3 +417,90 @@ class TestExplicitAliasRequest:
         # drives the CLI's exit-1 contract is empty.
         assert not any(r.status in {"missing", "failed"} for r in results)
         assert (tmp_path / "out" / "B-MIB.json").is_file()
+
+
+class TestAliasedProviderDependencyOrder:
+    """Issue #39(1): import edges must be mapped through the alias map before
+    topological sorting and cycle detection, so a misnamed provider sorts
+    before its importer and cannot be returned after it."""
+
+    @pytest.mark.asyncio
+    async def test_aliased_provider_sorts_before_importer(self):
+        reader = CountingReader({"ALIAS": ALIAS_PROVIDER_TEXT, "A-MIB": ALIAS_IMPORTER_TEXT})
+        result = await MibResolver(reader, SmiParser()).resolve(["A-MIB"])
+
+        assert result.ok
+        assert result.errors == {}
+        assert [m.name for m in result.modules] == ["Z-MIB", "A-MIB"]
+        assert result.aliases == {"ALIAS": "Z-MIB"}
+        # No phantom fetch: ALIAS is known to be an alias of Z-MIB.
+        assert reader.fetched == ["A-MIB", "ALIAS"]
+
+    def test_topological_sort_maps_imports_through_aliases(self):
+        modules = {
+            "Z-MIB": MibModule(name="Z-MIB", language="SMIv2"),
+            "A-MIB": MibModule(name="A-MIB", language="SMIv2", imports={"ALIAS": ["zRoot"]}),
+        }
+        # Without the alias map the ALIAS edge is dropped and A-MIB sorts
+        # first alphabetically; with it, the provider must come first.
+        order = topological_sort(modules, {"ALIAS": "Z-MIB"})
+        assert order == ["Z-MIB", "A-MIB"]
+
+    def test_build_dependency_graph_maps_imports_through_aliases(self):
+        modules = {
+            "Z-MIB": MibModule(name="Z-MIB", language="SMIv2"),
+            "A-MIB": MibModule(name="A-MIB", language="SMIv2", imports={"ALIAS": ["zRoot"]}),
+        }
+        graph = build_dependency_graph(modules, {"ALIAS": "Z-MIB"})
+        assert graph["Z-MIB"] == ["A-MIB"]
+        assert graph["A-MIB"] == []
+
+    @pytest.mark.asyncio
+    async def test_aliased_provider_oids_resolved_in_json_and_index(self, tmp_path: Path):
+        """End-to-end: the misnamed provider's OID symbol must resolve to a
+        numeric OID in both the module JSON and oid_index.json."""
+        config = CompilerConfig(
+            output_dir=tmp_path / "out",
+            cache_dir=None,
+            formats=["json"],
+            emit_oid_index=True,
+        )
+        compiler = MibCompiler(config).add_reader(
+            MockReader({"ALIAS": ALIAS_PROVIDER_TEXT, "A-MIB": ALIAS_IMPORTER_TEXT})
+        )
+
+        results = await compiler.compile("A-MIB")
+        by_name = {r.name: r for r in results}
+        assert set(by_name) == {"Z-MIB", "A-MIB"}
+        assert all(r.status == "compiled" for r in results)
+
+        a_json = json.loads((tmp_path / "out" / "A-MIB.json").read_bytes())
+        assert a_json["objects"]["aChild"]["oid"] == "1.60.1.1"
+        assert a_json["objects"]["aChild"]["oid_path"] == [1, 60, 1, 1]
+        z_json = json.loads((tmp_path / "out" / "Z-MIB.json").read_bytes())
+        assert z_json["objects"]["zRoot"]["oid"] == "1.60.1"
+
+        oid_index = json.loads((tmp_path / "out" / OID_INDEX_FILENAME).read_bytes())
+        assert oid_index["oids"]["1.60.1.1"] == {
+            "module": "A-MIB",
+            "object": "aChild",
+            "class": "objectidentifier",
+            "object_type": "OBJECT IDENTIFIER",
+        }
+        assert oid_index["oids"]["1.60.1"] == {
+            "module": "Z-MIB",
+            "object": "zRoot",
+            "class": "objectidentifier",
+            "object_type": "OBJECT IDENTIFIER",
+        }
+
+    @pytest.mark.asyncio
+    async def test_cycle_through_alias_detected(self):
+        """A cycle that only exists through a requested-name alias must be
+        detected — otherwise the alias-mapped edge is dropped and the sort
+        silently succeeds with the provider in the wrong position."""
+        reader = CountingReader(
+            {"ALIAS": CYCLE_ALIAS_PROVIDER_TEXT, "A-MIB": CYCLE_ALIAS_IMPORTER_TEXT}
+        )
+        with pytest.raises(CircularDependencyError):
+            await MibResolver(reader, SmiParser()).resolve(["A-MIB"])

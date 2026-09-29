@@ -31,6 +31,16 @@ class TestModuleName:
         m = _read(src)
         assert m.name == "MY-MIB"
 
+    def test_export_symbols_name_preserved_unsanitized(self):
+        """The reader reports the exportSymbols name verbatim — path safety is
+        the CLI's job (validate_mib_name before building output paths, C1)."""
+        src = (
+            "foo = MibScalar((1,), Integer32())\n"
+            "mibBuilder.exportSymbols('../outside', **{'foo': foo})\n"
+        )
+        m = _read(src)
+        assert m.name == "../outside"
+
     def test_fallback_to_provided_name_when_no_export(self):
         src = "foo = MibScalar((1,), Integer32())\n"
         m = _read(src, name="FALLBACK-MIB")

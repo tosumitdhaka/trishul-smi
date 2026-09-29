@@ -48,3 +48,18 @@ class FileReader(AbstractReader):
         raise MibNotFoundError(
             f"MIB '{mib_name}' not found in directories: " + ", ".join(str(d) for d in self._dirs)
         )
+
+    def local_path(self, mib_name: str) -> Path | None:
+        """Return the local file path ``fetch()`` would serve for *mib_name*.
+
+        Mirrors fetch()'s directory/extension search order exactly; None when
+        no file matches. Lets the resolver report the ACTUAL source file of a
+        resolved module (issue C2) — a misnamed file (stem != declared module
+        name) is looked up by its requested name, i.e. by its real path.
+        """
+        for directory in self._dirs:
+            for ext in _EXTENSIONS:
+                candidate = directory / f"{mib_name}{ext}"
+                if candidate.is_file():
+                    return candidate
+        return None
